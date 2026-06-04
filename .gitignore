@@ -1,0 +1,47 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtualenvs
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Secrets and credentials
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+*.json
+# Do NOT commit Google service-account JSON files
+*service_account*.json
+*credentials*.json
+
+# Tokens and cache folders
+.cache/
+tokens/
+oauth_cache/
+
+# Logs
+*.log
+logs/
+
+# Home Assistant local/dev artifacts
+.storage/
+*.db
+*.db-shm
+*.db-wal
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
