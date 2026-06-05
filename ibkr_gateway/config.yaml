@@ -1,5 +1,5 @@
-name: "ibkr_gateway"
-version: "0.1.0"
+name: "V7_ibkr_gateway"
+version: "0.1.1"
 slug: "ibkr_gateway"
 description: "IBKR Gateway / IBC service scaffold"
 arch:
