@@ -22,7 +22,7 @@ if [ -f /data/options.json ]; then
         echo "Configured IBKR account: ${MASKED_ACCOUNT_ID}"
     else
         echo "Warning: mask_account_ids_in_logs is false. Not masking."
-        echo "Configured IBKR account: ${IBKR_ACCOUNT_ID}"
+        echo "Configured IBKR account: [redacted]"
     fi
 else
     echo "Warning: /data/options.json not found. This is normal during local testing outside HA."

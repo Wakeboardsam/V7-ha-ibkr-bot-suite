@@ -26,5 +26,5 @@ schema:
   trusted_ips: "str"
   enable_vnc: "bool"
 ports:
-  5900/tcp: 5900
-  7497/tcp: 7497
+  5900/tcp: null
+  7497/tcp: null
