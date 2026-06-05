@@ -1,0 +1,30 @@
+name: "ibkr_gateway"
+version: "0.1.0"
+slug: "ibkr_gateway"
+description: "IBKR Gateway / IBC service scaffold"
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+options:
+  ibkr_username: "placeholder_user"
+  ibkr_password: "placeholder_password"
+  trading_mode: "paper"
+  api_port: 7497
+  vnc_port: 5900
+  readonly_api: false
+  trusted_ips: "127.0.0.1"
+  enable_vnc: false
+schema:
+  ibkr_username: "str"
+  ibkr_password: "password"
+  trading_mode: "list(paper|live)"
+  api_port: "port"
+  vnc_port: "port"
+  readonly_api: "bool"
+  trusted_ips: "str"
+  enable_vnc: "bool"
+ports:
+  5900/tcp: 5900
+  7497/tcp: 7497
