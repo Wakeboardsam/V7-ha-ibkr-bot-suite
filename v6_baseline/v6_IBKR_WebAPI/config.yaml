@@ -1,0 +1,48 @@
+name: "v6_IBKR_WebAPI"
+version: "6.3.1"
+slug: "tqqq_bot_v6"
+description: "Asyncio trading bot for TQQQ grid strategy on IBKR"
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+options:
+  active_broker: "ibkr"
+  paper_trading: true
+  ibkr_host: "127.0.0.1"
+  ibkr_port: 7497
+  ibkr_client_id: 1
+  poll_interval_seconds: 60
+  heartbeat_interval_seconds: 60
+  health_log_interval_seconds: 300
+  anchor_buy_offset: 1.5
+  share_mismatch_mode: "halt"
+  max_spread_pct: 0.5
+  google_sheet_id: "your_google_sheet_id_here"
+  google_credentials_json: ""
+  # enable_vnc is intended ONLY for temporary private-network troubleshooting and IB Gateway GUI access.
+  enable_vnc: false
+  enable_bridge_anchor: true
+  bridge_max_auto_trim_shares: 5
+schema:
+  active_broker: "list(ibkr|schwab)"
+  paper_trading: "bool"
+  ibkr_host: "str"
+  ibkr_port: "int"
+  ibkr_client_id: "int"
+  ibkr_username: "str?"
+  ibkr_password: "password?"
+  poll_interval_seconds: "int"
+  heartbeat_interval_seconds: "int"
+  health_log_interval_seconds: "int"
+  anchor_buy_offset: "float"
+  share_mismatch_mode: "list(halt|warn)"
+  max_spread_pct: "float"
+  google_sheet_id: "str"
+  google_credentials_json: "str"
+  enable_vnc: "bool"
+  enable_bridge_anchor: "bool"
+  bridge_max_auto_trim_shares: "int"
+ports:
+  5900/tcp: 5900

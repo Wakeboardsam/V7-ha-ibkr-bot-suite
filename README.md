@@ -4,10 +4,11 @@
 This repository contains a Home Assistant compatible suite of add-ons/apps for managing multiple IBKR accounts using automated bots. It aims to integrate independent IBKR automated trading bots as Home Assistant add-ons.
 
 ## Current Status
-**Step 02 Scaffold Completed.**
-- The repository is now an installable Home Assistant add-on repository.
+**Step 03 Baseline Import Completed.**
+- The stable source code from `v6.3.1-Single_Account_Stable` has been imported into `v6_baseline/` to serve as a clean staging area.
+- The repository is an installable Home Assistant add-on repository.
 - `V7_ibkr_gateway` and `V7_tqqq_bot` exist as installable scaffolds.
-- **Note:** The add-ons currently do not execute the bot runtime or start the Gateway. Step 03 will port the real v6 `tqqq_bot` runtime. Gateway runtime/login is not active yet.
+- **Note:** The add-ons currently do not execute the bot runtime or start the Gateway. The runtime porting and splitting into the scaffold add-ons will occur in PR 04 and beyond.
 
 **Step 02 validation passed on Home Assistant:**
 - Repository added successfully
@@ -35,9 +36,8 @@ The stable source baseline for this project is the v6 repo:
 ## Initial PR Sequence
 - **PR 01**: repo setup skeleton
 - **PR 02**: Add Home Assistant add-on scaffold for Gateway and TQQQ bot (installable, but no runtime)
-- **PR 03**: Port the real v6 `tqqq_bot` runtime into the scaffold
-- **PR 04**: create/validate `ibkr_gateway` runtime
-- *Later PRs*: copy `tqqq_bot` only after first bot works
+- **PR 03**: Import clean v6 baseline into `v6_baseline/`
+- **PR 04+**: Port/split the runtime into the v7 add-on folders (`ibkr_gateway` and `tqqq_bot`)
 
 ## ⚠️ Security Warning
 This repository is public. **No real credentials or account IDs belong in the repo.** Please strictly use placeholders for any configuration examples or documentation. Refer to `SECURITY.md` for more details.
