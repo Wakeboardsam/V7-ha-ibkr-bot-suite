@@ -1,6 +1,6 @@
 FROM debian:bookworm-slim
 
-LABEL io.hass.version="0.1.3" io.hass.type="app" io.hass.arch="amd64|aarch64"
+LABEL io.hass.version="0.1.3" io.hass.type="app" io.hass.arch="amd64"
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -40,7 +40,7 @@ RUN find /root/Jts/ibgateway -name "*.vmoptions" -exec sh -c 'echo "-Xmx512m" >>
 RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.23.0/IBCLinux-3.23.0.zip \
     && mkdir -p /opt/ibc \
     && unzip IBCLinux-3.23.0.zip -d /opt/ibc \
-    && chmod +x /opt/ibc/scripts/*.sh /opt/ibc/*.sh 2>/dev/null || true \
+    && (chmod +x /opt/ibc/scripts/*.sh /opt/ibc/*.sh 2>/dev/null || true) \
     && rm IBCLinux-3.23.0.zip
 
 RUN sed -i 's/xterm.*-e //' /opt/ibc/gatewaystart.sh

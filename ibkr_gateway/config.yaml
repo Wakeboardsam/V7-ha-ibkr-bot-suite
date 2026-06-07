@@ -4,7 +4,6 @@ slug: "ibkr_gateway"
 description: "IBKR Gateway / IBC service scaffold"
 arch:
   - amd64
-  - aarch64
 startup: application
 boot: auto
 options:

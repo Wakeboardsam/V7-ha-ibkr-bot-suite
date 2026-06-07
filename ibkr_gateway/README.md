@@ -13,16 +13,16 @@ The `ibkr_gateway` add-on acts as a shared IBKR Gateway / API service for the Ho
 | `ibkr_username` | string | `placeholder_user` | The username for the IBKR account. **Use a placeholder unless you are in Home Assistant's secure Config UI.** |
 | `ibkr_password` | string (password) | `placeholder_password` | The password for the IBKR account. **Use a placeholder unless you are in Home Assistant's secure Config UI.** |
 | `trading_mode` | list (paper\|live) | `paper` | The trading mode to start the Gateway in. |
-| `api_port` | port | `7497` | The port the IBKR API service will listen on inside the container and via Home Assistant exposed ports. |
-| `vnc_port` | port | `5900` | The port to expose VNC on, if enabled. |
+| `api_port` | port | `7497` | The port the IBKR API service will listen on inside the container. **Note:** Only port `7497` is statically exposed by default in Home Assistant. Changing this option only changes the internal port unless you customize the HA exposed ports mapping. |
+| `vnc_port` | port | `5900` | The port the VNC service will listen on inside the container. **Note:** Only port `5900` is statically exposed by default in Home Assistant. |
 | `readonly_api` | boolean | `false` | If true, sets `ReadOnlyApi=yes` in the IBC config, preventing any orders from being placed. |
 | `trusted_ips` | string | `127.0.0.1` | Trusted IPs for the API connection. (Currently standard placeholder config). |
 | `enable_vnc` | boolean | `false` | Enables an optional VNC server. |
 
 ## Ports
 
-- `7497` (tcp): Default API port. Exposed to Home Assistant.
-- `5900` (tcp): Default VNC port. Exposed to Home Assistant.
+- `7497` (tcp): Default API port. Exposed to Home Assistant. Any other values configured via `api_port` are considered advanced/internal unless additional static HA port mappings are configured manually.
+- `5900` (tcp): Default VNC port. Exposed to Home Assistant. Any other values configured via `vnc_port` are considered advanced/internal unless additional static HA port mappings are configured manually.
 
 ## Connecting Bot Add-ons
 
@@ -45,12 +45,12 @@ Ensure VNC is disabled during normal headless operation to save resources and mi
 
 **NEVER COMMIT SECRETS TO GIT.**
 Do not hardcode or commit:
-- Real IBKR usernames, passwords, or account IDs (e.g., DU1234567)
+- Real IBKR usernames, passwords, or account IDs (e.g., DU1234567 is strictly a placeholder example and real account IDs must never be committed)
 - OAuth certificates or private keys
 - Token caches
 - Google service-account JSON files
 - Any `.env` files with actual secrets
 
-All documentation and default configurations must use placeholder values (like `placeholder_user`, `DU1234567`, `your_google_sheet_id_here`).
+All documentation and default configurations must use placeholder values (like `placeholder_user`, `DU1234567`, `your_google_sheet_id_here`). Real account IDs must never be committed.
 
 Home Assistant's architecture allows you to securely specify `ibkr_username` and `ibkr_password` through its Config UI, where they are protected and not checked into source control. External secrets, certificates, or caches should be mounted externally and never baked into the container.
