@@ -6,8 +6,18 @@ This repository contains a Home Assistant compatible suite of add-ons/apps for m
 ## Current Status
 **Step 02 Scaffold Completed.**
 - The repository is now an installable Home Assistant add-on repository.
-- `ibkr_gateway` and `tqqq_bot` exist as installable scaffolds.
+- `V7_ibkr_gateway` and `V7_tqqq_bot` exist as installable scaffolds.
 - **Note:** The add-ons currently do not execute the bot runtime or start the Gateway. Step 03 will port the real v6 `tqqq_bot` runtime. Gateway runtime/login is not active yet.
+
+**Step 02 validation passed on Home Assistant:**
+- Repository added successfully
+- V7_ibkr_gateway installed and started successfully
+- V7_tqqq_bot installed and started successfully
+- Scaffold-only behavior confirmed
+- Gateway did not start
+- Bot runtime did not start
+- Account ID masking confirmed as DU1****567
+- No credentials or real account IDs committed
 
 ## Source Baseline
 The stable source baseline for this project is the v6 repo:

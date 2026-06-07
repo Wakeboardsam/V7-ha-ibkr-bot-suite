@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "ibkr_gateway scaffold installed; v6 runtime port pending."
+echo "V7_ibkr_gateway scaffold installed; v6 runtime port pending."
 echo "Parsing Home Assistant options..."
 
 # Options available but safe boot validation does not use the secrets.
