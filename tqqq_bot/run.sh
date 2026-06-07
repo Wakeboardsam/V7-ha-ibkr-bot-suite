@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "tqqq_bot scaffold installed; v6 runtime port pending."
+echo "V7_tqqq_bot scaffold installed; v6 runtime port pending."
 echo "Parsing Home Assistant options..."
 
 if [ -f /data/options.json ]; then
