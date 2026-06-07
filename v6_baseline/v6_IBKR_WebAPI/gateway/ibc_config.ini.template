@@ -1,0 +1,11 @@
+[Common]
+IbLoginId=${IBKR_USERNAME}
+IbPassword=${IBKR_PASSWORD}
+TradingMode=${TRADING_MODE}
+
+[Specific]
+# IBC Configuration for Headless IB Gateway
+# Add other settings here if needed
+AcceptNonSafeCharter=yes
+ExistingSessionDetectedAction=primary
+OverrideTwsMasterClientID=yes

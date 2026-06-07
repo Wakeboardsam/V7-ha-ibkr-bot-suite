@@ -45,3 +45,4 @@ logs/
 .vscode/
 *.swp
 *.swo
+.env.*
