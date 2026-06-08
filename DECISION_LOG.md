@@ -22,3 +22,16 @@ Decision:
 - Preserve this scaffold as the known-good HA install baseline.
 - Step 03 will port the real v6 tqqq_bot runtime into V7_tqqq_bot.
 - Do not duplicate tqqq_bot for other accounts until the first runtime port works.
+
+## 2026-06-08 — Step 03/PR 05 v6 runtime ported into tqqq_bot
+
+Outcome:
+- Ported the v6 TQQQ python bot runtime from `v6_baseline/v6_IBKR_WebAPI` into `tqqq_bot`.
+- Verified account scoping logic correctly limits execution to `ibkr_account_id`.
+- TQQQ Bot connect outward to `ibkr_gateway`.
+- Strategy components (Grid logic, Sheets, Bridge Anchor) remain unchanged.
+
+Decision:
+- `tqqq_bot` is configured to map `gateway_host` and `gateway_port` options directly into the python environment.
+- Tests will live outside of the production Docker environment (`tqqq_bot/tests`).
+- Gateway and IBC processes were completely separated from the bot to ensure true micro-service boundaries.
