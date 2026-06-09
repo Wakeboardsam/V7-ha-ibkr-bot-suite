@@ -28,5 +28,7 @@ else
     echo "Warning: /data/options.json not found. This is normal during local testing outside HA."
 fi
 
+echo "Bot container hostname: $(hostname)"
+echo "Bot container IPs: $(hostname -i)"
 echo "Starting the Python bot runtime..."
 exec python -m main
