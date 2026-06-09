@@ -36,6 +36,8 @@ if [ "$READONLY_API" = "true" ]; then
     READONLY_VAL="yes"
 fi
 
+# Extract the first non-localhost exact IPv4 trusted IP for GUI entry.
+# Do not use CIDR here; the IBKR GUI trusted-IP field expects explicit IPs.
 BOT_TRUSTED_IP="$(echo "$TRUSTED_IPS" \
     | tr ',' '\n' \
     | sed 's/^ *//;s/ *$//' \
@@ -89,29 +91,32 @@ SSL_BUTTON_X="${SSL_BUTTON_X:-455}"
 SSL_BUTTON_Y="${SSL_BUTTON_Y:-452}"
 
 # Main Gateway menu coordinates, relative to the Gateway window.
-# Tuned from your screenshot: Configure -> Settings.
 CONFIGURE_MENU_X="${CONFIGURE_MENU_X:-270}"
 CONFIGURE_MENU_Y="${CONFIGURE_MENU_Y:-14}"
 CONFIGURE_SETTINGS_X="${CONFIGURE_SETTINGS_X:-270}"
 CONFIGURE_SETTINGS_Y="${CONFIGURE_SETTINGS_Y:-42}"
 
 # Configuration window coordinates.
-API_TREE_X="${API_TREE_X:-55}"
-API_TREE_Y="${API_TREE_Y:-165}"
+# From the video, the script was landing on API -> News Configuration.
+# This targets the API -> Settings child row instead.
+API_SETTINGS_TREE_X="${API_SETTINGS_TREE_X:-86}"
+API_SETTINGS_TREE_Y="${API_SETTINGS_TREE_Y:-108}"
 
-RIGHT_PANE_X="${RIGHT_PANE_X:-620}"
+# Right pane focus point.
+RIGHT_PANE_X="${RIGHT_PANE_X:-500}"
 RIGHT_PANE_Y="${RIGHT_PANE_Y:-250}"
 
-LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-82}"
+# Bottom API settings area in the RIGHT pane.
+LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-335}"
 LOCALHOST_ONLY_CHECK_Y="${LOCALHOST_ONLY_CHECK_Y:-425}"
 
-TRUSTED_CREATE_X="${TRUSTED_CREATE_X:-615}"
+TRUSTED_CREATE_X="${TRUSTED_CREATE_X:-620}"
 TRUSTED_CREATE_Y="${TRUSTED_CREATE_Y:-455}"
 
-APPLY_X="${APPLY_X:-150}"
+APPLY_X="${APPLY_X:-430}"
 APPLY_Y="${APPLY_Y:-520}"
 
-OK_X="${OK_X:-55}"
+OK_X="${OK_X:-365}"
 OK_Y="${OK_Y:-520}"
 
 have_xdotool() {
@@ -173,7 +178,9 @@ click_window_rel() {
         return 0
     fi
 
-    xdotool mousemove --window "$win" "$x" "$y" click 1 >/dev/null 2>&1 || true
+    xdotool mousemove --window "$win" "$x" "$y" >/dev/null 2>&1 || true
+    sleep 0.15
+    xdotool click 1 >/dev/null 2>&1 || true
 }
 
 key_to_window() {
@@ -214,7 +221,9 @@ start_ssl_reconnect_watcher() {
 
         for i in $(seq 1 150); do
             key_to_window "" Return
-            xdotool mousemove "$SSL_BUTTON_X" "$SSL_BUTTON_Y" click 1 >/dev/null 2>&1 || true
+            xdotool mousemove "$SSL_BUTTON_X" "$SSL_BUTTON_Y" >/dev/null 2>&1 || true
+            sleep 0.1
+            xdotool click 1 >/dev/null 2>&1 || true
             sleep 2
         done
 
@@ -322,8 +331,8 @@ apply_gateway_api_gui_settings() {
     xdotool windowactivate --sync "$cfg_win" >/dev/null 2>&1 || true
     sleep 1
 
-    echo "GUI fallback: selecting API section."
-    click_window_rel "$cfg_win" "$API_TREE_X" "$API_TREE_Y"
+    echo "GUI fallback: selecting API -> Settings section."
+    click_window_rel "$cfg_win" "$API_SETTINGS_TREE_X" "$API_SETTINGS_TREE_Y"
     sleep 1
 
     echo "GUI fallback: scrolling API settings pane to bottom."
