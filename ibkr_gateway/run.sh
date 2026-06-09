@@ -78,7 +78,7 @@ export DISPLAY=:99
 
 if [ "$ENABLE_VNC" = "true" ]; then
     echo "Starting x11vnc on port $VNC_PORT..."
-    x11vnc -display :99 -forever -nopw -bg -rfbport "$VNC_PORT" -noxdamage -cursor arrow &
+    x11vnc -display :99 -forever -nopw -bg -rfbport "$VNC_PORT" -noxdamage -noscr -nowf -cursor arrow &
 fi
 
 # ---------------------------------------------------------------------------
@@ -108,17 +108,20 @@ API_SCROLLBAR_X="${API_SCROLLBAR_X:-650}"
 API_SCROLLBAR_TOP_Y="${API_SCROLLBAR_TOP_Y:-115}"
 API_SCROLLBAR_BOTTOM_Y="${API_SCROLLBAR_BOTTOM_Y:-425}"
 
-# Bottom API settings area in the RIGHT pane after scrolling to bottom.
-LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-335}"
+# Bottom API settings area after scrolling to bottom.
+# The checkbox itself is near the left edge of the API settings content.
+LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-72}"
 LOCALHOST_ONLY_CHECK_Y="${LOCALHOST_ONLY_CHECK_Y:-425}"
 
-TRUSTED_CREATE_X="${TRUSTED_CREATE_X:-620}"
+# Create/Edit buttons are on the right side of the Trusted IP list.
+TRUSTED_CREATE_X="${TRUSTED_CREATE_X:-585}"
 TRUSTED_CREATE_Y="${TRUSTED_CREATE_Y:-455}"
 
-APPLY_X="${APPLY_X:-430}"
+# Bottom buttons in the Configuration window.
+APPLY_X="${APPLY_X:-145}"
 APPLY_Y="${APPLY_Y:-520}"
 
-OK_X="${OK_X:-365}"
+OK_X="${OK_X:-55}"
 OK_Y="${OK_Y:-520}"
 
 have_xdotool() {
@@ -255,27 +258,23 @@ scroll_api_settings_to_bottom() {
 
     echo "GUI fallback: force-scrolling API settings pane to bottom."
 
-    # Click safely in right pane first.
     click_window_rel "$win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
     sleep 0.3
 
-    # Keyboard attempts.
     key_to_window "$win" End
     sleep 0.3
+
     for i in $(seq 1 8); do
         key_to_window "$win" Page_Down
         sleep 0.08
     done
 
-    # Wheel attempts over right pane.
     scroll_down_window "$win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
     sleep 0.3
 
-    # Drag scrollbar thumb/track downward. This is the important part.
     drag_window_rel "$win" "$API_SCROLLBAR_X" "$API_SCROLLBAR_TOP_Y" "$API_SCROLLBAR_X" "$API_SCROLLBAR_BOTTOM_Y"
     sleep 0.5
 
-    # One more wheel-down after drag.
     scroll_down_window "$win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
     sleep 0.5
 }
@@ -301,7 +300,6 @@ start_ssl_reconnect_watcher() {
                 key_to_window "$ssl_win" Return
                 sleep 0.5
 
-                # Fallback click inside the SSL dialog if Return did not work.
                 xdotool mousemove "$SSL_BUTTON_X" "$SSL_BUTTON_Y" >/dev/null 2>&1 || true
                 sleep 0.1
                 xdotool click 1 >/dev/null 2>&1 || true
@@ -340,7 +338,6 @@ open_gateway_configuration_window() {
     xdotool key Escape >/dev/null 2>&1 || true
     sleep 0.3
 
-    # Preferred path: direct mouse menu open.
     gui_log "GUI fallback: opening Configure -> Settings using mouse menu path."
     click_window_rel "$main_win" "$CONFIGURE_MENU_X" "$CONFIGURE_MENU_Y"
     sleep 0.6
@@ -354,7 +351,6 @@ open_gateway_configuration_window() {
         return 0
     fi
 
-    # Fallback 1: Alt+C then Return.
     gui_log "GUI fallback: mouse menu failed; trying Alt+C then Return."
     xdotool windowactivate --sync "$main_win" >/dev/null 2>&1 || true
     sleep 0.5
@@ -370,7 +366,6 @@ open_gateway_configuration_window() {
         return 0
     fi
 
-    # Fallback 2: Alt+C then S.
     gui_log "GUI fallback: Return failed; trying Alt+C then S."
     xdotool windowactivate --sync "$main_win" >/dev/null 2>&1 || true
     sleep 0.5
