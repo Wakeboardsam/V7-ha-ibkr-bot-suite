@@ -81,7 +81,7 @@ export DISPLAY=:99
 if [ "$ENABLE_VNC" = "true" ]; then
     # VNC is intended ONLY for temporary private-network troubleshooting and IB Gateway GUI access.
     echo "Starting x11vnc on port $VNC_PORT..."
-    x11vnc -display :99 -forever -nopw -bg -rfbport "$VNC_PORT" &
+    x11vnc -display :99 -forever -nopw -bg -rfbport "$VNC_PORT" -noxdamage -cursor arrow &
 fi
 
 # ---------------------------------------------------------------------------
@@ -90,42 +90,75 @@ fi
 # Purpose:
 #   IB Gateway 1019 is not persisting these GUI settings across add-on restarts:
 #     - SSL reconnect prompt
-#     - API → Settings → Allow connections from localhost only
-#     - API → Settings → Trusted IPs
+#     - API -> Settings -> Allow connections from localhost only
+#     - API -> Settings -> Trusted IPs
 #
 # This block uses the virtual display every boot, like the final V6-style
 # workaround: change the GUI during startup rather than relying on persistence.
 #
-# Coordinates are tuned for Xvfb 1024x768. They are intentionally easy to tune.
+# Coordinates are relative to the Gateway/Configuration windows in Xvfb 1024x768.
+# Tune these by setting environment variables if needed.
 # ---------------------------------------------------------------------------
 
 SSL_BUTTON_X="${SSL_BUTTON_X:-455}"
 SSL_BUTTON_Y="${SSL_BUTTON_Y:-452}"
 
-CONFIGURE_MENU_X="${CONFIGURE_MENU_X:-105}"
-CONFIGURE_MENU_Y="${CONFIGURE_MENU_Y:-14}"
-CONFIGURE_SETTINGS_X="${CONFIGURE_SETTINGS_X:-105}"
-CONFIGURE_SETTINGS_Y="${CONFIGURE_SETTINGS_Y:-42}"
-
-API_TREE_X="${API_TREE_X:-70}"
+# Left tree API item in the Configuration window.
+API_TREE_X="${API_TREE_X:-55}"
 API_TREE_Y="${API_TREE_Y:-165}"
 
-RIGHT_PANE_X="${RIGHT_PANE_X:-760}"
+# Click into right pane before using End.
+RIGHT_PANE_X="${RIGHT_PANE_X:-620}"
 RIGHT_PANE_Y="${RIGHT_PANE_Y:-250}"
 
-LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-80}"
-LOCALHOST_ONLY_CHECK_Y="${LOCALHOST_ONLY_CHECK_Y:-535}"
+# Bottom API settings area.
+LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-82}"
+LOCALHOST_ONLY_CHECK_Y="${LOCALHOST_ONLY_CHECK_Y:-425}"
 
-TRUSTED_CREATE_X="${TRUSTED_CREATE_X:-820}"
-TRUSTED_CREATE_Y="${TRUSTED_CREATE_Y:-560}"
+TRUSTED_CREATE_X="${TRUSTED_CREATE_X:-615}"
+TRUSTED_CREATE_Y="${TRUSTED_CREATE_Y:-455}"
 
-APPLY_X="${APPLY_X:-225}"
-APPLY_Y="${APPLY_Y:-585}"
-OK_X="${OK_X:-70}"
-OK_Y="${OK_Y:-585}"
+APPLY_X="${APPLY_X:-150}"
+APPLY_Y="${APPLY_Y:-520}"
+
+OK_X="${OK_X:-55}"
+OK_Y="${OK_Y:-520}"
 
 have_xdotool() {
     command -v xdotool >/dev/null 2>&1
+}
+
+gui_log() {
+    echo "$@" >&2
+}
+
+find_window_by_name() {
+    local pattern="$1"
+    xdotool search --onlyvisible --name "$pattern" 2>/dev/null | tail -n 1 || true
+}
+
+click_window_rel() {
+    local win="$1"
+    local x="$2"
+    local y="$3"
+
+    if [ -z "$win" ]; then
+        gui_log "GUI fallback warning: click_window_rel called with empty window id."
+        return 0
+    fi
+
+    xdotool mousemove --window "$win" "$x" "$y" click 1 >/dev/null 2>&1 || true
+}
+
+key_to_window() {
+    local win="$1"
+    shift
+
+    if [ -n "$win" ]; then
+        xdotool key --window "$win" --clearmodifiers "$@" >/dev/null 2>&1 || true
+    else
+        xdotool key --clearmodifiers "$@" >/dev/null 2>&1 || true
+    fi
 }
 
 start_ssl_reconnect_watcher() {
@@ -139,10 +172,10 @@ start_ssl_reconnect_watcher() {
 
         echo "Starting SSL reconnect GUI watcher..."
 
-        # The SSL prompt button is normally focused, so Enter often works.
+        # The SSL prompt button is normally focused, so Return often works.
         # The coordinate click is a fallback for the visible button.
         for i in $(seq 1 150); do
-            xdotool key Return >/dev/null 2>&1 || true
+            key_to_window "" Return
             xdotool mousemove "$SSL_BUTTON_X" "$SSL_BUTTON_Y" click 1 >/dev/null 2>&1 || true
             sleep 2
         done
@@ -150,18 +183,6 @@ start_ssl_reconnect_watcher() {
         echo "SSL reconnect GUI watcher finished."
     ) &
     SSL_WATCHER_PID=$!
-}
-
-find_window_by_name() {
-    local pattern="$1"
-    xdotool search --onlyvisible --name "$pattern" 2>/dev/null | tail -n 1 || true
-}
-
-click_window_rel() {
-    local win="$1"
-    local x="$2"
-    local y="$3"
-    xdotool mousemove --window "$win" "$x" "$y" click 1 >/dev/null 2>&1 || true
 }
 
 open_gateway_configuration_window() {
@@ -175,43 +196,38 @@ open_gateway_configuration_window() {
     fi
 
     if [ -z "$main_win" ]; then
-        echo "GUI fallback warning: could not find IBKR Gateway main window."
+        gui_log "GUI fallback warning: could not find IBKR Gateway main window."
         return 1
     fi
 
-    echo "GUI fallback: activating Gateway window $main_win"
-    xdotool windowactivate "$main_win" >/dev/null 2>&1 || true
+    gui_log "GUI fallback: activating Gateway window $main_win"
+    xdotool windowactivate --sync "$main_win" >/dev/null 2>&1 || true
     sleep 1
 
-    # First try keyboard menu navigation.
-    xdotool key --window "$main_win" alt+c >/dev/null 2>&1 || true
-    sleep 0.4
-    xdotool key Return >/dev/null 2>&1 || true
+    # Close any open menu/dialog focus leftovers.
+    key_to_window "$main_win" Escape
+    sleep 0.2
+
+    # Screenshot-confirmed path:
+    # Configure menu opens with Alt+C, Settings menu item opens with S.
+    gui_log "GUI fallback: opening Configure -> Settings using Alt+C then S."
+    key_to_window "$main_win" alt+c
+    sleep 0.5
+    key_to_window "" s
     sleep 2
 
     cfg_win="$(find_window_by_name "Configuration")"
-    if [ -n "$cfg_win" ]; then
-        echo "GUI fallback: opened Configuration window $cfg_win by keyboard."
-        echo "$cfg_win"
-        return 0
+
+    if [ -z "$cfg_win" ]; then
+        gui_log "GUI fallback warning: keyboard path did not open Configuration window."
+        return 1
     fi
 
-    # Fallback: click Configure menu, then first menu item.
-    echo "GUI fallback: keyboard open failed; trying menu coordinates."
-    click_window_rel "$main_win" "$CONFIGURE_MENU_X" "$CONFIGURE_MENU_Y"
-    sleep 0.4
-    click_window_rel "$main_win" "$CONFIGURE_SETTINGS_X" "$CONFIGURE_SETTINGS_Y"
-    sleep 2
+    gui_log "GUI fallback: opened Configuration window $cfg_win"
 
-    cfg_win="$(find_window_by_name "Configuration")"
-    if [ -n "$cfg_win" ]; then
-        echo "GUI fallback: opened Configuration window $cfg_win by mouse."
-        echo "$cfg_win"
-        return 0
-    fi
-
-    echo "GUI fallback warning: could not open Configuration window."
-    return 1
+    # IMPORTANT: stdout must contain ONLY the window id.
+    printf '%s\n' "$cfg_win"
+    return 0
 }
 
 apply_gateway_api_gui_settings() {
@@ -226,14 +242,16 @@ apply_gateway_api_gui_settings() {
     echo "GUI fallback: attempting API settings automation..."
 
     local cfg_win=""
-    cfg_win="$(open_gateway_configuration_window)"
+    cfg_win="$(open_gateway_configuration_window | tail -n 1)"
 
-    if [ -z "$cfg_win" ]; then
-        echo "GUI fallback warning: no Configuration window available."
+    if ! echo "$cfg_win" | grep -Eq '^[0-9]+$'; then
+        echo "GUI fallback warning: invalid Configuration window id: [$cfg_win]"
         return 0
     fi
 
-    xdotool windowactivate "$cfg_win" >/dev/null 2>&1 || true
+    echo "GUI fallback: using Configuration window id $cfg_win"
+
+    xdotool windowactivate --sync "$cfg_win" >/dev/null 2>&1 || true
     sleep 1
 
     # Click API in the left tree.
@@ -244,14 +262,14 @@ apply_gateway_api_gui_settings() {
     # Click right pane, then scroll/page to bottom where localhost-only lives.
     click_window_rel "$cfg_win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
     sleep 0.2
-    xdotool key --window "$cfg_win" End >/dev/null 2>&1 || true
+    key_to_window "$cfg_win" End
     sleep 1
 
     # Important: Gateway is currently defaulting this checked every boot.
     # Click once to uncheck.
     echo "GUI fallback: clicking 'Allow connections from localhost only' checkbox once."
     click_window_rel "$cfg_win" "$LOCALHOST_ONLY_CHECK_X" "$LOCALHOST_ONLY_CHECK_Y"
-    sleep 0.5
+    sleep 0.8
 
     if [ -n "$BOT_TRUSTED_IP" ]; then
         echo "GUI fallback: adding trusted IP $BOT_TRUSTED_IP through GUI."
@@ -262,7 +280,7 @@ apply_gateway_api_gui_settings() {
         # The Create dialog should focus its text field.
         xdotool type --delay 25 "$BOT_TRUSTED_IP" >/dev/null 2>&1 || true
         sleep 0.3
-        xdotool key Return >/dev/null 2>&1 || true
+        key_to_window "" Return
         sleep 1
     else
         echo "GUI fallback: skipping Trusted IP GUI add because BOT_TRUSTED_IP is empty."
@@ -272,7 +290,7 @@ apply_gateway_api_gui_settings() {
     click_window_rel "$cfg_win" "$APPLY_X" "$APPLY_Y"
     sleep 1
     click_window_rel "$cfg_win" "$OK_X" "$OK_Y"
-    sleep 2
+    sleep 5
 
     echo "GUI fallback: API settings automation complete."
     return 0
@@ -310,4 +328,4 @@ grep -nE "ApiOnly|TrustedIPs|ReadOnlyApi|OverrideTwsApiPort|Bypass" /root/Jts/jt
 echo "Gateway is ready after GUI fallback! Waiting on IBC process to keep container alive..."
 
 # If the IBC process dies, the add-on should exit instead of silently tailing forever.
-wait $IBC_PID
+wait "$IBC_PID"
