@@ -36,8 +36,6 @@ if [ "$READONLY_API" = "true" ]; then
     READONLY_VAL="yes"
 fi
 
-# Extract the first non-localhost exact IPv4 trusted IP for GUI entry.
-# Do not use CIDR here; the IBKR GUI trusted-IP field expects explicit IPs.
 BOT_TRUSTED_IP="$(echo "$TRUSTED_IPS" \
     | tr ',' '\n' \
     | sed 's/^ *//;s/ *$//' \
@@ -87,6 +85,7 @@ fi
 # GUI fallback automation
 # ---------------------------------------------------------------------------
 
+# SSL dialog.
 SSL_BUTTON_X="${SSL_BUTTON_X:-455}"
 SSL_BUTTON_Y="${SSL_BUTTON_Y:-452}"
 
@@ -97,16 +96,19 @@ CONFIGURE_SETTINGS_X="${CONFIGURE_SETTINGS_X:-270}"
 CONFIGURE_SETTINGS_Y="${CONFIGURE_SETTINGS_Y:-42}"
 
 # Configuration window coordinates.
-# From the video, the script was landing on API -> News Configuration.
-# This targets the API -> Settings child row instead.
+# Target API -> Settings, not API -> News Configuration.
 API_SETTINGS_TREE_X="${API_SETTINGS_TREE_X:-86}"
 API_SETTINGS_TREE_Y="${API_SETTINGS_TREE_Y:-108}"
 
-# Right pane focus point.
+# Right pane focus and scrollbar.
 RIGHT_PANE_X="${RIGHT_PANE_X:-500}"
 RIGHT_PANE_Y="${RIGHT_PANE_Y:-250}"
 
-# Bottom API settings area in the RIGHT pane.
+API_SCROLLBAR_X="${API_SCROLLBAR_X:-650}"
+API_SCROLLBAR_TOP_Y="${API_SCROLLBAR_TOP_Y:-115}"
+API_SCROLLBAR_BOTTOM_Y="${API_SCROLLBAR_BOTTOM_Y:-425}"
+
+# Bottom API settings area in the RIGHT pane after scrolling to bottom.
 LOCALHOST_ONLY_CHECK_X="${LOCALHOST_ONLY_CHECK_X:-335}"
 LOCALHOST_ONLY_CHECK_Y="${LOCALHOST_ONLY_CHECK_Y:-425}"
 
@@ -168,6 +170,24 @@ find_configuration_window() {
     return 1
 }
 
+find_ssl_window() {
+    local win=""
+
+    win="$(find_window_by_name "USE SSL")"
+    if [ -n "$win" ]; then
+        echo "$win"
+        return 0
+    fi
+
+    win="$(find_window_by_name "SSL")"
+    if [ -n "$win" ]; then
+        echo "$win"
+        return 0
+    fi
+
+    return 1
+}
+
 click_window_rel() {
     local win="$1"
     local x="$2"
@@ -181,6 +201,28 @@ click_window_rel() {
     xdotool mousemove --window "$win" "$x" "$y" >/dev/null 2>&1 || true
     sleep 0.15
     xdotool click 1 >/dev/null 2>&1 || true
+}
+
+drag_window_rel() {
+    local win="$1"
+    local x1="$2"
+    local y1="$3"
+    local x2="$4"
+    local y2="$5"
+
+    if [ -z "$win" ]; then
+        gui_log "GUI fallback warning: drag_window_rel called with empty window id."
+        return 0
+    fi
+
+    xdotool mousemove --window "$win" "$x1" "$y1" >/dev/null 2>&1 || true
+    sleep 0.2
+    xdotool mousedown 1 >/dev/null 2>&1 || true
+    sleep 0.2
+    xdotool mousemove --sync --window "$win" "$x2" "$y2" >/dev/null 2>&1 || true
+    sleep 0.2
+    xdotool mouseup 1 >/dev/null 2>&1 || true
+    sleep 0.5
 }
 
 key_to_window() {
@@ -202,10 +244,40 @@ scroll_down_window() {
     xdotool mousemove --window "$win" "$x" "$y" >/dev/null 2>&1 || true
     sleep 0.2
 
-    for i in $(seq 1 18); do
+    for i in $(seq 1 40); do
         xdotool click 5 >/dev/null 2>&1 || true
+        sleep 0.05
+    done
+}
+
+scroll_api_settings_to_bottom() {
+    local win="$1"
+
+    echo "GUI fallback: force-scrolling API settings pane to bottom."
+
+    # Click safely in right pane first.
+    click_window_rel "$win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
+    sleep 0.3
+
+    # Keyboard attempts.
+    key_to_window "$win" End
+    sleep 0.3
+    for i in $(seq 1 8); do
+        key_to_window "$win" Page_Down
         sleep 0.08
     done
+
+    # Wheel attempts over right pane.
+    scroll_down_window "$win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
+    sleep 0.3
+
+    # Drag scrollbar thumb/track downward. This is the important part.
+    drag_window_rel "$win" "$API_SCROLLBAR_X" "$API_SCROLLBAR_TOP_Y" "$API_SCROLLBAR_X" "$API_SCROLLBAR_BOTTOM_Y"
+    sleep 0.5
+
+    # One more wheel-down after drag.
+    scroll_down_window "$win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
+    sleep 0.5
 }
 
 start_ssl_reconnect_watcher() {
@@ -220,10 +292,21 @@ start_ssl_reconnect_watcher() {
         echo "Starting SSL reconnect GUI watcher..."
 
         for i in $(seq 1 150); do
-            key_to_window "" Return
-            xdotool mousemove "$SSL_BUTTON_X" "$SSL_BUTTON_Y" >/dev/null 2>&1 || true
-            sleep 0.1
-            xdotool click 1 >/dev/null 2>&1 || true
+            ssl_win="$(find_ssl_window || true)"
+
+            if [ -n "$ssl_win" ]; then
+                echo "GUI fallback: SSL dialog found; accepting SSL reconnect."
+                xdotool windowactivate --sync "$ssl_win" >/dev/null 2>&1 || true
+                sleep 0.2
+                key_to_window "$ssl_win" Return
+                sleep 0.5
+
+                # Fallback click inside the SSL dialog if Return did not work.
+                xdotool mousemove "$SSL_BUTTON_X" "$SSL_BUTTON_Y" >/dev/null 2>&1 || true
+                sleep 0.1
+                xdotool click 1 >/dev/null 2>&1 || true
+            fi
+
             sleep 2
         done
 
@@ -335,13 +418,7 @@ apply_gateway_api_gui_settings() {
     click_window_rel "$cfg_win" "$API_SETTINGS_TREE_X" "$API_SETTINGS_TREE_Y"
     sleep 1
 
-    echo "GUI fallback: scrolling API settings pane to bottom."
-    click_window_rel "$cfg_win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
-    sleep 0.3
-    key_to_window "$cfg_win" End
-    sleep 0.5
-    scroll_down_window "$cfg_win" "$RIGHT_PANE_X" "$RIGHT_PANE_Y"
-    sleep 1
+    scroll_api_settings_to_bottom "$cfg_win"
 
     echo "GUI fallback: clicking 'Allow connections from localhost only' checkbox once."
     click_window_rel "$cfg_win" "$LOCALHOST_ONLY_CHECK_X" "$LOCALHOST_ONLY_CHECK_Y"
