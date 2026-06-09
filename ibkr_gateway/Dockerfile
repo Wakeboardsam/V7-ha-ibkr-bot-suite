@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     gettext-base \
     x11vnc \
     xvfb \
+    xdotool \
     python3 \
     bash \
     && rm -rf /var/lib/apt/lists/*
