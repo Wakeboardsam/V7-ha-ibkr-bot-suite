@@ -96,9 +96,10 @@ CONFIGURE_SETTINGS_X="${CONFIGURE_SETTINGS_X:-270}"
 CONFIGURE_SETTINGS_Y="${CONFIGURE_SETTINGS_Y:-42}"
 
 # Configuration window coordinates.
-# Target API -> Settings, not API -> News Configuration.
+# Target API -> Settings, not API -> Precautions.
+# SHIFTED Y-COORDINATE UP BY ~20 PIXELS
 API_SETTINGS_TREE_X="${API_SETTINGS_TREE_X:-86}"
-API_SETTINGS_TREE_Y="${API_SETTINGS_TREE_Y:-108}"
+API_SETTINGS_TREE_Y="${API_SETTINGS_TREE_Y:-88}"
 
 # Right pane focus and scrollbar.
 RIGHT_PANE_X="${RIGHT_PANE_X:-500}"
