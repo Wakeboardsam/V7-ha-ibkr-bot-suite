@@ -5,10 +5,9 @@ from pydantic import BaseModel, Field
 class AppConfig(BaseModel):
     active_broker: str = Field(default="ibkr")
     paper_trading: bool = Field(default=True)
+    trading_mode: str = Field(default="paper")
     ibkr_host: str = Field(default="127.0.0.1")
     ibkr_port: int = Field(default=7497)
-    gateway_host: Optional[str] = Field(default=None)
-    gateway_port: Optional[int] = Field(default=None)
     ibkr_client_id: int = Field(default=1)
     ibkr_account_id: Optional[str] = Field(default=None)
     mask_account_ids_in_logs: bool = Field(default=True)

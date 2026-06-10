@@ -127,6 +127,8 @@ readonly_api: false
 
 Password fields should use Home Assistant password schema fields.
 
+`google_credentials_json` is stored as a Home Assistant password-style option. Provide it as a single-line JSON string. Multiline service-account JSON may not round-trip cleanly through the Home Assistant add-on UI because of password schema escaping behavior.
+
 ## Security
 
 Never commit real credentials, real account IDs, OAuth certs, private keys, API tokens, Google service-account files, Google Sheet IDs, `.env` secrets, token caches, or logs/screenshots containing sensitive data.

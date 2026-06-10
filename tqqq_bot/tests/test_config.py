@@ -58,6 +58,7 @@ def test_validate_ibkr_settings_live_correct():
     config = AppConfig(
         google_sheet_id="id",
         google_credentials_json="{}",
+        trading_mode="live",
         paper_trading=False,
         ibkr_port=7496
     )
@@ -81,12 +82,39 @@ def test_validate_ibkr_settings_live_inconsistent():
     config = AppConfig(
         google_sheet_id="id",
         google_credentials_json="{}",
+        trading_mode="live",
         paper_trading=False,
         ibkr_port=7497
     )
     warnings = validate_ibkr_settings(config)
     assert len(warnings) == 1
     assert "paper_trading=False (LIVE) but ibkr_port=7497" in warnings[0]
+
+
+def test_validate_ibkr_settings_live_mode_paper_trading():
+    config = AppConfig(
+        google_sheet_id="id",
+        google_credentials_json="{}",
+        trading_mode="live",
+        paper_trading=True,
+        ibkr_port=7497
+    )
+    warnings = validate_ibkr_settings(config)
+    assert len(warnings) == 1
+    assert "trading_mode='live' but paper_trading=True" in warnings[0]
+
+
+def test_validate_ibkr_settings_paper_mode_live_trading():
+    config = AppConfig(
+        google_sheet_id="id",
+        google_credentials_json="{}",
+        trading_mode="paper",
+        paper_trading=False,
+        ibkr_port=7496
+    )
+    warnings = validate_ibkr_settings(config)
+    assert len(warnings) == 1
+    assert "trading_mode='paper' but paper_trading=False" in warnings[0]
 
 
 def test_validate_ibkr_settings_custom_port():
