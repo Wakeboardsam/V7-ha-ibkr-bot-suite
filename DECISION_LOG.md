@@ -60,3 +60,16 @@ Decision:
 - Keep v7 account-scoping safety changes.
 - Future HA-testable add-on/config/runtime merges must bump the affected add-on version.
 - Docs-only PRs do not need add-on version bumps unless they also change add-on/config/runtime files.
+
+## 2026-06-10 — PR07 Copy Gateway Runtime Pieces into tqqq_bot
+
+Outcome:
+- Created the first bundled v7 Home Assistant add-on by adapting `tqqq_bot` to contain both IBKR Gateway and the Python bot runtime.
+- `tqqq_bot` now handles the startup sequence: Xvfb -> VNC -> IBC -> Gateway -> wait for local API port -> start bot.
+- `gateway_host` default was safely changed to `127.0.0.1` while remaining configurable.
+- `tqqq_bot` add-on version was bumped so HA detects the changes.
+
+Decision:
+- `ibkr_gateway` folder is kept intact as optional/experimental shared-Gateway mode.
+- Trading strategy code/behavior remains identical to v6 logic.
+- We did not introduce `supervisord` since the `run.sh` background/exec pattern provides sufficient, minimal process management.
