@@ -2,55 +2,114 @@
 
 ## Purpose
 
-The `ibkr_gateway` add-on acts as a shared IBKR Gateway / API service for the Home Assistant bot suite. It runs the official IBKR Gateway application via IBC (IB Controller) and exposes the API over the network for other add-ons (like the bot suite) to connect to.
+The `ibkr_gateway` add-on provides a standalone IBKR Gateway / IBC service for the Home Assistant bot suite.
 
-**Important Architecture Note:** This add-on does *not* contain any trading strategy, grid logic, or bot runtime behavior. It only provides the Gateway connection. The target Phase 1 model requires that one bot add-on instance handles one IBKR account and one Google Sheet, while this Gateway add-on serves as the centralized connection point for those bots.
+After the 2026-06-09 architecture pivot, this add-on is retained as optional/experimental shared-Gateway mode for Phase 1. It is no longer the recommended primary Phase 1 production path.
+
+The recommended Phase 1 path is a bundled Gateway + bot add-on per account, starting with `tqqq_bot`.
+
+## Architecture Status
+
+`ibkr_gateway` does not contain trading strategy logic, grid logic, Bridge Anchor behavior, Google Sheets trading logic, or bot runtime behavior. It only provides a Gateway connection.
+
+Shared Gateway mode may be revisited later if Home Assistant container networking and IBKR trusted-IP behavior are solved cleanly.
+
+Do not delete this add-on unless a later decision says it blocks the bundled add-on path.
+
+## Optional / Experimental Shared-Gateway Mode
+
+In shared-Gateway mode, separate bot add-ons connect to this Gateway add-on over the Home Assistant add-on network.
+
+This model is no longer the primary Phase 1 path because it can create practical trusted-IP/container-networking friction.
+
+For Phase 1, prefer:
+
+```text
+one bundled add-on instance = one IBKR Gateway session = one trading bot = one IBKR account = one Google Sheet
+```
 
 ## Configuration Options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `ibkr_username` | string | `placeholder_user` | The username for the IBKR account. **Use a placeholder unless you are in Home Assistant's secure Config UI.** |
-| `ibkr_password` | string (password) | `placeholder_password` | The password for the IBKR account. **Use a placeholder unless you are in Home Assistant's secure Config UI.** |
-| `trading_mode` | list (paper\|live) | `paper` | The trading mode to start the Gateway in. |
-| `api_port` | port | `7497` | The port the IBKR API service will listen on inside the container. **Note:** Only port `7497` is statically exposed by default in Home Assistant. Changing this option only changes the internal port unless you customize the HA exposed ports mapping. |
-| `vnc_port` | port | `5900` | The port the VNC service will listen on inside the container. **Note:** Only port `5900` is statically exposed by default in Home Assistant. |
-| `readonly_api` | boolean | `false` | If true, sets `ReadOnlyApi=yes` in the IBC config, preventing any orders from being placed. |
-| `trusted_ips` | string | `127.0.0.1` | Trusted IPs for the API connection. (Currently standard placeholder config). |
-| `enable_vnc` | boolean | `false` | Enables an optional VNC server. |
+| `ibkr_username` | string | `placeholder_user` | The username for the IBKR account. Use a placeholder unless configuring through Home Assistant's secure Config UI. |
+| `ibkr_password` | string (password) | `placeholder_password` | The password for the IBKR account. Use a placeholder unless configuring through Home Assistant's secure Config UI. |
+| `trading_mode` | list (`paper`/`live`) | `paper` | The trading mode to start the Gateway in. |
+| `api_port` | port | `7497` | The port the IBKR API service listens on inside the container. |
+| `vnc_port` | port | `5900` | The port the VNC service listens on inside the container. |
+| `readonly_api` | boolean | `false` | If true, sets `ReadOnlyApi=yes` in the IBC config, preventing orders from being placed through this Gateway. |
+| `trusted_ips` | string | `127.0.0.1` | Trusted IPs for the API connection. Use placeholder/default-safe values in source-controlled examples. |
+| `enable_vnc` | boolean | `false` | Enables optional VNC troubleshooting access. |
 
 ## Ports
 
-- `7497` (tcp): Default API port. Exposed to Home Assistant. Any other values configured via `api_port` are considered advanced/internal unless additional static HA port mappings are configured manually.
-- `5900` (tcp): Default VNC port. Exposed to Home Assistant. Any other values configured via `vnc_port` are considered advanced/internal unless additional static HA port mappings are configured manually.
+- `7497` (tcp): Default API port.
+- `5900` (tcp): Default VNC port.
+
+Changing exposed ports can affect Home Assistant add-on behavior and should be handled in a later runtime/config PR with an add-on version bump.
 
 ## Connecting Bot Add-ons
 
-Bot add-ons (like `tqqq_bot`) connect to this shared Gateway add-on using the Home Assistant service hostname or network alias.
+Shared-Gateway mode is optional/experimental for Phase 1.
 
-In your bot add-on configuration, you should specify the gateway host and port. For example:
-- `gateway_host`: `"ibkr_gateway"` (or the appropriate slug based on your network settings)
-- `gateway_port`: `7497`
+If this mode is used, bot add-ons connect to this Gateway using the Home Assistant service hostname or network alias, for example:
 
-Do not assume `localhost` unless the bot and Gateway are deliberately running in the same container.
+```yaml
+gateway_host: "ibkr_gateway"
+gateway_port: 7497
+```
+
+Do not assume `localhost` in shared-Gateway mode unless the bot and Gateway are deliberately running in the same container.
+
+For the primary bundled Phase 1 path, the bot should connect to its local bundled Gateway instead:
+
+```yaml
+ibkr_host: "127.0.0.1"
+ibkr_port: 7497
+```
 
 ## VNC Usage
 
-If `enable_vnc` is `true`, an X11 VNC server will start on port `5900`.
-**VNC is intended ONLY for temporary private-network troubleshooting and IB Gateway GUI access.** For example, you may need VNC access to confirm manual 2FA prompts or to visually inspect the Gateway status if it fails to automatically authenticate via IBC.
+If `enable_vnc` is `true`, an X11 VNC server may start on port `5900`.
 
-Ensure VNC is disabled during normal headless operation to save resources and minimize attack surface.
+VNC is intended only for temporary private-network troubleshooting and IB Gateway GUI access, such as checking manual 2FA prompts or Gateway status.
+
+Keep VNC disabled during normal headless operation to reduce resource usage and minimize attack surface:
+
+```yaml
+enable_vnc: false
+vnc_port: 5900
+```
 
 ## Secret Handling & Security
 
-**NEVER COMMIT SECRETS TO GIT.**
+**Never commit secrets to git.**
+
 Do not hardcode or commit:
-- Real IBKR usernames, passwords, or account IDs (e.g., DU1234567 is strictly a placeholder example and real account IDs must never be committed)
+
+- real IBKR usernames or passwords
+- real IBKR account IDs
 - OAuth certificates or private keys
-- Token caches
+- API tokens
+- token caches
 - Google service-account JSON files
-- Any `.env` files with actual secrets
+- real Google Sheet IDs
+- `.env` files or `.env` secret values
+- logs or screenshots showing secrets or full account IDs
 
-All documentation and default configurations must use placeholder values (like `placeholder_user`, `DU1234567`, `your_google_sheet_id_here`). Real account IDs must never be committed.
+All documentation and default configurations must use placeholder values, such as:
 
-Home Assistant's architecture allows you to securely specify `ibkr_username` and `ibkr_password` through its Config UI, where they are protected and not checked into source control. External secrets, certificates, or caches should be mounted externally and never baked into the container.
+```yaml
+ibkr_username: "placeholder_user"
+ibkr_password: "placeholder_password"
+ibkr_account_id: "DU1234567"
+google_sheet_id: "your_google_sheet_id_here"
+```
+
+Account IDs must be masked in logs, UI output, docs, and screenshots. Example masked format:
+
+```text
+DU1****567
+```
+
+Home Assistant's Config UI should be used for real runtime secrets. External secrets, certificates, or caches should be mounted externally and never baked into the container image.
