@@ -1,54 +1,66 @@
-name: "V7_tqqq_bot"
-version: "0.1.4"
-slug: "tqqq_bot"
-description: "TQQQ automated trading bot for a single IBKR account"
+name: V7_tqqq_bot
+version: 0.1.5
+slug: tqqq_bot
+description: TQQQ automated trading bot for a single IBKR account
 arch:
-  - amd64
+- amd64
 startup: application
 boot: auto
 options:
-  active_broker: "ibkr"
+  active_broker: ibkr
   paper_trading: true
-  gateway_host: "ibkr_gateway"
+  gateway_host: 127.0.0.1
   gateway_port: 7497
   ibkr_client_id: 1
-  ibkr_account_id: "DU1234567"
-  google_sheet_id: "your_google_sheet_id_here"
-  google_credentials_json: ""
+  ibkr_account_id: DU1234567
+  google_sheet_id: your_google_sheet_id_here
+  google_credentials_json: ''
   poll_interval_seconds: 60
   heartbeat_interval_seconds: 60
   health_log_interval_seconds: 300
   anchor_buy_offset: 1.5
-  share_mismatch_mode: "halt"
+  share_mismatch_mode: halt
   max_spread_pct: 0.5
   enable_bridge_anchor: true
   bridge_max_auto_trim_shares: 5
   maintenance_enabled: true
-  maintenance_start_local: "23:44"
-  maintenance_end_local: "00:00"
+  maintenance_start_local: '23:44'
+  maintenance_end_local: '00:00'
   maintenance_cancel_open_orders: true
   mask_account_ids_in_logs: true
+  ibkr_username: ''
+  ibkr_password: ''
+  trading_mode: paper
+  readonly_api: false
+  enable_vnc: false
+  vnc_port: 5900
 schema:
-  active_broker: "list(ibkr)"
-  paper_trading: "bool"
-  gateway_host: "str"
-  gateway_port: "port"
-  ibkr_client_id: "int"
-  ibkr_account_id: "str"
-  google_sheet_id: "str"
-  google_credentials_json: "str"
-  poll_interval_seconds: "int"
-  heartbeat_interval_seconds: "int"
-  health_log_interval_seconds: "int"
-  anchor_buy_offset: "float"
-  share_mismatch_mode: "list(halt|warn)"
-  max_spread_pct: "float"
-  enable_bridge_anchor: "bool"
-  bridge_max_auto_trim_shares: "int"
-  maintenance_enabled: "bool"
-  maintenance_start_local: "str"
-  maintenance_end_local: "str"
-  maintenance_cancel_open_orders: "bool"
-  mask_account_ids_in_logs: "bool"
+  active_broker: list(ibkr)
+  paper_trading: bool
+  gateway_host: str
+  gateway_port: port
+  ibkr_client_id: int
+  ibkr_account_id: str
+  google_sheet_id: str
+  google_credentials_json: str
+  poll_interval_seconds: int
+  heartbeat_interval_seconds: int
+  health_log_interval_seconds: int
+  anchor_buy_offset: float
+  share_mismatch_mode: list(halt|warn)
+  max_spread_pct: float
+  enable_bridge_anchor: bool
+  bridge_max_auto_trim_shares: int
+  maintenance_enabled: bool
+  maintenance_start_local: str
+  maintenance_end_local: str
+  maintenance_cancel_open_orders: bool
+  mask_account_ids_in_logs: bool
+  ibkr_username: str
+  ibkr_password: password
+  trading_mode: list(paper|live)
+  readonly_api: bool
+  enable_vnc: bool
+  vnc_port: port
 ports:
-  "5900/tcp": null
+  5900/tcp: null
