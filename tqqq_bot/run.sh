@@ -69,6 +69,8 @@ BypassRedirectOrderWarning=yes
 AllowBlindTrading=yes
 IBC_EOF
 
+chmod 600 /root/ibc/config.ini
+
 echo "Injecting API bypass settings directly into jts.ini..."
 mkdir -p /root/Jts
 touch /root/Jts/jts.ini

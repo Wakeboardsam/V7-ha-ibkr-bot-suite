@@ -132,3 +132,10 @@ Password fields should use Home Assistant password schema fields.
 Never commit real credentials, real account IDs, OAuth certs, private keys, API tokens, Google service-account files, Google Sheet IDs, `.env` secrets, token caches, or logs/screenshots containing sensitive data.
 
 `DU1234567`, `placeholder_user`, `placeholder_password`, and `your_google_sheet_id_here` are placeholders only.
+
+## VNC Access
+VNC is available for internal troubleshooting only. To connect:
+1. Set `enable_vnc: true` in your add-on configuration.
+2. The VNC server runs without a password, which is insecure for public exposure.
+3. The port `5900` is mapped internally but hidden by default (`null`). If you need to access it externally from your Home Assistant host, explicitly map it in the add-on's Network configuration.
+**Warning: Expose this port to untrusted networks at your own risk. It has NO password.**

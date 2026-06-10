@@ -1,16 +1,15 @@
 name: "V7_tqqq_bot"
-version: "0.1.5"
+version: "0.1.4"
 slug: "tqqq_bot"
 description: "TQQQ automated trading bot for a single IBKR account"
 arch:
   - amd64
-  - aarch64
 startup: application
 boot: auto
 options:
   active_broker: "ibkr"
   paper_trading: true
-  gateway_host: "127.0.0.1"
+  gateway_host: "ibkr_gateway"
   gateway_port: 7497
   ibkr_client_id: 1
   ibkr_account_id: "DU1234567"
@@ -29,12 +28,6 @@ options:
   maintenance_end_local: "00:00"
   maintenance_cancel_open_orders: true
   mask_account_ids_in_logs: true
-  ibkr_username: ""
-  ibkr_password: ""
-  trading_mode: "paper"
-  readonly_api: false
-  enable_vnc: false
-  vnc_port: 5900
 schema:
   active_broker: "list(ibkr)"
   paper_trading: "bool"
@@ -57,9 +50,5 @@ schema:
   maintenance_end_local: "str"
   maintenance_cancel_open_orders: "bool"
   mask_account_ids_in_logs: "bool"
-  ibkr_username: "str"
-  ibkr_password: "password"
-  trading_mode: "list(paper|live)"
-  readonly_api: "bool"
-  enable_vnc: "bool"
-  vnc_port: "port"
+ports:
+  "5900/tcp": null
