@@ -1,6 +1,6 @@
 FROM python:3.11-slim-bookworm
 
-LABEL io.hass.version="0.1.5" io.hass.type="app" io.hass.arch="amd64"
+LABEL io.hass.version="0.1.7" io.hass.type="app" io.hass.arch="amd64"
 
 # Install system dependencies (merged from ibkr_gateway and bot)
 RUN apt-get update && apt-get install -y \
@@ -55,6 +55,7 @@ COPY app/ /app/
 # Copy scripts
 COPY run.sh /app/run.sh
 COPY wait_for_gateway.py /app/wait_for_gateway.py
+COPY gateway/ /app/gateway/
 
 RUN chmod +x /app/run.sh
 
