@@ -41,27 +41,17 @@ run.sh
 
 ## Gateway API Settings Persistence
 
-PR09 adds automatic Gateway API settings persistence/regeneration for the bundled `tqqq_bot` add-on.
+V7 now intentionally runs Gateway with V6-style active settings under `/root/Jts`.
 
-On every startup, `run.sh` prepares persistent Gateway/IBC runtime settings under:
+`/data/ibgateway/persist/...` is used to restore and save selected settings across HA restarts.
 
-```text
-/data/ibgateway/
-```
+This is intended to preserve first-run Gateway choices such as the SSL reconnect prompt.
 
-The generated IBC config is written to:
+VNC may be needed once to click the SSL prompt.
 
-```text
-/data/ibgateway/config.ini
-```
+After one successful click and restart, the prompt should not recur.
 
-Gateway/JTS settings are stored under:
-
-```text
-/data/ibgateway/Jts
-```
-
-This means manual Gateway GUI API/IP changes should not be needed after each add-on restart.
+VNC should be disabled and the port mapping removed after troubleshooting.
 
 The bundled bot is intended to connect locally to Gateway:
 
