@@ -428,15 +428,18 @@ class IBKRAdapter(BrokerBase):
             )
         else:
             err_code = None
-            err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
+            raw_err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
             if order.orderId in self._last_error:
-                err_code, err_msg = self._last_error[order.orderId]
+                err_code, raw_err_msg = self._last_error[order.orderId]
+
+            known_accts = [self.account_id] if self.account_id else []
+            safe_err_msg = mask_account_ids_in_text(raw_err_msg, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs) if raw_err_msg else None
 
             return OrderResult(
                 order_id=final_order_id,
                 status='error',
                 error_code=err_code,
-                error_msg=err_msg,
+                error_msg=safe_err_msg,
                 reason=status
             )
 
@@ -500,15 +503,18 @@ class IBKRAdapter(BrokerBase):
             )
         else:
             err_code = None
-            err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
+            raw_err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
             if order.orderId in self._last_error:
-                err_code, err_msg = self._last_error[order.orderId]
+                err_code, raw_err_msg = self._last_error[order.orderId]
+
+            known_accts = [self.account_id] if self.account_id else []
+            safe_err_msg = mask_account_ids_in_text(raw_err_msg, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs) if raw_err_msg else None
 
             return OrderResult(
                 order_id=final_order_id,
                 status='error',
                 error_code=err_code,
-                error_msg=err_msg,
+                error_msg=safe_err_msg,
                 reason=status
             )
 
