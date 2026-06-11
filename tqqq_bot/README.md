@@ -110,6 +110,8 @@ Example masked account format:
 DU1****567
 ```
 
+**Note:** By default, `mask_account_ids_in_logs` is `true`. Do not share logs or debug output if this has been disabled.
+
 ## Target Placeholder Configuration
 
 Use placeholder values only in source-controlled examples.

@@ -38,6 +38,10 @@ def validate_ibkr_settings(config: AppConfig) -> list[str]:
     return warnings
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def load_config(path: str = "/data/options.json") -> AppConfig:
     try:
         with open(path, "r") as f:
@@ -51,6 +55,8 @@ def load_config(path: str = "/data/options.json") -> AppConfig:
         print(f"Error: Invalid JSON format in {path}", file=sys.stderr)
         sys.exit(1)
     except ValidationError as e:
+        # Pydantic validation errors might contain values we want to mask in the future,
+        # but config loading happens before the global filter is active. We print manually.
         print("Error: Missing or invalid required configuration fields:", file=sys.stderr)
         print(e, file=sys.stderr)
         sys.exit(1)

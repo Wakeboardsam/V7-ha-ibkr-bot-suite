@@ -9,6 +9,7 @@ from ib_insync import IB, Stock, Order, Trade, LimitOrder
 from brokers.base import BrokerBase, OrderResult, PositionSnapshot
 from brokers.ibkr.connection import async_connect
 from brokers.ibkr.order_builder import build_bracket_order
+from utils.log_sanitizer import mask_account_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,7 @@ class IBKRAdapter(BrokerBase):
         self.ib.errorEvent += self._on_error
 
     def _mask_account(self, acct: str) -> str:
-        if not acct:
-            return ""
-        if self.mask_account_ids_in_logs:
-            if len(acct) > 6:
-                return f"{acct[:3]}****{acct[-3:]}"
-            return "****"
-        return acct
+        return mask_account_id(acct, enabled=self.mask_account_ids_in_logs)
 
     def _on_error(self, reqId, errorCode, errorString, contract):
         NONFATAL_WARNING_CODES = {2107, 2109, 10349}
@@ -524,9 +519,12 @@ class IBKRAdapter(BrokerBase):
 
     def _check_account_safety_for_orders(self):
         accounts = list(set([v.account for v in self.ib.accountValues() if getattr(v, "account", None)]))
-        if len(accounts) > 1 and not self.account_id:
-            logger.critical("Multiple accounts visible but no account_id is configured. Aborting order placement to prevent unsafe trading.")
-            raise ValueError("Multiple accounts visible but no account_id configured.")
+        if len(accounts) > 1:
+            masked_accounts = [self._mask_account(a) for a in accounts]
+            logger.info(f"Visible accounts: {', '.join(masked_accounts)}")
+            if not self.account_id:
+                logger.critical("Multiple accounts visible but no account_id is configured. Aborting order placement to prevent unsafe trading.")
+                raise ValueError("Multiple accounts visible but no account_id configured.")
 
     async def place_bracket_order(
         self, ticker: str, action: str,
