@@ -4,10 +4,18 @@ set -euo pipefail
 echo "Starting V7_tqqq_bot runtime..."
 echo "[PR09] Parsing Home Assistant options..."
 
-JTS_SETTINGS_DIR="/data/ibgateway/Jts"
-IBC_CONFIG_DIR="/data/ibgateway"
-IBC_CONFIG_FILE="${IBC_CONFIG_DIR}/config.ini"
+ACTIVE_JTS_DIR="/root/Jts"
+ACTIVE_IBC_DIR="/root/ibc"
+IBC_CONFIG_FILE="${ACTIVE_IBC_DIR}/config.ini"
 IBC_TEMPLATE_FILE="/app/gateway/ibc_config.ini.template"
+
+PERSIST_JTS_DIR="/data/ibgateway/persist/root_Jts"
+PERSIST_JAVA_DIR="/data/ibgateway/persist/root_java"
+
+# We must export this so envsubst can use it in ibc_config.ini.template
+export JTS_SETTINGS_DIR="${ACTIVE_JTS_DIR}"
+
+echo "[PR09.1] Matching v6 Gateway settings behavior: active settings path /root/Jts"
 
 if [ -f /data/options.json ]; then
     # Bot / Account Config
@@ -63,6 +71,11 @@ export IBKR_PASSWORD
 export TRADING_MODE
 export JTS_SETTINGS_DIR
 
+# Key V6 / JTS environment variables
+export TWS_PATH="${ACTIVE_JTS_DIR}"
+export TWS_SETTINGS_PATH="${ACTIVE_JTS_DIR}"
+export IBC_INI="${IBC_CONFIG_FILE}"
+
 READONLY_VAL="no"
 if [ "$READONLY_API" = "true" ]; then
     READONLY_VAL="yes"
@@ -77,22 +90,65 @@ echo "[PR09] Gateway API access intended for localhost/127.0.0.1 only"
 echo "Bot configured to connect to Gateway at: ${GATEWAY_HOST}:${GATEWAY_PORT}"
 
 echo "[PR09] Creating persistent Gateway settings directories..."
-mkdir -p "${JTS_SETTINGS_DIR}"
-mkdir -p "${IBC_CONFIG_DIR}"
+mkdir -p "${PERSIST_JTS_DIR}"
+mkdir -p "${PERSIST_JAVA_DIR}"
+chmod 700 /data/ibgateway/persist "${PERSIST_JTS_DIR}" "${PERSIST_JAVA_DIR}"
+
+mkdir -p "${ACTIVE_JTS_DIR}"
+mkdir -p "${ACTIVE_IBC_DIR}"
+mkdir -p /root/.java
+
+echo "[PR09.1] Restoring persisted Gateway settings from ${PERSIST_JTS_DIR}"
+rsync -a "${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/" || true
+echo "[PR09.1] Restoring persisted Java preferences from ${PERSIST_JAVA_DIR}"
+rsync -a "${PERSIST_JAVA_DIR}/" /root/.java/ || true
 
 if [ ! -f "$IBC_TEMPLATE_FILE" ]; then
     echo "[PR09] ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
     exit 1
 fi
 
-echo "[PR09] Rendering IBC config to persistent add-on data directory..."
+echo "[PR09] Rendering active IBC config..."
 envsubst < "$IBC_TEMPLATE_FILE" > "$IBC_CONFIG_FILE"
 chmod 600 "$IBC_CONFIG_FILE"
+echo "[PR09.1] Active IBC config written to ${IBC_CONFIG_FILE}"
 
-echo "[PR09] Patching persistent jts.ini with verified runtime settings..."
-touch "${JTS_SETTINGS_DIR}/jts.ini"
-grep -q "^BypassOrderPrecautions=" "${JTS_SETTINGS_DIR}/jts.ini" || echo "BypassOrderPrecautions=true" >> "${JTS_SETTINGS_DIR}/jts.ini"
-grep -q "^BypassRedirectOrderWarning=" "${JTS_SETTINGS_DIR}/jts.ini" || echo "BypassRedirectOrderWarning=true" >> "${JTS_SETTINGS_DIR}/jts.ini"
+echo "[PR09] Patching active runtime jts.ini..."
+touch "${ACTIVE_JTS_DIR}/jts.ini"
+grep -q "^BypassOrderPrecautions=" "${ACTIVE_JTS_DIR}/jts.ini" || echo "BypassOrderPrecautions=true" >> "${ACTIVE_JTS_DIR}/jts.ini"
+grep -q "^BypassRedirectOrderWarning=" "${ACTIVE_JTS_DIR}/jts.ini" || echo "BypassRedirectOrderWarning=true" >> "${ACTIVE_JTS_DIR}/jts.ini"
+
+sync_gateway_settings() {
+    # Conservative exclusions so we do not copy the installed Gateway application
+    rsync -a \
+      --exclude='ibgateway/' \
+      --exclude='1019' \
+      --exclude='*.jar' \
+      --exclude='*.log' \
+      --exclude='*.zip' \
+      --exclude='*.sh' \
+      --exclude='logs/' \
+      --exclude='cache/' \
+      --exclude='tmp/' \
+      "${ACTIVE_JTS_DIR}/" "${PERSIST_JTS_DIR}/" || true
+
+    rsync -a \
+      --exclude='*.log' \
+      --exclude='cache/' \
+      --exclude='tmp/' \
+      /root/.java/ "${PERSIST_JAVA_DIR}/" || true
+}
+
+start_persistence_loop() {
+    echo "[PR09.1] Persistent settings sync loop started"
+    while true; do
+        sleep 60
+        sync_gateway_settings
+    done
+}
+
+# Start the background sync loop
+start_persistence_loop &
 
 echo "Starting Xvfb..."
 Xvfb :99 -ac -screen 0 1024x768x16 &
@@ -107,14 +163,12 @@ fi
 
 echo "Starting IB Gateway via IBC..."
 export TWS_MAJOR_VRSN=1019
-export TWS_PATH=/root/Jts
 export IBC_PATH=/opt/ibc
-export IBC_INI="${IBC_CONFIG_FILE}"
 
-# Keep a copy at IBC's historical default path in case this IBC build ignores IBC_INI.
-mkdir -p /root/ibc
-cp "${IBC_CONFIG_FILE}" /root/ibc/config.ini
-chmod 600 /root/ibc/config.ini
+# Copy the generated config to the persistent /data dir as a diagnostic backup
+mkdir -p /data/ibgateway
+cp "${IBC_CONFIG_FILE}" /data/ibgateway/config.ini
+chmod 600 /data/ibgateway/config.ini
 
 /opt/ibc/gatewaystart.sh -inline < /dev/null &
 IBC_PID=$!
@@ -123,5 +177,7 @@ echo "Waiting for Gateway to initialize on port ${GATEWAY_PORT}..."
 python3 /app/wait_for_gateway.py --port "$GATEWAY_PORT" --timeout 300
 
 echo "Gateway is ready! Starting the Python bot runtime..."
+echo "[PR09.1] Gateway became ready; syncing active Gateway settings to persistent storage"
+sync_gateway_settings
 
 exec python -m main

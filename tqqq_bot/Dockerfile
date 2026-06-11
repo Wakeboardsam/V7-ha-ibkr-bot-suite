@@ -1,6 +1,6 @@
 FROM python:3.11-slim-bookworm
 
-LABEL io.hass.version="0.1.7" io.hass.type="app" io.hass.arch="amd64"
+LABEL io.hass.version="0.1.8" io.hass.type="app" io.hass.arch="amd64"
 
 # Install system dependencies (merged from ibkr_gateway and bot)
 RUN apt-get update && apt-get install -y \
@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     xvfb \
     xdotool \
     bash \
+    rsync \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
