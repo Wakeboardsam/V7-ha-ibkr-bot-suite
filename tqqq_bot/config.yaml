@@ -1,5 +1,5 @@
 name: V7_tqqq_bot
-version: 0.1.5
+version: 0.1.6
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
@@ -9,8 +9,8 @@ boot: auto
 options:
   active_broker: ibkr
   paper_trading: true
-  gateway_host: 127.0.0.1
-  gateway_port: 7497
+  ibkr_host: 127.0.0.1
+  ibkr_port: 7497
   ibkr_client_id: 1
   ibkr_account_id: DU1234567
   google_sheet_id: your_google_sheet_id_here
@@ -28,8 +28,8 @@ options:
   maintenance_end_local: '00:00'
   maintenance_cancel_open_orders: true
   mask_account_ids_in_logs: true
-  ibkr_username: ''
-  ibkr_password: ''
+  ibkr_username: placeholder_user
+  ibkr_password: placeholder_password
   trading_mode: paper
   readonly_api: false
   enable_vnc: false
@@ -37,12 +37,12 @@ options:
 schema:
   active_broker: list(ibkr)
   paper_trading: bool
-  gateway_host: str
-  gateway_port: port
+  ibkr_host: str
+  ibkr_port: port
   ibkr_client_id: int
   ibkr_account_id: str
   google_sheet_id: str
-  google_credentials_json: str
+  google_credentials_json: password
   poll_interval_seconds: int
   heartbeat_interval_seconds: int
   health_log_interval_seconds: int

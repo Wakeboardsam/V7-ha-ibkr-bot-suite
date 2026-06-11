@@ -11,6 +11,18 @@ def validate_ibkr_settings(config: AppConfig) -> list[str]:
     """
     warnings = []
     if config.active_broker == "ibkr":
+        if config.trading_mode == "paper" and config.paper_trading is False:
+            warnings.append(
+                "LOUD WARNING: trading_mode='paper' but paper_trading=False. "
+                "Gateway is configured for paper while bot runtime is configured as live."
+            )
+
+        if config.trading_mode == "live" and config.paper_trading is True:
+            warnings.append(
+                "LOUD WARNING: trading_mode='live' but paper_trading=True. "
+                "Gateway is configured for live while bot runtime is configured as paper."
+            )
+
         if config.paper_trading:
             if config.ibkr_port != 7497:
                 warnings.append(
@@ -30,14 +42,6 @@ def load_config(path: str = "/data/options.json") -> AppConfig:
     try:
         with open(path, "r") as f:
             data = json.load(f)
-
-        # Map gateway_host to ibkr_host
-        if "gateway_host" in data and data["gateway_host"] is not None:
-            data["ibkr_host"] = data["gateway_host"]
-
-        # Map gateway_port to ibkr_port
-        if "gateway_port" in data and data["gateway_port"] is not None:
-            data["ibkr_port"] = data["gateway_port"]
 
         return AppConfig(**data)
     except FileNotFoundError:

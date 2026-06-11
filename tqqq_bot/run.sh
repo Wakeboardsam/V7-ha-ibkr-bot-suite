@@ -8,8 +8,8 @@ if [ -f /data/options.json ]; then
     # Bot / Account Config
     IBKR_ACCOUNT_ID=$(jq -r '.ibkr_account_id // "DU1234567"' /data/options.json)
     MASK_LOGS=$(jq -r '.mask_account_ids_in_logs // true' /data/options.json)
-    GATEWAY_HOST=$(jq -r '.gateway_host // "127.0.0.1"' /data/options.json)
-    GATEWAY_PORT=$(jq -r '.gateway_port // 7497' /data/options.json)
+    GATEWAY_HOST=$(jq -r '.ibkr_host // "127.0.0.1"' /data/options.json)
+    GATEWAY_PORT=$(jq -r '.ibkr_port // 7497' /data/options.json)
 
     # Gateway Config
     IBKR_USERNAME=$(jq -r '.ibkr_username // empty' /data/options.json)
