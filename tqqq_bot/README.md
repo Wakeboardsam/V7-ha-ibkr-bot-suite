@@ -39,14 +39,48 @@ run.sh
   -> start Python trading bot
 ```
 
-In the target bundled architecture, the bot should connect to the Gateway inside the same add-on:
+## Gateway API Settings Persistence
+
+PR09 adds automatic Gateway API settings persistence/regeneration for the bundled `tqqq_bot` add-on.
+
+On every startup, `run.sh` prepares persistent Gateway/IBC runtime settings under:
+
+```text
+/data/ibgateway/
+```
+
+The generated IBC config is written to:
+
+```text
+/data/ibgateway/config.ini
+```
+
+Gateway/JTS settings are stored under:
+
+```text
+/data/ibgateway/Jts
+```
+
+This means manual Gateway GUI API/IP changes should not be needed after each add-on restart.
+
+The bundled bot is intended to connect locally to Gateway:
 
 ```yaml
 ibkr_host: "127.0.0.1"
 ibkr_port: 7497
 ```
 
-The current implementation may be staged across PRs. Do not assume the bundled runtime is fully implemented until a code PR explicitly implements it.
+The default paper API port is 7497.
+
+`readonly_api` controls whether IBC starts the Gateway API in read-only mode.
+
+VNC remains disabled by default:
+
+```yaml
+enable_vnc: false
+```
+
+Only enable VNC for troubleshooting. Do not expose it to untrusted networks.
 
 ## Shared Gateway Status
 

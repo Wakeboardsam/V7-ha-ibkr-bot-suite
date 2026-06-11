@@ -1,0 +1,11 @@
+IbLoginId=${IBKR_USERNAME}
+IbPassword=${IBKR_PASSWORD}
+TradingMode=${TRADING_MODE}
+IbDir=${JTS_SETTINGS_DIR}
+ReadOnlyApi=${READONLY_VAL}
+OverrideTwsApiPort=${GATEWAY_PORT}
+AcceptIncomingConnectionAction=accept
+AcceptNonBrokerageAccountWarning=yes
+BypassOrderPrecautions=yes
+BypassRedirectOrderWarning=yes
+AllowBlindTrading=yes
