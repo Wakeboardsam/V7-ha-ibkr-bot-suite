@@ -27,6 +27,13 @@ async def main():
     for warning in ibkr_warnings:
         logger.warning(warning)
 
+    if config.active_broker == "ibkr" and config.ibkr_host not in ("127.0.0.1", "localhost"):
+        logger.warning(
+            "Bundled tqqq_bot only supports local Gateway access. "
+            "Forcing ibkr_host to 127.0.0.1."
+        )
+        config.ibkr_host = "127.0.0.1"
+
     if config.active_broker == "ibkr":
         broker = IBKRAdapter(
             host=config.ibkr_host,
