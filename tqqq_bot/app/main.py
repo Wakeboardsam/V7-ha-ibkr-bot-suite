@@ -6,6 +6,7 @@ from brokers.ibkr.adapter import IBKRAdapter
 from brokers.schwab.adapter import SchwabAdapter
 from engine.engine import GridEngine
 from sheets.interface import SheetInterface
+from utils.log_sanitizer import AccountMaskingFilter, mask_account_ids_in_text
 
 # Configure logging
 logging.basicConfig(
@@ -18,8 +19,29 @@ logger = logging.getLogger(__name__)
 async def main():
     try:
         config = load_config()
+
+        # Apply global log masking filter
+        known_accounts = []
+        if config.ibkr_account_id:
+            known_accounts.append(config.ibkr_account_id)
+
+        masking_filter = AccountMaskingFilter(
+            known_account_ids=known_accounts,
+            enabled=config.mask_account_ids_in_logs
+        )
+        for handler in logging.getLogger().handlers:
+            handler.addFilter(masking_filter)
+
+        # Suppress noisy ib_insync logs
+        logging.getLogger('ib_insync').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.ib').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.client').setLevel(logging.WARNING)
+
     except Exception as e:
-        print(f"Error loading config: {e}", file=sys.stderr)
+        # Before config/filter is loaded, manually sanitize prints
+        safe_msg = mask_account_ids_in_text(f"Error loading config: {e}")
+        print(safe_msg, file=sys.stderr)
         sys.exit(1)
 
     # Perform IBKR port/mode validation
@@ -46,7 +68,7 @@ async def main():
     elif config.active_broker == "schwab":
         broker = SchwabAdapter()
     else:
-        print(f"Error: Unsupported broker '{config.active_broker}'", file=sys.stderr)
+        logger.error(f"Error: Unsupported broker '{config.active_broker}'")
         sys.exit(1)
 
     sheet = SheetInterface(config)

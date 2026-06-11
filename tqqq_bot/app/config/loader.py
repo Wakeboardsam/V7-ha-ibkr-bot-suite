@@ -38,7 +38,13 @@ def validate_ibkr_settings(config: AppConfig) -> list[str]:
     return warnings
 
 
+import logging
+from utils.log_sanitizer import mask_account_ids_in_text
+
+logger = logging.getLogger(__name__)
+
 def load_config(path: str = "/data/options.json") -> AppConfig:
+    data = {}
     try:
         with open(path, "r") as f:
             data = json.load(f)
@@ -47,10 +53,16 @@ def load_config(path: str = "/data/options.json") -> AppConfig:
     except FileNotFoundError:
         print(f"Error: Configuration file not found at {path}", file=sys.stderr)
         sys.exit(1)
-    except json.JSONDecodeError:
-        print(f"Error: Invalid JSON format in {path}", file=sys.stderr)
+    except json.JSONDecodeError as e:
+        known_acct = data.get("ibkr_account_id") if isinstance(data, dict) else None
+        known_list = [known_acct] if known_acct else []
+        safe_msg = mask_account_ids_in_text(f"Error: Invalid JSON format in {path}: {e}", known_list, enabled=True)
+        print(safe_msg, file=sys.stderr)
         sys.exit(1)
     except ValidationError as e:
+        known_acct = data.get("ibkr_account_id") if isinstance(data, dict) else None
+        known_list = [known_acct] if known_acct else []
         print("Error: Missing or invalid required configuration fields:", file=sys.stderr)
-        print(e, file=sys.stderr)
+        safe_e = mask_account_ids_in_text(str(e), known_list, enabled=True)
+        print(safe_e, file=sys.stderr)
         sys.exit(1)

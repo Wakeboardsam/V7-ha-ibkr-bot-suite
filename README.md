@@ -116,6 +116,8 @@ Account IDs must be masked in logs, UI output, docs, and screenshots. Example ma
 DU1****567
 ```
 
+By default, `mask_account_ids_in_logs` is `true`. Do not share logs or debug output if this has been disabled.
+
 If multiple IBKR accounts are visible and no `ibkr_account_id` is configured, the bot should warn loudly or refuse unsafe trading.
 
 ## Placeholder Configuration Only

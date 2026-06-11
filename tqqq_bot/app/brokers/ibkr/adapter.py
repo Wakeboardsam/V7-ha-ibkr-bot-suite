@@ -9,6 +9,7 @@ from ib_insync import IB, Stock, Order, Trade, LimitOrder
 from brokers.base import BrokerBase, OrderResult, PositionSnapshot
 from brokers.ibkr.connection import async_connect
 from brokers.ibkr.order_builder import build_bracket_order
+from utils.log_sanitizer import mask_account_id, mask_account_ids_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +37,17 @@ class IBKRAdapter(BrokerBase):
         self.ib.errorEvent += self._on_error
 
     def _mask_account(self, acct: str) -> str:
-        if not acct:
-            return ""
-        if self.mask_account_ids_in_logs:
-            if len(acct) > 6:
-                return f"{acct[:3]}****{acct[-3:]}"
-            return "****"
-        return acct
+        return mask_account_id(acct, enabled=self.mask_account_ids_in_logs)
 
     def _on_error(self, reqId, errorCode, errorString, contract):
+        known_accts = [self.account_id] if self.account_id else []
+        safe_error_string = mask_account_ids_in_text(errorString, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs)
         NONFATAL_WARNING_CODES = {2107, 2109, 10349}
         if errorCode in NONFATAL_WARNING_CODES:
-            logger.warning(f"IBKR Warning {errorCode} (ignored): {errorString}")
+            logger.warning(f"IBKR Warning {errorCode} (ignored): {safe_error_string}")
         else:
-            logger.error(f"IBKR Error {errorCode}: {errorString}")
-            self._last_error[reqId] = (errorCode, errorString)
+            logger.error(f"IBKR Error {errorCode}: {safe_error_string}")
+            self._last_error[reqId] = (errorCode, safe_error_string)
 
     async def connect(self) -> bool:
         self._broker_state_ready = False
@@ -431,15 +428,18 @@ class IBKRAdapter(BrokerBase):
             )
         else:
             err_code = None
-            err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
+            raw_err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
             if order.orderId in self._last_error:
-                err_code, err_msg = self._last_error[order.orderId]
+                err_code, raw_err_msg = self._last_error[order.orderId]
+
+            known_accts = [self.account_id] if self.account_id else []
+            safe_err_msg = mask_account_ids_in_text(raw_err_msg, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs) if raw_err_msg else None
 
             return OrderResult(
                 order_id=final_order_id,
                 status='error',
                 error_code=err_code,
-                error_msg=err_msg,
+                error_msg=safe_err_msg,
                 reason=status
             )
 
@@ -503,15 +503,18 @@ class IBKRAdapter(BrokerBase):
             )
         else:
             err_code = None
-            err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
+            raw_err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
             if order.orderId in self._last_error:
-                err_code, err_msg = self._last_error[order.orderId]
+                err_code, raw_err_msg = self._last_error[order.orderId]
+
+            known_accts = [self.account_id] if self.account_id else []
+            safe_err_msg = mask_account_ids_in_text(raw_err_msg, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs) if raw_err_msg else None
 
             return OrderResult(
                 order_id=final_order_id,
                 status='error',
                 error_code=err_code,
-                error_msg=err_msg,
+                error_msg=safe_err_msg,
                 reason=status
             )
 
@@ -524,9 +527,12 @@ class IBKRAdapter(BrokerBase):
 
     def _check_account_safety_for_orders(self):
         accounts = list(set([v.account for v in self.ib.accountValues() if getattr(v, "account", None)]))
-        if len(accounts) > 1 and not self.account_id:
-            logger.critical("Multiple accounts visible but no account_id is configured. Aborting order placement to prevent unsafe trading.")
-            raise ValueError("Multiple accounts visible but no account_id configured.")
+        if len(accounts) > 1:
+            masked_accounts = [self._mask_account(a) for a in accounts]
+            logger.info(f"Visible accounts: {', '.join(masked_accounts)}")
+            if not self.account_id:
+                logger.critical("Multiple accounts visible but no account_id is configured. Aborting order placement to prevent unsafe trading.")
+                raise ValueError("Multiple accounts visible but no account_id configured.")
 
     async def place_bracket_order(
         self, ticker: str, action: str,
@@ -673,6 +679,8 @@ class IBKRAdapter(BrokerBase):
         order_id = str(trade.order.orderId)
         callback = self._on_update_callbacks.get(order_id)
 
+        known_accts = [self.account_id] if self.account_id else []
+
         unified_status = None
         if status in ('Submitted', 'PreSubmitted'):
             unified_status = 'submitted'
@@ -682,11 +690,13 @@ class IBKRAdapter(BrokerBase):
             unified_status = 'cancelled' if status == 'Cancelled' else 'error'
 
             # LOUD ALERT for terminal failures
-            reason = trade.orderStatus.whyHeld or "No reason provided"
+            raw_reason = trade.orderStatus.whyHeld or "No reason provided"
             err_code = None
             if trade.order.orderId in self._last_error:
                 err_code, err_msg = self._last_error[trade.order.orderId]
-                reason = f"{err_msg} (Code: {err_code})"
+                raw_reason = f"{err_msg} (Code: {err_code})"
+
+            safe_reason = mask_account_ids_in_text(raw_reason, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs)
 
             logger.warning(
                 f"\n"
@@ -694,22 +704,24 @@ class IBKRAdapter(BrokerBase):
                 f"LOUD ALERT: ORDER {order_id} {status.upper()}!\n"
                 f"Ticker: {trade.contract.symbol}\n"
                 f"Action: {trade.order.action}\n"
-                f"Reason: {reason}\n"
+                f"Reason: {safe_reason}\n"
                 f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
             )
 
         if callback and unified_status:
             err_code = None
-            err_msg = trade.orderStatus.whyHeld
+            raw_err_msg = trade.orderStatus.whyHeld
             if trade.order.orderId in self._last_error:
-                err_code, err_msg = self._last_error[trade.order.orderId]
+                err_code, raw_err_msg = self._last_error[trade.order.orderId]
+
+            safe_err_msg = mask_account_ids_in_text(raw_err_msg, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs) if raw_err_msg else None
 
             result = OrderResult(
                 order_id=order_id,
                 status=unified_status,
                 filled_price=trade.orderStatus.avgFillPrice if status == 'Filled' else None,
                 filled_qty=trade.orderStatus.filled if status == 'Filled' else None,
-                error_msg=err_msg,
+                error_msg=safe_err_msg,
                 error_code=err_code,
                 reason=status
             )
