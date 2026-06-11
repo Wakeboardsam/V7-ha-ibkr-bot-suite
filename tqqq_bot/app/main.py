@@ -34,11 +34,14 @@ async def main():
 
         # Suppress noisy ib_insync logs
         logging.getLogger('ib_insync').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.ib').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.client').setLevel(logging.WARNING)
 
     except Exception as e:
         # Before config/filter is loaded, manually sanitize prints
-        # (Though we can't get mask_account_ids_in_logs or ibkr_account_id here easily)
-        print(f"Error loading config: {e}", file=sys.stderr)
+        safe_msg = mask_account_ids_in_text(f"Error loading config: {e}")
+        print(safe_msg, file=sys.stderr)
         sys.exit(1)
 
     # Perform IBKR port/mode validation

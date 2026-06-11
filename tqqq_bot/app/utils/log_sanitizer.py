@@ -1,6 +1,13 @@
 import logging
 import traceback
+import re
+import json
 from typing import Optional, List, Any
+
+# Match typical IBKR account IDs like DU1234567, U1234567, F1234567
+# Conservative: requires a prefix letter (or letters) and at least 5 digits/chars
+# We use [DdUuFf] possibly followed by 'U' then at least 5 digits (preventing "Unknown" from matching)
+ACCOUNT_REGEX = re.compile(r'\b([DdUuFf][Uu]?[0-9]{5,15})\b')
 
 def mask_account_id(value: Any, enabled: bool = True) -> str:
     """
@@ -27,7 +34,8 @@ def mask_account_id(value: Any, enabled: bool = True) -> str:
 
 def mask_account_ids_in_text(text: Any, known_account_ids: Optional[List[str]] = None, enabled: bool = True) -> str:
     """
-    Finds and masks known account IDs within a larger string.
+    Finds and masks known account IDs within a larger string, and falls back to regex
+    for unknown but obvious account IDs.
     """
     if text is None:
         return "None"
@@ -36,16 +44,55 @@ def mask_account_ids_in_text(text: Any, known_account_ids: Optional[List[str]] =
     if not text_str:
         return ""
 
-    if not enabled or not known_account_ids:
+    if not enabled:
         return text_str
 
-    for acct_id in known_account_ids:
-        if acct_id:
-            acct_id_str = str(acct_id)
-            masked = mask_account_id(acct_id_str, enabled=True)
-            text_str = text_str.replace(acct_id_str, masked)
+    if known_account_ids:
+        for acct_id in known_account_ids:
+            if acct_id:
+                acct_id_str = str(acct_id)
+                masked = mask_account_id(acct_id_str, enabled=True)
+                text_str = text_str.replace(acct_id_str, masked)
+
+    # Regex fallback for obvious account IDs not in the known list
+    def regex_replace(match):
+        return mask_account_id(match.group(1), enabled=True)
+
+    text_str = ACCOUNT_REGEX.sub(regex_replace, text_str)
 
     return text_str
+
+def _sanitize_nested(obj: Any, known_account_ids: Optional[List[str]], enabled: bool) -> Any:
+    """Recursively sanitizes dicts, lists, and tuples."""
+    if not enabled:
+        return obj
+
+    if isinstance(obj, str):
+        return mask_account_ids_in_text(obj, known_account_ids, enabled)
+    elif isinstance(obj, dict):
+        return {k: _sanitize_nested(v, known_account_ids, enabled) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_nested(v, known_account_ids, enabled) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_sanitize_nested(v, known_account_ids, enabled) for v in obj)
+    else:
+        # For ib_insync objects or other complex types, try getting the repr and masking it.
+        # But we must return the original object if we want standard logging format strings like %d to work.
+        # If it's a known generic type (int, float, bool, None), return as is.
+        if obj is None or isinstance(obj, (int, float, bool)):
+            return obj
+
+        try:
+            repr_str = repr(obj)
+            masked_repr = mask_account_ids_in_text(repr_str, known_account_ids, enabled)
+            # If the string actually changed, we have to return the string to hide the account ID.
+            if repr_str != masked_repr:
+                return masked_repr
+        except Exception:
+            pass
+
+        return obj
+
 
 class AccountMaskingFilter(logging.Filter):
     """
@@ -58,31 +105,22 @@ class AccountMaskingFilter(logging.Filter):
         self.enabled = enabled
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if not self.enabled or not self.known_account_ids:
+        if not self.enabled:
             return True
 
         # Sanitize main message
         if isinstance(record.msg, str):
             record.msg = mask_account_ids_in_text(record.msg, self.known_account_ids, self.enabled)
+        elif record.msg is not None:
+            # If the main message isn't a string (e.g. log(INFO, my_dict)), stringify and mask it
+            record.msg = mask_account_ids_in_text(str(record.msg), self.known_account_ids, self.enabled)
 
-        # Sanitize arguments
+        # Sanitize arguments (can be dict or tuple)
         if record.args:
             if isinstance(record.args, dict):
-                new_args = {}
-                for k, v in record.args.items():
-                    if isinstance(v, str):
-                        new_args[k] = mask_account_ids_in_text(v, self.known_account_ids, self.enabled)
-                    else:
-                        new_args[k] = v
-                record.args = new_args
+                record.args = _sanitize_nested(record.args, self.known_account_ids, self.enabled)
             elif isinstance(record.args, tuple):
-                new_args = []
-                for v in record.args:
-                    if isinstance(v, str):
-                        new_args.append(mask_account_ids_in_text(v, self.known_account_ids, self.enabled))
-                    else:
-                        new_args.append(v)
-                record.args = tuple(new_args)
+                record.args = _sanitize_nested(record.args, self.known_account_ids, self.enabled)
 
         # Sanitize formatted exception if it exists
         if record.exc_text:
