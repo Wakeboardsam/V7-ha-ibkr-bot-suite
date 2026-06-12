@@ -12,7 +12,7 @@ class PositionSnapshot:
 @dataclass
 class OrderResult:
     order_id: str
-    status: str          # 'submitted' | 'filled' | 'cancelled' | 'error'
+    status: str          # 'submitted' | 'filled' | 'cancelled' | 'error' | 'dry_run_blocked'
     filled_price: Optional[float] = None
     filled_qty:   Optional[int]   = None
     error_msg:    Optional[str]   = None
@@ -21,6 +21,8 @@ class OrderResult:
 
 
 class BrokerBase(ABC):
+    def __init__(self, dry_run: bool = False):
+        self.dry_run = dry_run
 
     @abstractmethod
     async def connect(self) -> bool: ...

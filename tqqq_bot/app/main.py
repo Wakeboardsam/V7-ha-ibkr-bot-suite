@@ -63,10 +63,11 @@ async def main():
             client_id=config.ibkr_client_id,
             paper=config.paper_trading,
             account_id=config.ibkr_account_id,
-            mask_account_ids_in_logs=config.mask_account_ids_in_logs
+            mask_account_ids_in_logs=config.mask_account_ids_in_logs,
+            dry_run=config.dry_run
         )
     elif config.active_broker == "schwab":
-        broker = SchwabAdapter()
+        broker = SchwabAdapter(dry_run=config.dry_run)
     else:
         logger.error(f"Error: Unsupported broker '{config.active_broker}'")
         sys.exit(1)
@@ -80,6 +81,9 @@ async def main():
     logger.info("")
     logger.info("* TQQQ GRID BOT V6 OFFICIALLY STARTED!       *")
     logger.info("")
+
+    if config.dry_run:
+        logger.info("DRY RUN MODE ENABLED — NO ORDERS WILL BE PLACED, CANCELLED, OR MODIFIED")
 
     try:
         await engine.run()

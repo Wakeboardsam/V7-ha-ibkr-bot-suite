@@ -1,5 +1,5 @@
 name: V7_tqqq_bot
-version: 0.1.10
+version: 0.1.11
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
@@ -9,6 +9,7 @@ boot: auto
 options:
   active_broker: ibkr
   paper_trading: true
+  dry_run: false
   ibkr_host: 127.0.0.1
   ibkr_port: 7497
   ibkr_client_id: 1
@@ -60,6 +61,7 @@ schema:
   ibkr_password: password
   trading_mode: list(paper|live)
   readonly_api: bool
+  dry_run: bool
   enable_vnc: bool
   vnc_port: port
 ports:
