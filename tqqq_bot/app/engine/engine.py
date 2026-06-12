@@ -668,7 +668,10 @@ class GridEngine:
                     stale_cancelled = True
 
         if stale_cancelled:
-            logger.info("Stale session orders canceled. Skipping Bridge Anchor and normal grid evaluations for this tick to let state settle.")
+            if self.config.dry_run:
+                logger.info("DRY RUN: stale session orders would be cancelled; skipping evaluations for this tick to let state settle.")
+            else:
+                logger.info("Stale session orders canceled. Skipping Bridge Anchor and normal grid evaluations for this tick to let state settle.")
             return
 
         # Detect and cancel untracked or duplicate Bridge Anchor orders at the broker
@@ -733,13 +736,14 @@ class GridEngine:
                         logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=protective row 7 SELL gone")
                     else:
                         await self.broker.cancel_order(oid)
-                self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
-                if self.grid_state and 7 in self.grid_state.rows:
-                    current_status = self.grid_state.rows[7].status
-                    new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
-                    self._update_row_status_in_memory(7, new_status)
-                    import asyncio
-                    asyncio.create_task(self._sync_to_sheet())
+                if not self.config.dry_run:
+                    self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
+                    if self.grid_state and 7 in self.grid_state.rows:
+                        current_status = self.grid_state.rows[7].status
+                        new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
+                        self._update_row_status_in_memory(7, new_status)
+                        import asyncio
+                        asyncio.create_task(self._sync_to_sheet())
                 return
 
 
@@ -1109,16 +1113,17 @@ class GridEngine:
                                     logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=outside maintenance window")
                                 else:
                                     await self.broker.cancel_order(oid)
-                                self.order_manager.mark_cancelled(oid)
+                                    self.order_manager.mark_cancelled(oid)
 
                         # Update status
-                        if row.has_y:
-                            new_status = f"OWNED:{owned_id if owned_id else 0}"
-                            if row.status != new_status:
-                                self._update_row_status_in_memory(row.row_index, new_status)
-                        else:
-                            if row.status != "IDLE":
-                                self._update_row_status_in_memory(row.row_index, "IDLE")
+                        if not self.config.dry_run:
+                            if row.has_y:
+                                new_status = f"OWNED:{owned_id if owned_id else 0}"
+                                if row.status != new_status:
+                                    self._update_row_status_in_memory(row.row_index, new_status)
+                            else:
+                                if row.status != "IDLE":
+                                    self._update_row_status_in_memory(row.row_index, "IDLE")
                 except Exception as row_error:
                     logger.error(f"Error processing row {row.row_index}: {row_error}", exc_info=True)
         finally:

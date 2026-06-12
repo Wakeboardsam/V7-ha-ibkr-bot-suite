@@ -1,5 +1,8 @@
+import logging
 from typing import Optional, Callable
 from brokers.base import BrokerBase, OrderResult, PositionSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class SchwabAdapter(BrokerBase):
@@ -39,9 +42,19 @@ class SchwabAdapter(BrokerBase):
         extended_hours: bool = True,
         on_update: Optional[Callable] = None
     ) -> OrderResult:
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER PLACE: bracket action={action} ticker={ticker} qty={qty} limit={limit_price} profit={profit_price}")
+            return OrderResult(
+                order_id="DRY_RUN_NO_ORDER",
+                status="dry_run_blocked",
+                error_msg="DRY RUN: order was not submitted to broker"
+            )
         raise NotImplementedError
 
     async def cancel_order(self, order_id: str) -> bool:
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={order_id}")
+            return False
         raise NotImplementedError
 
     async def get_open_orders(self) -> list[dict]:
@@ -54,6 +67,13 @@ class SchwabAdapter(BrokerBase):
         on_update: Optional[Callable] = None,
         order_id: Optional[str] = None
     ) -> OrderResult:
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER PLACE: stop limit action={action} ticker={ticker} qty={qty} stop={stop_price} limit={limit_price}")
+            return OrderResult(
+                order_id="DRY_RUN_NO_ORDER",
+                status="dry_run_blocked",
+                error_msg="DRY RUN: order was not submitted to broker"
+            )
         raise NotImplementedError
 
     async def place_limit_order(
@@ -63,6 +83,13 @@ class SchwabAdapter(BrokerBase):
         on_update: Optional[Callable] = None,
         order_id: Optional[str] = None
     ) -> OrderResult:
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER PLACE: limit action={action} ticker={ticker} qty={qty} limit={limit_price}")
+            return OrderResult(
+                order_id="DRY_RUN_NO_ORDER",
+                status="dry_run_blocked",
+                error_msg="DRY RUN: order was not submitted to broker"
+            )
         raise NotImplementedError
 
     def subscribe_to_updates(self, order_id: str, on_update: Callable):
