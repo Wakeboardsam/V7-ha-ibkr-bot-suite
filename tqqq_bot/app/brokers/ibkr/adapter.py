@@ -13,6 +13,27 @@ from utils.log_sanitizer import mask_account_id, mask_account_ids_in_text
 
 logger = logging.getLogger(__name__)
 
+
+# INFO codes: farm connection OK or normal inactive state
+IBKR_INFO_CODES = {2104, 2106, 2158, 2107, 2108, 1102}
+
+# WARNING codes: temporary disconnects or degraded status
+IBKR_WARNING_CODES = {2103, 2105, 1100, 1101, 2109, 10349}
+
+# ERROR codes: explicit order failures and actionable codes
+IBKR_ERROR_CODES = {10329}
+
+def classify_ibkr_error(error_code: int, error_string: str) -> tuple[str, int]:
+    if error_code in IBKR_INFO_CODES:
+        return "IBKR status", logging.INFO
+    elif error_code in IBKR_WARNING_CODES:
+        return "IBKR warning", logging.WARNING
+    elif error_code in IBKR_ERROR_CODES:
+        return "IBKR order failure", logging.ERROR
+    else:
+        # Everything else defaults to ERROR
+        return "IBKR API/order error", logging.ERROR
+
 class IBKRAdapter(BrokerBase):
     def __init__(self, host: str, port: int, client_id: int, paper: bool, account_id: Optional[str] = None, mask_account_ids_in_logs: bool = True):
         self.host = host
@@ -42,11 +63,15 @@ class IBKRAdapter(BrokerBase):
     def _on_error(self, reqId, errorCode, errorString, contract):
         known_accts = [self.account_id] if self.account_id else []
         safe_error_string = mask_account_ids_in_text(errorString, known_account_ids=known_accts, enabled=self.mask_account_ids_in_logs)
-        NONFATAL_WARNING_CODES = {2107, 2109, 10349}
-        if errorCode in NONFATAL_WARNING_CODES:
-            logger.warning(f"IBKR Warning {errorCode} (ignored): {safe_error_string}")
+
+        category, level = classify_ibkr_error(errorCode, safe_error_string)
+
+        if level == logging.INFO:
+            logger.info("%s %s: %s", category, errorCode, safe_error_string)
+        elif level == logging.WARNING:
+            logger.warning("%s %s: %s", category, errorCode, safe_error_string)
         else:
-            logger.error(f"IBKR Error {errorCode}: {safe_error_string}")
+            logger.error("%s %s: %s", category, errorCode, safe_error_string)
             self._last_error[reqId] = (errorCode, safe_error_string)
 
     async def connect(self) -> bool:
