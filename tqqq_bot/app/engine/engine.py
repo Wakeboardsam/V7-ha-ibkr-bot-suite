@@ -394,10 +394,10 @@ class GridEngine:
 
         for oid in bridge_oids:
             if self.config.dry_run:
-                logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=Bridge Anchor explicit clear")
-                success = False
-            else:
-                success = await self.broker.cancel_order(oid)
+                logger.info(f"DRY RUN: would cancel Bridge Anchor order {oid}, leaving broker and sheet state unchanged")
+                continue
+
+            success = await self.broker.cancel_order(oid)
             if not success:
                 # verify if it actually exists in open orders before considering it a true failure
                 open_orders = await self.broker.get_open_orders()
@@ -410,7 +410,7 @@ class GridEngine:
                 else:
                     logger.warning(f"Failed to cancel Bridge Anchor order {oid}, but it's no longer open on broker.")
 
-        if all_cancelled:
+        if all_cancelled and not self.config.dry_run:
             self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
 
             # Remove BRIDGE_BUY from row 7 status if it's there
@@ -478,9 +478,6 @@ class GridEngine:
         # All conditions met, arm the Bridge Anchor!
         logger.info(f"Arming Bridge Anchor for row 7. Shares: {row7.shares}, Sell Target: {row7.sell_price}")
 
-        # We need a new order ID for the Bridge Anchor
-        bridge_order_id = await self.broker.get_next_order_id()
-
         # Bridge trigger/stop price should equal row 7's sell target EXACTLY
         stop_price = row7.sell_price
         # Bridge limit price should use anchor_buy_offset as chase limit
@@ -489,6 +486,9 @@ class GridEngine:
         if self.config.dry_run:
             logger.info(f"DRY RUN BLOCKED BRIDGE ANCHOR: row=7 shares={row7.shares} stop={stop_price} limit={limit_price}")
             return
+
+        # We need a new order ID for the Bridge Anchor
+        bridge_order_id = await self.broker.get_next_order_id()
 
         # Pre-register locally FIRST to prevent race conditions
         self.order_manager.track(7, OrderResult(order_id=bridge_order_id, status='submitted'), 'BRIDGE_BUY', broker=self.broker, on_update=self._handle_order_update)

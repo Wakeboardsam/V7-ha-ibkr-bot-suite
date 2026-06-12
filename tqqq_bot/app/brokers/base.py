@@ -12,7 +12,7 @@ class PositionSnapshot:
 @dataclass
 class OrderResult:
     order_id: str
-    status: str          # 'submitted' | 'filled' | 'cancelled' | 'error'
+    status: str          # 'submitted' | 'filled' | 'cancelled' | 'error' | 'dry_run_blocked'
     filled_price: Optional[float] = None
     filled_qty:   Optional[int]   = None
     error_msg:    Optional[str]   = None
