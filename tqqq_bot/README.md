@@ -72,6 +72,13 @@ enable_vnc: false
 
 Only enable VNC for troubleshooting. Do not expose it to untrusted networks.
 
+
+## Logging and Error Handling
+
+Normal IBKR farm status and connection messages (e.g., market data farm connection OK, historical data farm disconnected) are expected behavior and are logged as `INFO` or `WARNING`.
+
+Actual order failures, API failures that prevent trading, and account safety/scoping failures remain loud and are logged as `ERROR` or `CRITICAL`.
+
 ## Shared Gateway Status
 
 The separate `ibkr_gateway` add-on remains in the repository as optional/experimental shared-Gateway mode.
