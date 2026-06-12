@@ -14,21 +14,24 @@ from utils.log_sanitizer import mask_account_id, mask_account_ids_in_text
 logger = logging.getLogger(__name__)
 
 
+# INFO codes: farm connection OK or normal inactive state
+IBKR_INFO_CODES = {2104, 2106, 2158, 2107, 2108, 1102}
+
+# WARNING codes: temporary disconnects or degraded status
+IBKR_WARNING_CODES = {2103, 2105, 1100, 1101, 2109, 10349}
+
+# ERROR codes: explicit order failures and actionable codes
+IBKR_ERROR_CODES = {10329}
+
 def classify_ibkr_error(error_code: int, error_string: str) -> tuple[str, int]:
-    # INFO codes: farm connection OK or normal inactive state
-    INFO_CODES = {2104, 2106, 2158, 2107, 2108, 1102}
-
-    # WARNING codes: temporary disconnects or degraded status
-    WARNING_CODES = {2103, 2105, 1100, 1101, 2109, 10349}
-
-    # ERROR codes: explicitly called out, e.g. 10329
-    # Everything else defaults to ERROR
-
-    if error_code in INFO_CODES:
+    if error_code in IBKR_INFO_CODES:
         return "IBKR status", logging.INFO
-    elif error_code in WARNING_CODES:
+    elif error_code in IBKR_WARNING_CODES:
         return "IBKR warning", logging.WARNING
+    elif error_code in IBKR_ERROR_CODES:
+        return "IBKR order failure", logging.ERROR
     else:
+        # Everything else defaults to ERROR
         return "IBKR API/order error", logging.ERROR
 
 class IBKRAdapter(BrokerBase):
