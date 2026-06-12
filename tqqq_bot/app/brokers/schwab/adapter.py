@@ -3,6 +3,9 @@ from brokers.base import BrokerBase, OrderResult, PositionSnapshot
 
 
 class SchwabAdapter(BrokerBase):
+    def __init__(self, dry_run: bool = False):
+        super().__init__(dry_run=dry_run)
+
     async def connect(self) -> bool:
         raise NotImplementedError
 

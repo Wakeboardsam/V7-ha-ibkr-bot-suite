@@ -13,6 +13,7 @@ class AppConfig(BaseModel):
     mask_account_ids_in_logs: bool = Field(default=True)
     ibkr_username: Optional[str] = Field(default=None)
     ibkr_password: Optional[str] = Field(default=None)
+    dry_run: bool = Field(default=False)
     poll_interval_seconds: int = Field(default=60)
     heartbeat_interval_seconds: int = Field(default=60)
     health_log_interval_seconds: int = Field(default=300)

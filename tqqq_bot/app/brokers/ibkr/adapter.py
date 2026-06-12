@@ -35,7 +35,8 @@ def classify_ibkr_error(error_code: int, error_string: str) -> tuple[str, int]:
         return "IBKR API/order error", logging.ERROR
 
 class IBKRAdapter(BrokerBase):
-    def __init__(self, host: str, port: int, client_id: int, paper: bool, account_id: Optional[str] = None, mask_account_ids_in_logs: bool = True):
+    def __init__(self, host: str, port: int, client_id: int, paper: bool, account_id: Optional[str] = None, mask_account_ids_in_logs: bool = True, dry_run: bool = False):
+        super().__init__(dry_run=dry_run)
         self.host = host
         self.port = port
         self.client_id = client_id
@@ -399,6 +400,15 @@ class IBKRAdapter(BrokerBase):
         order_id: Optional[str] = None
     ) -> OrderResult:
         self._check_account_safety_for_orders()
+
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER PLACE: limit action={action} ticker={ticker} qty={qty} limit={limit_price}")
+            return OrderResult(
+                order_id="DRY_RUN_NO_ORDER",
+                status="dry_run_blocked",
+                error_msg="DRY RUN: order was not submitted to broker"
+            )
+
         from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
         exchange = get_dynamic_exchange()
         tif = get_dynamic_tif(exchange)
@@ -476,6 +486,15 @@ class IBKRAdapter(BrokerBase):
         order_id: Optional[str] = None
     ) -> OrderResult:
         self._check_account_safety_for_orders()
+
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER PLACE: stop limit action={action} ticker={ticker} qty={qty} stop={stop_price} limit={limit_price}")
+            return OrderResult(
+                order_id="DRY_RUN_NO_ORDER",
+                status="dry_run_blocked",
+                error_msg="DRY RUN: order was not submitted to broker"
+            )
+
         from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
         from ib_insync import StopLimitOrder
         exchange = get_dynamic_exchange()
@@ -566,6 +585,15 @@ class IBKRAdapter(BrokerBase):
         on_update: Optional[Callable] = None
     ) -> OrderResult:
         self._check_account_safety_for_orders()
+
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER PLACE: bracket action={action} ticker={ticker} qty={qty} limit={limit_price} profit={profit_price}")
+            return OrderResult(
+                order_id="DRY_RUN_NO_ORDER",
+                status="dry_run_blocked",
+                error_msg="DRY RUN: order was not submitted to broker"
+            )
+
         contract, parent, take_profit = build_bracket_order(
             self.ib, ticker, action, qty, limit_price, profit_price
         )
@@ -593,6 +621,10 @@ class IBKRAdapter(BrokerBase):
         )
 
     async def cancel_order(self, order_id: str) -> bool:
+        if self.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={order_id}")
+            return False
+
         # Find the order
         for trade in self.ib.trades():
             if str(trade.order.orderId) == order_id:

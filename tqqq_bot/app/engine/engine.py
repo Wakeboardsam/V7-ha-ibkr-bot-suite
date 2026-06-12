@@ -216,6 +216,10 @@ class GridEngine:
                 pass
 
     async def _cancel_all_orders(self):
+        if self.config.dry_run:
+            logger.info("DRY RUN MODE — skipping shutdown order cancellation")
+            return
+
         tracked_ids = self.order_manager.get_tracked_order_ids()
         if tracked_ids:
             logger.info(f"Cancelling {len(tracked_ids)} tracked orders...")
@@ -239,11 +243,12 @@ class GridEngine:
                 except Exception as e:
                     logger.warning(f"Failed to fetch net liquidation value: {e}")
 
+                run_status = "Running (Mode=DRY_RUN)" if self.config.dry_run else "Running"
                 health_data = {
                     "last_price": self.last_price,
                     "open_orders_count": len(open_orders),
                     "last_fill_time": self.last_fill_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_fill_time else "Never",
-                    "status": "Running",
+                    "status": run_status,
                     "position": portfolio_item.get('position') if portfolio_item else 0,
                     "market_price": portfolio_item.get('marketPrice') if portfolio_item else 0,
                     "market_value": portfolio_item.get('marketValue') if portfolio_item else 0,
@@ -388,7 +393,11 @@ class GridEngine:
         all_cancelled = True
 
         for oid in bridge_oids:
-            success = await self.broker.cancel_order(oid)
+            if self.config.dry_run:
+                logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=Bridge Anchor explicit clear")
+                success = False
+            else:
+                success = await self.broker.cancel_order(oid)
             if not success:
                 # verify if it actually exists in open orders before considering it a true failure
                 open_orders = await self.broker.get_open_orders()
@@ -476,6 +485,10 @@ class GridEngine:
         stop_price = row7.sell_price
         # Bridge limit price should use anchor_buy_offset as chase limit
         limit_price = row7.sell_price + self.config.anchor_buy_offset
+
+        if self.config.dry_run:
+            logger.info(f"DRY RUN BLOCKED BRIDGE ANCHOR: row=7 shares={row7.shares} stop={stop_price} limit={limit_price}")
+            return
 
         # Pre-register locally FIRST to prevent race conditions
         self.order_manager.track(7, OrderResult(order_id=bridge_order_id, status='submitted'), 'BRIDGE_BUY', broker=self.broker, on_update=self._handle_order_update)
@@ -640,12 +653,18 @@ class GridEngine:
                 # Check if it's an outdated session order
                 if current_desired_exchange == 'SMART' and (o_exchange == 'OVERNIGHT' or o_tif == 'DAY'):
                     logger.info(f"Canceling stale session tracked order {oid} ({o_exchange}/{o_tif} -> {current_desired_exchange}/{current_desired_tif})")
-                    await self.broker.cancel_order(oid)
+                    if self.config.dry_run:
+                        logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=session boundary regeneration")
+                    else:
+                        await self.broker.cancel_order(oid)
                     stale_cancelled = True
                 # If we ever transition the other way, we'd also clean it up:
                 elif current_desired_exchange == 'OVERNIGHT' and (o_exchange == 'SMART' or o_tif == 'GTC'):
                     logger.info(f"Canceling stale session tracked order {oid} ({o_exchange}/{o_tif} -> {current_desired_exchange}/{current_desired_tif})")
-                    await self.broker.cancel_order(oid)
+                    if self.config.dry_run:
+                        logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=session boundary regeneration")
+                    else:
+                        await self.broker.cancel_order(oid)
                     stale_cancelled = True
 
         if stale_cancelled:
@@ -683,7 +702,10 @@ class GridEngine:
             oid = str(o['order_id'])
             if oid != valid_tracked_bridge_id:
                 logger.warning(f"Canceling untracked/stale Bridge Anchor order {oid}")
-                await self.broker.cancel_order(oid)
+                if self.config.dry_run:
+                    logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=untracked or stale Bridge Anchor")
+                else:
+                    await self.broker.cancel_order(oid)
                 untracked_or_duplicate_cancelled = True
 
         if untracked_or_duplicate_cancelled:
@@ -707,7 +729,10 @@ class GridEngine:
                 # Cancel the bridge buy orders
                 bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
                 for oid in bridge_oids:
-                    await self.broker.cancel_order(oid)
+                    if self.config.dry_run:
+                        logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=protective row 7 SELL gone")
+                    else:
+                        await self.broker.cancel_order(oid)
                 self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
                 if self.grid_state and 7 in self.grid_state.rows:
                     current_status = self.grid_state.rows[7].status
@@ -837,28 +862,31 @@ class GridEngine:
                                 self._bridge_state = 'BRIDGE_HALTED'
                                 return
                             else:
-                                trim_order_id = await self.broker.get_next_order_id()
-                                self.order_manager.track(7, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL', broker=self.broker, on_update=self._handle_order_update)
-
-                                result = await self.broker.place_limit_order(
-                                    ticker=TICKER, action='SELL', qty=excess,
-                                    limit_price=trim_limit_price, on_update=self._handle_order_update,
-                                    order_id=trim_order_id
-                                )
-                                if result.status == 'error':
-                                    logger.error(f"Failed to place trim SELL order: {result.error_msg}")
-                                    self._bridge_state = 'BRIDGE_HALTED'
-                                    self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
-                                    return
+                                if self.config.dry_run:
+                                    logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=SELL row=7 qty={excess} limit={trim_limit_price} reason=Bridge Anchor trim")
                                 else:
-                                    logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
-                                    self._bridge_state = 'TRIM_PENDING'
-                                    self._pending_trim_qty = excess
-                                    # Append TRIM_SELL to row 7 status to persist
-                                    current_status = row7.status
-                                    if "TRIM_SELL" not in current_status:
-                                        new_status = f"{current_status}|TRIM_SELL:{trim_order_id}"
-                                        self._update_row_status_in_memory(7, new_status)
+                                    trim_order_id = await self.broker.get_next_order_id()
+                                    self.order_manager.track(7, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL', broker=self.broker, on_update=self._handle_order_update)
+
+                                    result = await self.broker.place_limit_order(
+                                        ticker=TICKER, action='SELL', qty=excess,
+                                        limit_price=trim_limit_price, on_update=self._handle_order_update,
+                                        order_id=trim_order_id
+                                    )
+                                    if result.status == 'error':
+                                        logger.error(f"Failed to place trim SELL order: {result.error_msg}")
+                                        self._bridge_state = 'BRIDGE_HALTED'
+                                        self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
+                                        return
+                                    else:
+                                        logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
+                                        self._bridge_state = 'TRIM_PENDING'
+                                        self._pending_trim_qty = excess
+                                        # Append TRIM_SELL to row 7 status to persist
+                                        current_status = row7.status
+                                        if "TRIM_SELL" not in current_status:
+                                            new_status = f"{current_status}|TRIM_SELL:{trim_order_id}"
+                                            self._update_row_status_in_memory(7, new_status)
                                         import asyncio
                                         asyncio.create_task(self._sync_to_sheet())
                     else:
@@ -981,26 +1009,29 @@ class GridEngine:
                                     continue
                                 logger.info(f"Placing missing SELL for owned row {row.row_index}")
                                 # Pre-register order ID to avoid race conditions with fast fills
-                                order_id = await self.broker.get_next_order_id()
-                                self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'SELL',
-                                                    broker=self.broker, on_update=self._handle_order_update)
+                                if self.config.dry_run:
+                                    logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=SELL row={row.row_index} qty={row.shares} limit={row.sell_price} reason=missing sell for owned row")
+                                else:
+                                    order_id = await self.broker.get_next_order_id()
+                                    self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'SELL',
+                                                        broker=self.broker, on_update=self._handle_order_update)
 
-                                result = await self.broker.place_limit_order(
-                                    ticker=TICKER, action='SELL', qty=row.shares,
-                                    limit_price=row.sell_price, on_update=self._handle_order_update,
-                                    order_id=order_id
-                                )
-                                if result.status == 'filled':
-                                    self._update_row_status_in_memory(row.row_index, "IDLE")
-                                elif result.status == 'submitted':
-                                    self._update_row_status_in_memory(row.row_index, f"WORKING_SELL:{result.order_id}")
-                                elif result.status == 'error':
-                                    self.order_manager.mark_cancelled(result.order_id)
-                                    self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
-                                    # Fix: Preserve Owned state for SELL
-                                    new_status = f"OWNED:{owned_id if owned_id else 0}"
-                                    logger.error(f"SELL order for row {row.row_index} failed (Code: {result.error_code}). Reverting to {new_status} and cooling down.")
-                                    self._update_row_status_in_memory(row.row_index, new_status)
+                                    result = await self.broker.place_limit_order(
+                                        ticker=TICKER, action='SELL', qty=row.shares,
+                                        limit_price=row.sell_price, on_update=self._handle_order_update,
+                                        order_id=order_id
+                                    )
+                                    if result.status == 'filled':
+                                        self._update_row_status_in_memory(row.row_index, "IDLE")
+                                    elif result.status == 'submitted':
+                                        self._update_row_status_in_memory(row.row_index, f"WORKING_SELL:{result.order_id}")
+                                    elif result.status == 'error':
+                                        self.order_manager.mark_cancelled(result.order_id)
+                                        self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
+                                        # Fix: Preserve Owned state for SELL
+                                        new_status = f"OWNED:{owned_id if owned_id else 0}"
+                                        logger.error(f"SELL order for row {row.row_index} failed (Code: {result.error_code}). Reverting to {new_status} and cooling down.")
+                                        self._update_row_status_in_memory(row.row_index, new_status)
                         elif row.row_index > distal_y:
                             if mismatch_active:
                                 logger.warning(f"Skipping BUY order for row {row.row_index} due to share mismatch")
@@ -1045,25 +1076,28 @@ class GridEngine:
                                     logger.info(f"Placing missing BUY for empty row {row.row_index}")
 
                                 # Pre-register order ID to avoid race conditions with fast fills
-                                order_id = await self.broker.get_next_order_id()
-                                self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'BUY',
-                                                    broker=self.broker, on_update=self._handle_order_update)
+                                if self.config.dry_run:
+                                    logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=BUY row={row.row_index} qty={row.shares} limit={buy_price} reason=normal grid BUY placement")
+                                else:
+                                    order_id = await self.broker.get_next_order_id()
+                                    self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'BUY',
+                                                        broker=self.broker, on_update=self._handle_order_update)
 
-                                result = await self.broker.place_limit_order(
-                                    ticker=TICKER, action='BUY', qty=row.shares,
-                                    limit_price=buy_price, on_update=self._handle_order_update,
-                                    order_id=order_id
-                                )
-                                if result.status == 'filled':
-                                    self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
-                                elif result.status == 'submitted':
-                                    self._update_row_status_in_memory(row.row_index, f"WORKING_BUY:{result.order_id}")
-                                elif result.status == 'error':
-                                    self.order_manager.mark_cancelled(result.order_id)
-                                    self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
-                                    # Fix: Revert to IDLE for BUY instead of FAILED
-                                    logger.error(f"BUY order for row {row.row_index} failed (Code: {result.error_code}). Reverting to IDLE and cooling down.")
-                                    self._update_row_status_in_memory(row.row_index, "IDLE")
+                                    result = await self.broker.place_limit_order(
+                                        ticker=TICKER, action='BUY', qty=row.shares,
+                                        limit_price=buy_price, on_update=self._handle_order_update,
+                                        order_id=order_id
+                                    )
+                                    if result.status == 'filled':
+                                        self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
+                                    elif result.status == 'submitted':
+                                        self._update_row_status_in_memory(row.row_index, f"WORKING_BUY:{result.order_id}")
+                                    elif result.status == 'error':
+                                        self.order_manager.mark_cancelled(result.order_id)
+                                        self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
+                                        # Fix: Revert to IDLE for BUY instead of FAILED
+                                        logger.error(f"BUY order for row {row.row_index} failed (Code: {result.error_code}). Reverting to IDLE and cooling down.")
+                                        self._update_row_status_in_memory(row.row_index, "IDLE")
                     else:
                         # Outside window
                         # Cancel any active orders for this row
@@ -1071,7 +1105,10 @@ class GridEngine:
                             oids = list(self.order_manager._row_to_orders[row.row_index])
                             for oid in oids:
                                 logger.info(f"Cancelling order {oid} for row {row.row_index} (outside window)")
-                                await self.broker.cancel_order(oid)
+                                if self.config.dry_run:
+                                    logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=outside maintenance window")
+                                else:
+                                    await self.broker.cancel_order(oid)
                                 self.order_manager.mark_cancelled(oid)
 
                         # Update status

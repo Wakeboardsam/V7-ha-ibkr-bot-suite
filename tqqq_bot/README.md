@@ -73,6 +73,23 @@ enable_vnc: false
 Only enable VNC for troubleshooting. Do not expose it to untrusted networks.
 
 
+## Dry Run Mode
+
+The `dry_run` option (`false` by default) allows you to safely validate account-scoping, startup, Google Sheet state, Bridge Anchor decisions, and grid regeneration without risking real trades.
+
+- `dry_run: false` is normal live behavior.
+- `dry_run: true` is safe validation mode.
+- Dry-run still connects to the real Gateway.
+- Dry-run still reads real broker/account/Sheet state.
+- Dry-run **does not** place, cancel, modify, replace, or transmit any broker orders.
+- Dry-run is not paper trading.
+- Dry-run does not simulate fills.
+- Dry-run does not create fake order IDs.
+- Dry-run is intended for account-scoping and startup safety validation.
+
+When `dry_run: true` is enabled, the bot logs an explicit warning at startup:
+`DRY RUN MODE ENABLED — NO ORDERS WILL BE PLACED, CANCELLED, OR MODIFIED`
+
 ## Logging and Error Handling
 
 Normal IBKR farm status and connection messages (e.g., market data farm connection OK, historical data farm disconnected) are expected behavior and are logged as `INFO` or `WARNING`.
