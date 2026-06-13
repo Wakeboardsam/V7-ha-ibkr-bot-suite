@@ -149,6 +149,53 @@ start_persistence_loop() {
     done
 }
 
+SHUTTING_DOWN=false
+
+shutdown_handler() {
+    if [ "$SHUTTING_DOWN" = "true" ]; then
+        return
+    fi
+    SHUTTING_DOWN=true
+
+    echo "Shutdown signal received; stopping bot and Gateway processes."
+
+    if [ -n "${PERSISTENCE_PID:-}" ] && kill -0 "$PERSISTENCE_PID" 2>/dev/null; then
+        kill -TERM "$PERSISTENCE_PID"
+    fi
+
+    if [ -n "${BOT_PID:-}" ] && kill -0 "$BOT_PID" 2>/dev/null; then
+        kill -TERM "$BOT_PID"
+    fi
+
+    if [ -n "${IBC_PID:-}" ] && kill -0 "$IBC_PID" 2>/dev/null; then
+        kill -TERM "$IBC_PID"
+    fi
+
+    if [ -n "${XVFB_PID:-}" ] && kill -0 "$XVFB_PID" 2>/dev/null; then
+        kill -TERM "$XVFB_PID"
+    fi
+
+    if [ "$ENABLE_VNC" = "true" ]; then
+        if [ -n "${X11VNC_PID:-}" ] && kill -0 "$X11VNC_PID" 2>/dev/null; then
+            kill -TERM "$X11VNC_PID"
+        else
+            pkill -TERM x11vnc || true
+        fi
+    fi
+
+    # Wait briefly for all child processes to stop
+    sleep 2
+
+    if [ -n "${BOT_PID:-}" ]; then wait "$BOT_PID" 2>/dev/null || true; fi
+    if [ -n "${IBC_PID:-}" ]; then wait "$IBC_PID" 2>/dev/null || true; fi
+    if [ -n "${XVFB_PID:-}" ]; then wait "$XVFB_PID" 2>/dev/null || true; fi
+    if [ -n "${PERSISTENCE_PID:-}" ]; then wait "$PERSISTENCE_PID" 2>/dev/null || true; fi
+
+    echo "Graceful shutdown complete."
+}
+
+trap 'shutdown_handler' SIGTERM SIGINT
+
 echo "Starting Xvfb..."
 Xvfb :99 -ac -screen 0 1024x768x16 &
 XVFB_PID=$!
@@ -186,41 +233,14 @@ echo "Initial Gateway settings sync complete."
 start_persistence_loop &
 PERSISTENCE_PID=$!
 
-shutdown_handler() {
-    echo "Shutdown signal received; stopping bot and Gateway processes."
-
-    if [ -n "${PERSISTENCE_PID:-}" ] && kill -0 "$PERSISTENCE_PID" 2>/dev/null; then
-        kill -TERM "$PERSISTENCE_PID"
-    fi
-
-    if [ -n "${BOT_PID:-}" ] && kill -0 "$BOT_PID" 2>/dev/null; then
-        kill -TERM "$BOT_PID"
-    fi
-
-    if [ -n "${IBC_PID:-}" ] && kill -0 "$IBC_PID" 2>/dev/null; then
-        kill -TERM "$IBC_PID"
-    fi
-
-    if [ -n "${XVFB_PID:-}" ] && kill -0 "$XVFB_PID" 2>/dev/null; then
-        kill -TERM "$XVFB_PID"
-    fi
-
-    if [ -n "${X11VNC_PID:-}" ] && kill -0 "$X11VNC_PID" 2>/dev/null; then
-        kill -TERM "$X11VNC_PID"
-    else
-        pkill -TERM x11vnc || true
-    fi
-
-    wait "$BOT_PID" 2>/dev/null || true
-    wait "$IBC_PID" 2>/dev/null || true
-
-    echo "Graceful shutdown complete."
-}
-
-trap 'shutdown_handler' SIGTERM SIGINT
-
 echo "Gateway is ready! Starting the Python bot runtime..."
 python -m main &
 BOT_PID=$!
 
+set +e
 wait "$BOT_PID"
+BOT_EXIT_CODE=$?
+set -e
+
+shutdown_handler
+exit "$BOT_EXIT_CODE"
