@@ -378,7 +378,10 @@ class GridEngine:
             await self._cancel_all_orders()
 
             # Clear internally tracked orders.
-            self.order_manager = OrderManager()
+            if not self.config.dry_run:
+                self.order_manager = OrderManager()
+            else:
+                logger.info("DRY RUN MODE — skipping order cancellation and local order tracking reset")
 
             self._last_grid_regeneration = now_et
 
@@ -520,7 +523,10 @@ class GridEngine:
                 logger.warning("Entering maintenance window; cancelling open orders and freezing trading")
                 if self.config.maintenance_cancel_open_orders:
                     await self._cancel_all_orders()
-                    self.order_manager = OrderManager()
+                    if not self.config.dry_run:
+                        self.order_manager = OrderManager()
+                    else:
+                        logger.info("DRY RUN MODE — skipping order cancellation and local order tracking reset")
                 self._maintenance_cancel_done = True
             else:
                 logger.debug("Maintenance window active; trading halted")
