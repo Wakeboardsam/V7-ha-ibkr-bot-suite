@@ -90,7 +90,10 @@ class GridEngine:
         self._bridge_fill_price: float = 0.0
 
         self._halted_reconciliation = False
-        self._error_dedupe_keys = set()
+        self._error_written_keys = set()
+        self._health_written_keys = set()
+        self._last_reconciliation_halt = None
+        self._halt_notification_retry_task = None
 
     async def _halt_for_reconciliation_error(
         self,
@@ -104,12 +107,10 @@ class GridEngine:
         broker_shares: Optional[int] = None,
     ):
         """
-        Halts the bot due to a reconciliation mismatch and logs the issue.
-        Uses in-memory deduplication so it doesn't spam the Google Sheet.
+        Halts the bot due to a reconciliation mismatch and attempts to log the issue.
+        Handles retries for Google Sheet writes if they fail.
         """
         self._halted_reconciliation = True
-
-        dedupe_key = f"{code}_{row}_{action}"
 
         loud_alert = (
             f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
@@ -122,40 +123,89 @@ class GridEngine:
         )
         logger.critical(loud_alert)
 
-        if dedupe_key not in self._error_dedupe_keys:
-            self._error_dedupe_keys.add(dedupe_key)
+        # Store payload
+        payload = {
+            "code": code,
+            "symbol": symbol,
+            "row": row,
+            "action": action,
+            "details": details,
+            "severity": severity,
+            "open_orders_count": open_orders_count if open_orders_count is not None else len(self.order_manager.get_tracked_order_ids()),
+            "broker_shares": broker_shares if broker_shares is not None else 0,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self._last_reconciliation_halt = payload
 
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await self._attempt_halt_notifications(payload)
 
+    async def _attempt_halt_notifications(self, payload: dict) -> bool:
+        """
+        Attempts to write Errors and Health. Returns True if both succeed.
+        If either fails and no retry task is running, spawns the retry task.
+        """
+        dedupe_key = f"{payload['code']}_{payload['row']}_{payload['action']}"
+        error_success = dedupe_key in self._error_written_keys
+        health_success = dedupe_key in self._health_written_keys
+
+        if not error_success:
             try:
                 await self.sheet.append_error(
-                    timestamp=timestamp,
-                    severity=severity,
-                    code=code,
-                    symbol=symbol,
-                    row=str(row) if row is not None else "",
-                    action=action,
+                    timestamp=payload['timestamp'],
+                    severity=payload['severity'],
+                    code=payload['code'],
+                    symbol=payload['symbol'],
+                    row=str(payload['row']) if payload['row'] is not None else "",
+                    action=payload['action'],
                     bot_status="HALTED_RECONCILIATION",
-                    details=details
+                    details=payload['details']
                 )
+                self._error_written_keys.add(dedupe_key)
+                error_success = True
             except Exception as e:
                 logger.error(f"Failed to append to Errors tab during halt: {e}")
 
+        if not health_success:
             try:
                 health_data = {
                     "last_price": self.last_price,
-                    "open_orders_count": open_orders_count if open_orders_count is not None else len(self.order_manager.get_tracked_order_ids()),
+                    "open_orders_count": payload['open_orders_count'],
                     "last_fill_time": self.last_fill_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_fill_time else "Never",
                     "status": "HALTED_RECONCILIATION",
-                    "position": broker_shares if broker_shares is not None else 0,
+                    "position": payload['broker_shares'],
                     "market_price": self.last_price,
-                    "market_value": (broker_shares if broker_shares is not None else 0) * self.last_price,
+                    "market_value": payload['broker_shares'] * self.last_price,
                     "avg_cost": 0,
                     "net_liquidation_value": None
                 }
                 await self.sheet.log_health(health_data)
+                self._health_written_keys.add(dedupe_key)
+                health_success = True
             except Exception as e:
                 logger.error(f"Failed to log Health status during halt: {e}")
+
+        all_success = error_success and health_success
+
+        if not all_success and self._halt_notification_retry_task is None:
+            self._halt_notification_retry_task = asyncio.create_task(self._retry_halt_notifications(payload))
+
+        return all_success
+
+    async def _retry_halt_notifications(self, payload: dict):
+        """Background retry worker for Google Sheets notifications during a halt."""
+        logger.info("Started background retry worker for halt notifications.")
+        for delay in [5, 15, 30, 60, 120]:
+            await asyncio.sleep(delay)
+            if self._shutdown_event.is_set():
+                break
+
+            logger.info(f"Retrying halt notifications (delay was {delay}s)...")
+            success = await self._attempt_halt_notifications(payload)
+            if success:
+                logger.info("Halt notifications successfully written on retry.")
+                break
+
+        self._halt_notification_retry_task = None
 
     async def _safe_async_halt(self, **kwargs):
         """Wrapper for calling the async halt from sync callbacks."""
@@ -529,54 +579,49 @@ class GridEngine:
             if self.order_manager.is_tracked(oid):
                 continue
 
-            # Allow suspected bridge-like orders that match Tracker intent
-            if self.grid_state and 7 in self.grid_state.rows:
-                row7 = self.grid_state.rows[7]
-                action = o.get('action', '')
-                order_type = str(o.get('order_type', '')).upper()
-                tif = o.get('tif', '')
-                qty = o.get('qty', 0)
-                aux_price = o.get('aux_price')
-
-                if action == 'BUY' and ('STP' in order_type or 'STOP' in order_type) and tif == 'GTC':
-                    if abs(qty - row7.shares) < 0.01 and aux_price is not None and abs(aux_price - row7.sell_price) < 0.02:
-                        continue # Looks like our bridge anchor, we will adopt it in normal tick flow
-
-                # Check if it matches an untracked sheet state order STRICTLY
-                sheet_matched = False
+            # Check if it matches an untracked sheet state order STRICTLY
+            sheet_matched = False
+            if self.grid_state:
                 for row in self.grid_state.rows.values():
                     if oid in row.status:
                         # Validate the intent matches strictly
                         is_buy = "WORKING_BUY" in row.status
                         is_sell = "WORKING_SELL" in row.status
                         is_trim = "TRIM_SELL" in row.status
+                        is_bridge = "BRIDGE_BUY" in row.status
 
                         expected_action = ""
                         expected_qty = 0
-                        expected_price = 0.0
 
                         if is_buy:
                             expected_action = "BUY"
                             expected_qty = row.shares
-                            expected_price = row.buy_price
+                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
+                                sheet_matched = True
                         elif is_sell:
                             expected_action = "SELL"
                             expected_qty = row.shares
-                            expected_price = row.sell_price
+                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.sell_price - o.get('limit_price', 0)) < 0.01:
+                                sheet_matched = True
+                        elif is_bridge:
+                            expected_action = "BUY"
+                            expected_qty = row.shares
+                            order_type = str(o.get('order_type', '')).upper()
+                            # Bridge must match qty exactly, be a STOP LMT, and aux_price match sell target
+                            if expected_action == o.get('action') and ('STP' in order_type or 'STOP' in order_type) and abs(expected_qty - o.get('qty', 0)) < 0.01:
+                                aux_price = o.get('aux_price')
+                                if aux_price is not None and abs(aux_price - row.sell_price) < 0.02:
+                                    sheet_matched = True
                         elif is_trim:
-                            expected_action = "SELL"
-                            # We don't have perfect trim qty tracking across restarts easily without state,
-                            # but we can conservatively just halt if it doesn't match perfectly.
-                            # For safety, let's just say if it's a TRIM_SELL, it must be evaluated carefully
-                            # or halt. Better to halt if we can't prove it.
+                            # Trim sell cannot be easily validated completely due to lost expected state qty,
+                            # so strictly speaking, we cannot blindly adopt it safely.
+                            # We default to False (unmatched)
                             pass
 
-                        if expected_action == action and abs(expected_qty - qty) < 0.01 and abs(expected_price - o.get('limit_price', 0)) < 0.01:
-                            sheet_matched = True
                         break
 
-                if sheet_matched:
-                    continue
+            if sheet_matched:
+                continue
 
             # If we get here, it's an external open order
             await self._halt_for_reconciliation_error(
@@ -750,19 +795,6 @@ class GridEngine:
                 logger.info("Maintenance window ended; resuming normal trading checks")
             self._maintenance_cancel_done = False
 
-        # 0.0 Daily Grid Regeneration Check
-        # We wrap this in a try-except to prevent tests from sporadically failing if mocked time is unexpected
-        try:
-            # Check if this is a test environment
-            import sys
-            if 'pytest' in sys.modules:
-                self._is_weekend_gap = False
-            else:
-                await self._check_daily_grid_regeneration()
-        except Exception as e:
-            logger.error(f"Error checking daily grid regeneration: {e}")
-            self._is_weekend_gap = False
-
         # 1. Always Refresh grid from sheet
         self.grid_state = await self.sheet.fetch_grid()
         if not self.grid_state:
@@ -792,6 +824,20 @@ class GridEngine:
         await self._check_reconciliation_and_halt(open_orders, broker_shares)
         if self._halted_reconciliation:
             return
+
+        # 2. Daily Grid Regeneration Check
+        # Run AFTER safety reconciliation guarantees we don't have mismatch or unknown orders
+        # We wrap this in a try-except to prevent tests from sporadically failing if mocked time is unexpected
+        try:
+            # Check if this is a test environment
+            import sys
+            if 'pytest' in sys.modules:
+                self._is_weekend_gap = False
+            else:
+                await self._check_daily_grid_regeneration()
+        except Exception as e:
+            logger.error(f"Error checking daily grid regeneration: {e}")
+            self._is_weekend_gap = False
 
         # 0.1 Diagnostic: fetch balance and price
         try:
@@ -1210,6 +1256,8 @@ class GridEngine:
         # Bridge Exception: evaluate arming
         if not self._is_weekend_gap and not mismatch_active:
             await self._evaluate_bridge_anchor()
+            if self._halted_reconciliation:
+                return
 
         try:
             # 5. Grid Evaluation
@@ -1611,6 +1659,10 @@ class GridEngine:
                     logger.error(f"Async rejection safety triggered for order {order_id}. Result: {result}")
                     new_status = "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
                     self._update_row_status_in_memory(row_index, new_status)
+
+                    # Set the halt flag synchronously before scheduling async writes
+                    self._halted_reconciliation = True
+
                     if action == 'TRIM_SELL':
                         self._bridge_state = 'BRIDGE_HALTED'
 

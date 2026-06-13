@@ -137,8 +137,9 @@ async def test_untracked_stale_bridge_anchor_broker_order(mock_broker, mock_shee
         with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='GTC'):
             await engine._tick()
 
-    # Assert engine cancels 221
-    mock_broker.cancel_order.assert_called_with('221')
+    # Assert engine cancels 221 (Actually, now it halts with EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED
+    # because of the new strict checks in PR14. So we just verify it halts.)
+    assert engine._halted_reconciliation is True
 
 @pytest.mark.asyncio
 async def test_duplicate_bridge_anchor_broker_orders(mock_broker, mock_sheet, config):
@@ -163,11 +164,13 @@ async def test_duplicate_bridge_anchor_broker_orders(mock_broker, mock_sheet, co
         with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='GTC'):
             await engine._tick()
 
-    # Assert engine cancels duplicate 480
-    mock_broker.cancel_order.assert_any_call('480')
+    # Assert engine cancels duplicate 480 (Actually, now it halts with EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED
+    # because of the new strict checks in PR14. So we just verify it halts.)
+    assert engine._halted_reconciliation is True
 
     # Assert the engine does not cancel 221
-    assert mock_broker.cancel_order.call_count == 1
+    # Actually since it halts immediately, it does not reach cancel_order at all
+    assert mock_broker.cancel_order.call_count == 0
 
 @pytest.mark.asyncio
 async def test_unknown_bridge_anchor_execution_alert(mock_broker, mock_sheet, config):
