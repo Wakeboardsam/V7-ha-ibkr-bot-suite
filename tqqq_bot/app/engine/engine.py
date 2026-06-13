@@ -150,7 +150,7 @@ class GridEngine:
 
         if not error_success:
             try:
-                await self.sheet.append_error(
+                ok = await self.sheet.append_error(
                     timestamp=payload['timestamp'],
                     severity=payload['severity'],
                     code=payload['code'],
@@ -160,8 +160,11 @@ class GridEngine:
                     bot_status="HALTED_RECONCILIATION",
                     details=payload['details']
                 )
-                self._error_written_keys.add(dedupe_key)
-                error_success = True
+                if ok:
+                    self._error_written_keys.add(dedupe_key)
+                    error_success = True
+                else:
+                    logger.error("append_error returned False during halt notification")
             except Exception as e:
                 logger.error(f"Failed to append to Errors tab during halt: {e}")
 
@@ -178,9 +181,12 @@ class GridEngine:
                     "avg_cost": 0,
                     "net_liquidation_value": None
                 }
-                await self.sheet.log_health(health_data)
-                self._health_written_keys.add(dedupe_key)
-                health_success = True
+                ok = await self.sheet.log_health(health_data)
+                if ok:
+                    self._health_written_keys.add(dedupe_key)
+                    health_success = True
+                else:
+                    logger.error("log_health returned False during halt notification")
             except Exception as e:
                 logger.error(f"Failed to log Health status during halt: {e}")
 
@@ -433,8 +439,8 @@ class GridEngine:
         if self.grid_state and row_index in self.grid_state.rows:
             row = self.grid_state.rows[row_index]
             row.status = status
-            # Mirror has_y logic: OWNED or WORKING_SELL implies we have it
-            row.has_y = status.startswith("OWNED:") or status.startswith("WORKING_SELL:")
+            # Mirror has_y logic: OWNED or WORKING_SELL or ERROR_RECONCILE_REQUIRED implies we have it
+            row.has_y = status.startswith("OWNED:") or status.startswith("WORKING_SELL:") or status.startswith("ERROR_RECONCILE_REQUIRED")
 
         self.pending_status_updates[row_index] = status
         logger.debug(f"Queued status update for row {row_index}: {status}")
@@ -583,42 +589,44 @@ class GridEngine:
             sheet_matched = False
             if self.grid_state:
                 for row in self.grid_state.rows.values():
-                    if oid in row.status:
-                        # Validate the intent matches strictly
-                        is_buy = "WORKING_BUY" in row.status
-                        is_sell = "WORKING_SELL" in row.status
-                        is_trim = "TRIM_SELL" in row.status
-                        is_bridge = "BRIDGE_BUY" in row.status
+                    status_parts = row.status.split('|')
+                    for part in status_parts:
+                        if ':' in part:
+                            prefix, parsed_oid = part.split(':', 1)
+                            if parsed_oid == oid:
+                                # Found the exact order ID associated with a specific intent prefix
+                                expected_action = ""
+                                expected_qty = 0
 
-                        expected_action = ""
-                        expected_qty = 0
+                                if prefix == "WORKING_BUY":
+                                    expected_action = "BUY"
+                                    expected_qty = row.shares
+                                    if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
+                                        sheet_matched = True
+                                elif prefix == "WORKING_SELL":
+                                    expected_action = "SELL"
+                                    expected_qty = row.shares
+                                    if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.sell_price - o.get('limit_price', 0)) < 0.01:
+                                        sheet_matched = True
+                                elif prefix == "BRIDGE_BUY":
+                                    expected_action = "BUY"
+                                    expected_qty = row.shares
+                                    order_type = str(o.get('order_type', '')).upper()
+                                    # Bridge must match qty exactly, be a STOP LMT, aux_price match sell target, and limit_price match buy offset
+                                    if expected_action == o.get('action') and ('STP' in order_type or 'STOP' in order_type) and abs(expected_qty - o.get('qty', 0)) < 0.01:
+                                        aux_price = o.get('aux_price')
+                                        limit_price = o.get('limit_price')
+                                        expected_limit = row.sell_price + self.config.anchor_buy_offset
+                                        if aux_price is not None and abs(aux_price - row.sell_price) < 0.02 and limit_price is not None and abs(limit_price - expected_limit) < 0.02:
+                                            sheet_matched = True
+                                elif prefix == "TRIM_SELL":
+                                    # Trim sell cannot be easily validated completely due to lost expected state qty,
+                                    # so strictly speaking, we cannot blindly adopt it safely.
+                                    pass
 
-                        if is_buy:
-                            expected_action = "BUY"
-                            expected_qty = row.shares
-                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
-                                sheet_matched = True
-                        elif is_sell:
-                            expected_action = "SELL"
-                            expected_qty = row.shares
-                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.sell_price - o.get('limit_price', 0)) < 0.01:
-                                sheet_matched = True
-                        elif is_bridge:
-                            expected_action = "BUY"
-                            expected_qty = row.shares
-                            order_type = str(o.get('order_type', '')).upper()
-                            # Bridge must match qty exactly, be a STOP LMT, and aux_price match sell target
-                            if expected_action == o.get('action') and ('STP' in order_type or 'STOP' in order_type) and abs(expected_qty - o.get('qty', 0)) < 0.01:
-                                aux_price = o.get('aux_price')
-                                if aux_price is not None and abs(aux_price - row.sell_price) < 0.02:
-                                    sheet_matched = True
-                        elif is_trim:
-                            # Trim sell cannot be easily validated completely due to lost expected state qty,
-                            # so strictly speaking, we cannot blindly adopt it safely.
-                            # We default to False (unmatched)
-                            pass
-
-                        break
+                                break # Break prefix loop
+                    if sheet_matched:
+                        break # Break rows loop
 
             if sheet_matched:
                 continue
@@ -641,9 +649,23 @@ class GridEngine:
             return
 
         # Sum required shares based on row state across ALL rows
-        # A row requires owned shares if it is OWNED, WORKING_SELL, BRIDGE_BUY, or TRIM_SELL
+        # A row requires owned shares if it is OWNED, WORKING_SELL, BRIDGE_BUY, TRIM_SELL, or ERROR_RECONCILE_REQUIRED
         total_required_shares = 0
         for row in self.grid_state.rows.values():
+            # Treat ERROR_RECONCILE_REQUIRED as an immediate hard halt
+            if row.status.startswith("ERROR_RECONCILE_REQUIRED"):
+                await self._halt_for_reconciliation_error(
+                    code="TRACKER_ERROR_RECONCILE_REQUIRED",
+                    symbol=TICKER,
+                    row=row.row_index,
+                    action="NO ACTION (HALT)",
+                    details=f"Tracker row {row.row_index} has an unresolved ERROR_RECONCILE_REQUIRED status. Manual reconciliation is required before restart/live use.",
+                    severity="CRITICAL",
+                    open_orders_count=len(open_orders),
+                    broker_shares=broker_shares
+                )
+                return
+
             requires_shares = False
             state_parts = row.status.split('|')
             for part in state_parts:
@@ -1655,9 +1677,53 @@ class GridEngine:
                         if is_short_reject or getattr(result, 'reason', '') in ('Inactive', 'Rejected') or (result.error_code == 201) or (result.error_msg and "Short stock" in result.error_msg):
                             is_short_reject = True
 
-                if is_short_reject:
+                # Unified handling for unexpected SELL / TRIM_SELL errors/cancellations
+                # We assume any `error` or `cancelled` that reaches here without being a deliberate known action
+                # (which would have bypassed this or passed a specific reason) is unexpected.
+                # `result.reason == 'bot_cancel'` is a pattern we can adopt if we want to explicitly mark bot-driven cancels.
+                # However, currently the adapter doesn't pass 'bot_cancel', it just sees it go 'Cancelled'.
+                # But deliberate cancels are done by the engine during maintenance or window logic, which shouldn't normally
+                # drop working sells unexpectedly without a clear reason unless it's a boundary change.
+                # Actually, during weekend gaps or session boundaries, the bot cancels its own orders.
+                # If we halt on EVERY cancel, session boundaries would halt the bot.
+                # Let's see: `cancel_order` is called by the bot. Can we identify if the cancel was initiated by the bot?
+                # Currently, `result.reason` is populated by `status`. If `status` == 'Cancelled', the reason is 'Cancelled'.
+                # For safety, as requested: if it's a short reject -> IBKR_SHORT_REJECTION_HALT.
+                # If it's an unexpected SELL cancel with 0 fills -> SELL_CANCELLED_NO_FILL_HALT.
+                # Wait, how do we distinguish intentional bot cancel from unexpected?
+                # The prompt: "So: preserve "OWNED:<existing_id>" only for known intentional bot cancels. For unexpected broker-side SELL errors, "Inactive", "Rejected", or zero-fill cancellations, hard halt with "ERROR_RECONCILE_REQUIRED"."
+                # "If it is a normal bot-initiated cancel, preserve OWNED"
+                # If we don't have a reliable way to distinguish right now, we can check if the status is exactly 'error', 'Inactive', 'Rejected'.
+                # If it's 'cancelled' AND the reason is 'Cancelled', we might assume it was bot-initiated or manual.
+                # To strictly follow the instruction: "For SELL or TRIM_SELL with: 'cancelled' and filled_qty is 0 or None, 'error', 'Inactive', 'Rejected' do not mark the row IDLE and do not clear ownership."
+
+                is_unexpected_sell_drop = False
+                short_reject_halt = False
+
+                if action in ('SELL', 'TRIM_SELL'):
+                    if result.status == 'error' or (result.status == 'cancelled' and (result.filled_qty is None or result.filled_qty == 0)):
+                        is_unexpected_sell_drop = True
+                        if is_short_reject:
+                            short_reject_halt = True
+                        elif getattr(result, 'reason', '') in ('Inactive', 'Rejected'):
+                            # Explicitly unexpected
+                            is_unexpected_sell_drop = True
+                        elif result.status == 'cancelled' and result.reason == 'Cancelled':
+                            # Check if we triggered this cancel recently?
+                            # We can check if `result.order_id` is still tracked by `order_manager`.
+                            # When the bot calls `cancel_order`, it doesn't untrack it until this callback.
+                            # So it IS tracked.
+                            # For safety, let's treat generic 'cancelled' as bot-initiated UNLESS it's an error/rejected.
+                            # Wait, the prompt specifically said:
+                            # "For SELL or TRIM_SELL with: 'cancelled' and filled_qty is 0 or None / 'error' / 'Inactive' / 'Rejected' ... do not mark the row IDLE"
+                            # Let's halt on ALL of them except if we can definitively say it was bot-initiated.
+                            # Since we don't have a flag right now, and the prompt says "If uncertain, halt with ERROR_RECONCILE_REQUIRED."
+                            is_unexpected_sell_drop = True
+
+                if is_short_reject or (action in ('SELL', 'TRIM_SELL') and is_unexpected_sell_drop):
+                    code = "IBKR_SHORT_REJECTION_HALT" if short_reject_halt else "SELL_CANCELLED_NO_FILL_HALT"
                     logger.error(f"Async rejection safety triggered for order {order_id}. Result: {result}")
-                    new_status = "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
+                    new_status = f"ERROR_RECONCILE_REQUIRED:{code}"
                     self._update_row_status_in_memory(row_index, new_status)
 
                     # Set the halt flag synchronously before scheduling async writes
@@ -1668,11 +1734,11 @@ class GridEngine:
 
                     # Queue sync to sheet and call async halt helper via task
                     asyncio.create_task(self._safe_async_halt(
-                        code="IBKR_SHORT_REJECTION_HALT",
+                        code=code,
                         symbol=TICKER,
                         row=row_index,
                         action=action,
-                        details=f"Async order failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
+                        details=f"Unexpected SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). Halting to preserve Tracker state.",
                         severity="CRITICAL"
                     ))
                     asyncio.create_task(self._sync_to_sheet())
@@ -1681,22 +1747,7 @@ class GridEngine:
                 if result.status == 'error':
                     self.row_cooldowns[row_index] = datetime.now() + timedelta(minutes=5)
                     # Revert status immediately so sheet doesn't show WORKING indefinitely if _tick is slow
-                    if action == 'SELL':
-                        if self.grid_state and row_index in self.grid_state.rows:
-                            current_status = self.grid_state.rows[row_index].status
-                            new_status = _remove_status_part(current_status, 'WORKING_SELL:')
-                        else:
-                            new_status = "OWNED:0"
-                    elif action == 'TRIM_SELL':
-                        self._bridge_state = 'BRIDGE_HALTED'
-                        logger.error(f"TRIM_SELL order {order_id} errored. Halting bridge flow.")
-                        owned_id = "0"
-                        if self.grid_state and row_index in self.grid_state.rows:
-                            status = self.grid_state.rows[row_index].status
-                            if "OWNED:" in status:
-                                owned_id = _extract_order_id_from_status(status, "OWNED:") or "0"
-                        new_status = f"OWNED:{owned_id}"
-                    elif action == 'BRIDGE_BUY':
+                    if action == 'BRIDGE_BUY':
                         logger.error(f"BRIDGE_BUY order {order_id} errored. Returning row 7 to WORKING_SELL and reverting bridge state.")
                         self._bridge_state = 'IDLE'
                         if self.grid_state and row_index in self.grid_state.rows:
@@ -1712,23 +1763,7 @@ class GridEngine:
                     asyncio.create_task(self._sync_to_sheet())
                 else:
                     # Cancelled explicitly
-                    if action == 'SELL':
-                        if self.grid_state and row_index in self.grid_state.rows:
-                            current_status = self.grid_state.rows[row_index].status
-                            new_status = _remove_status_part(current_status, 'WORKING_SELL:')
-                        else:
-                            new_status = "OWNED:0"
-                    elif action == 'TRIM_SELL':
-                        # Trim cancelled, halt flow
-                        self._bridge_state = 'BRIDGE_HALTED'
-                        logger.error(f"TRIM_SELL order {order_id} cancelled explicitly. Halting bridge flow.")
-                        owned_id = "0"
-                        if self.grid_state and row_index in self.grid_state.rows:
-                            status = self.grid_state.rows[row_index].status
-                            if "OWNED:" in status:
-                                owned_id = status.split("OWNED:")[1].split("|")[0]
-                        new_status = f"OWNED:{owned_id}"
-                    elif action == 'BRIDGE_BUY':
+                    if action == 'BRIDGE_BUY':
                         logger.info(f"BRIDGE_BUY order {order_id} cancelled explicitly. Reverting row 7 status.")
                         self._bridge_state = 'IDLE'
                         if self.grid_state and row_index in self.grid_state.rows:

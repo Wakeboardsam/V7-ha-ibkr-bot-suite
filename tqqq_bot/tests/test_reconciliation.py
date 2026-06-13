@@ -276,19 +276,25 @@ async def test_bridge_guard(engine, mock_broker, mock_sheet):
     # To test bridge guard, we need to let the circuit breaker pass
     engine.config.share_mismatch_mode = "warn"
 
-    # To test the bridge guard specifically, we need it to go through the early
-    # startup check where it halts if Tracker claims bridge anchor state but broker
-    # has 0 shares.
+    # To test the bridge guard specifically and explicitly, we call `_evaluate_bridge_anchor`
+    # directly. In real operation, the startup `SELL_POSITION_MISMATCH_HALT` guard
+    # catches it earlier. But we must verify the bridge guard itself works and emits
+    # the specific error.
+
+    # Needs to match all bridge anchor conditions to reach place_stop_limit_order
+    # EXCEPT the broker shares. So we set shares to 0.
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine.grid_state = GridState(rows={
-        7: GridRow(row_index=7, status="BRIDGE_BUY:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+        7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
     })
 
-    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
-    # We will just run _tick(), the startup reconciliation will catch it.
-    await engine._tick()
+    await engine._evaluate_bridge_anchor()
 
     assert engine._halted_reconciliation is True
     assert mock_broker.place_stop_limit_order.call_count == 0
+    # Let task finish
+    await asyncio.sleep(0.01)
     mock_sheet.append_error.assert_called_once()
     call_args = mock_sheet.append_error.call_args[1]
-    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT" # Using generic startup mismatch code
+    assert call_args['code'] == "BRIDGE_POSITION_MISMATCH_HALT"
+    assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:BRIDGE_POSITION_MISMATCH_HALT"

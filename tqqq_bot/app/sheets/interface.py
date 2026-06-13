@@ -71,7 +71,9 @@ class SheetInterface:
 
             try:
                 status = str(row_values[0]).strip() if row_values[0] else "IDLE"
-                has_y = str(row_values[1]).strip().upper() == "Y"
+                # For safety, treat ERROR_RECONCILE_REQUIRED as equivalent to has_y = True for protective bounds
+                status = str(row_values[0]).strip() if row_values[0] else "IDLE"
+                has_y = str(row_values[1]).strip().upper() == "Y" or status.startswith("ERROR_RECONCILE_REQUIRED")
                 # row_values[2] is Column E (empty or notes in legacy)
 
                 # Use robust parsing for numeric fields to handle formatted accounting cells
