@@ -145,7 +145,7 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         mock_worksheet.append_row.assert_called_once()
         args = mock_worksheet.append_row.call_args[0][0]
-        self.assertEqual(args[1], "Test error")
+        self.assertEqual(args[7], "Test error") # Details column is at index 7
 
     async def test_log_headers_when_empty(self):
         mock_worksheet = MagicMock()
@@ -160,7 +160,8 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         # Second call should be append_row with data
         self.assertEqual(mock_worksheet.append_row.call_count, 2)
         header_args = mock_worksheet.append_row.call_args_list[0][0][0]
-        self.assertEqual(header_args, ["TIMESTAMP", "ERROR_MSG"])
+        from sheets.schema import ERRORS_HEADERS
+        self.assertEqual(header_args, ERRORS_HEADERS)
 
     async def test_log_error_missing_worksheet(self):
         self.mock_sheet.worksheet.side_effect = gspread.exceptions.WorksheetNotFound

@@ -395,7 +395,10 @@ async def test_bridge_anchor_wait_for_recalc(mock_broker, mock_sheet, config):
     # because row 7 sell price (100.0) != 105.0, it should return early
     # it shouldn't log "Shares match perfectly" or clear the state
     assert engine._bridge_state == 'ANCHOR_RECALC_PENDING'
-    mock_broker.get_open_orders.assert_not_called()
+    # Since PR14, get_open_orders is called at the very beginning of _tick for reconciliation
+    # mock_broker.get_open_orders.assert_not_called() is no longer valid.
+    # But we can assert place_limit_order is not called
+    mock_broker.place_limit_order.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_bridge_anchor_recalc_complete(mock_broker, mock_sheet, config):

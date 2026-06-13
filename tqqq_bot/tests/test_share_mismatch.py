@@ -79,20 +79,18 @@ async def test_share_mismatch_warn(mock_broker, mock_sheet, config):
     # 2. Should STILL perform reconciliation (get_open_orders is called)
     mock_broker.get_open_orders.assert_called()
 
-    # 3. Should place SELL order for row 7 (even with mismatch)
-    mock_broker.place_limit_order.assert_any_call(
-        ticker="TQQQ", action="SELL", qty=10, limit_price=105.0, on_update=engine._handle_order_update, order_id="ORD-NEW"
-    )
+    # 3. Should HALT because of hard pre-sell guard (available_to_sell=0, requested=10)
+    assert engine._halted_reconciliation is True
 
-    # 4. Should SKIP BUY order for row 8
-    # We check that no BUY call was made
-    buy_calls = [call for call in mock_broker.place_limit_order.call_args_list if call.kwargs.get('action') == 'BUY']
-    assert len(buy_calls) == 0
+    # 4. Should NOT place SELL order for row 7
+    assert mock_broker.place_limit_order.call_count == 0
 
 @pytest.mark.asyncio
 async def test_share_mismatch_warn_retracking(mock_broker, mock_sheet, config):
     config.share_mismatch_mode = "warn"
-    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0}) # Mismatch
+    # To test re-tracking we need to provide enough shares to bypass the hard halt guard
+    # Grid claims 10 shares, we will provide 10 so it doesn't halt early
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
 
     # Existing order in status
     grid_state = GridState(
@@ -101,12 +99,12 @@ async def test_share_mismatch_warn_retracking(mock_broker, mock_sheet, config):
         }
     )
     mock_sheet.fetch_grid.return_value = grid_state
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'action': 'SELL'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
     await engine._tick()
 
-    # Should re-track existing order despite mismatch
+    # Should re-track existing order
     assert engine.order_manager.is_tracked("ORD-EXISTING")
     # Should not place new order because it's already working
     assert mock_broker.place_limit_order.call_count == 0
@@ -114,7 +112,8 @@ async def test_share_mismatch_warn_retracking(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_share_mismatch_warn_outside_window(mock_broker, mock_sheet, config):
     config.share_mismatch_mode = "warn"
-    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0}) # Mismatch
+    # Provide enough shares to bypass early halt guard
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
 
     # distal_y is 7. Window is [7, 10].
     # Let's put a row outside the window.
@@ -133,7 +132,7 @@ async def test_share_mismatch_warn_outside_window(mock_broker, mock_sheet, confi
 
     await engine._tick()
 
-    # Should cancel order outside window despite mismatch
+    # Should cancel order outside window
     mock_broker.cancel_order.assert_called_with("ORD-OUTSIDE")
 
 @pytest.mark.asyncio
@@ -146,7 +145,6 @@ async def test_share_mismatch_warn_log_error_fails(mock_broker, mock_sheet, conf
     engine = GridEngine(mock_broker, mock_sheet, config)
     await engine._tick()
 
-    # Bot should NOT crash and should STILL place the SELL order
-    mock_broker.place_limit_order.assert_any_call(
-        ticker="TQQQ", action="SELL", qty=10, limit_price=105.0, on_update=engine._handle_order_update, order_id="ORD-NEW"
-    )
+    # Bot should NOT crash, but since we added the hard pre-sell guard it will HALT because broker has 0 shares while row wants 10 shares.
+    # We should assert that it halted instead of placed the order.
+    assert engine._halted_reconciliation is True

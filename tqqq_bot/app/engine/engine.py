@@ -89,6 +89,60 @@ class GridEngine:
         self._bridge_shares_acquired: int = 0
         self._bridge_fill_price: float = 0.0
 
+        self._halted_reconciliation = False
+        self._error_dedupe_keys = set()
+
+    def _halt_for_reconciliation_error(
+        self,
+        code: str,
+        symbol: str,
+        row: Optional[int | str],
+        action: str,
+        details: str,
+        severity: str = "CRITICAL",
+    ):
+        """
+        Halts the bot due to a reconciliation mismatch and logs the issue.
+        Uses in-memory deduplication so it doesn't spam the Google Sheet.
+        """
+        self._halted_reconciliation = True
+
+        dedupe_key = f"{code}_{row}_{action}"
+
+        loud_alert = (
+            f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+            f"LOUD ALERT: RECONCILIATION HALT — {details}\n"
+            f"Symbol: {symbol}\n"
+            f"Row: {row}\n"
+            f"Action: {action}\n"
+            f"Code: {code}\n"
+            f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        )
+        logger.critical(loud_alert)
+
+        if dedupe_key not in self._error_dedupe_keys:
+            self._error_dedupe_keys.add(dedupe_key)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Fire and forget the error log
+            import asyncio
+            asyncio.create_task(
+                self.sheet.append_error(
+                    timestamp=timestamp,
+                    severity=severity,
+                    code=code,
+                    symbol=symbol,
+                    row=str(row) if row is not None else "",
+                    action=action,
+                    bot_status="HALTED_RECONCILIATION",
+                    details=details
+                )
+            )
+
+        # We don't try to wait for this inside the regular tick flow, just let it update Health next cycle
+        # Or wait, _log_health_periodic will use run_status based on self._halted_reconciliation.
+
     def _parse_hhmm(self, value: str) -> time:
         try:
             h, m = map(int, value.split(":"))
@@ -243,7 +297,11 @@ class GridEngine:
                 except Exception as e:
                     logger.warning(f"Failed to fetch net liquidation value: {e}")
 
-                run_status = "Running (Mode=DRY_RUN)" if self.config.dry_run else "Running"
+                if self._halted_reconciliation:
+                    run_status = "HALTED_RECONCILIATION"
+                else:
+                    run_status = "Running (Mode=DRY_RUN)" if self.config.dry_run else "Running"
+
                 health_data = {
                     "last_price": self.last_price,
                     "open_orders_count": len(open_orders),
@@ -427,6 +485,90 @@ class GridEngine:
                     import asyncio
                     asyncio.create_task(self._sync_to_sheet())
 
+    async def _check_reconciliation_and_halt(self, open_orders: List[dict], broker_shares: int):
+        """
+        Startup / early reconciliation check before placing any orders or regenerating grid.
+        1. Checks for unmatched external orders.
+        2. Checks if Tracker demands more owned shares than the broker actually has.
+        """
+        if self._halted_reconciliation:
+            return
+
+        # 1. Unmatched external open orders check
+        # Verify that all active open TQQQ orders clearly match Tracker intent.
+        # This prevents us from blindly ignoring manual or external orders.
+        for o in open_orders:
+            ticker = o.get('ticker', '')
+            if ticker != TICKER:
+                continue
+
+            oid = str(o.get('order_id', ''))
+
+            # If we're internally tracking it, it's ours.
+            if self.order_manager.is_tracked(oid):
+                continue
+
+            # Allow suspected bridge-like orders that match Tracker intent
+            if self.grid_state and 7 in self.grid_state.rows:
+                row7 = self.grid_state.rows[7]
+                action = o.get('action', '')
+                order_type = str(o.get('order_type', '')).upper()
+                tif = o.get('tif', '')
+                qty = o.get('qty', 0)
+                aux_price = o.get('aux_price')
+
+                if action == 'BUY' and ('STP' in order_type or 'STOP' in order_type) and tif == 'GTC':
+                    if abs(qty - row7.shares) < 0.01 and aux_price is not None and abs(aux_price - row7.sell_price) < 0.02:
+                        continue # Looks like our bridge anchor, we will adopt it in normal tick flow
+
+                # Check if it matches an untracked sheet state order
+                sheet_matched = False
+                for row in self.grid_state.rows.values():
+                    if oid in row.status:
+                        sheet_matched = True
+                        break
+                if sheet_matched:
+                    continue
+
+            # If we get here, it's an external open order
+            self._halt_for_reconciliation_error(
+                code="EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED",
+                symbol=TICKER,
+                row=None,
+                action="NO ACTION (HALT)",
+                details=f"Unmatched external/unknown active open order found (ID: {oid}). Manual reconciliation required.",
+                severity="CRITICAL"
+            )
+            return
+
+        # 2. Hard tracker vs broker position check
+        if not self.grid_state:
+            return
+
+        # Find required shares based on row state
+        # A row requires owned shares if it is OWNED, WORKING_SELL, BRIDGE_BUY, or TRIM_SELL
+        for row in self.grid_state.rows.values():
+            requires_shares = False
+            state_parts = row.status.split('|')
+            for part in state_parts:
+                if part.startswith("OWNED:") or part.startswith("WORKING_SELL:") or part.startswith("BRIDGE_BUY:") or part.startswith("TRIM_SELL:"):
+                    requires_shares = True
+                    break
+
+            if requires_shares:
+                # Does the broker have enough shares to support this row alone?
+                # We check `broker_shares` vs `row.shares`.
+                if broker_shares < row.shares:
+                    self._halt_for_reconciliation_error(
+                        code="SELL_POSITION_MISMATCH_HALT",
+                        symbol=TICKER,
+                        row=row.row_index,
+                        action="NO ACTION (HALT)",
+                        details=f"Startup reconciliation halt. Tracker row {row.row_index} claimed an owned/working state for {row.shares} {TICKER} shares, but broker truth for the configured account showed {broker_shares} {TICKER} shares. A SELL would exceed the account's long position. No order was sent. Bot halted. Reconcile Tracker row {row.row_index} with actual broker holdings before restarting.",
+                        severity="CRITICAL"
+                    )
+                    return
+
     async def _evaluate_bridge_anchor(self):
         """
         Evaluates conditions for the Bridge Anchor feature.
@@ -464,7 +606,20 @@ class GridEngine:
         if not snapshot.is_ready:
             return
         broker_shares = snapshot.positions.get(TICKER, 0)
-        if broker_shares != row7.shares:
+        if broker_shares < row7.shares:
+            self._halt_for_reconciliation_error(
+                code="BRIDGE_POSITION_MISMATCH_HALT",
+                symbol=TICKER,
+                row=7,
+                action="BRIDGE_BUY",
+                details=f"Hard bridge-anchor guard triggered. Tracker row 7 assumes ownership of {row7.shares} shares, but broker truth shows {broker_shares}. Halting.",
+                severity="CRITICAL"
+            )
+            # Set row state to ERROR_RECONCILE_REQUIRED
+            self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:BRIDGE_POSITION_MISMATCH_HALT")
+            return
+        elif broker_shares != row7.shares:
+            # Maybe more shares? Cancel bridge anchor if any
             if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
                 await self._cancel_bridge_anchor("Broker shares do not match Row 7 shares.")
             return
@@ -515,6 +670,10 @@ class GridEngine:
             asyncio.create_task(self._sync_to_sheet())
 
     async def _tick(self):
+        if self._halted_reconciliation:
+            logger.debug("Tick skipped because engine is HALTED_RECONCILIATION.")
+            return
+
         # 0. Watchdog: ensure connection
         await self.broker.ensure_connected()
 
@@ -549,18 +708,6 @@ class GridEngine:
             logger.error(f"Error checking daily grid regeneration: {e}")
             self._is_weekend_gap = False
 
-        # 0.1 Diagnostic: fetch balance and price
-        try:
-            balance = await self.broker.get_wallet_balance()
-            await self.sheet.write_cash_value(balance)
-            price = await self.broker.get_price(TICKER)
-            self.last_price = price
-            if balance == 0 or price == 0:
-                logger.error("API call returned empty — possible Gateway auth or subscription issue")
-        except Exception as e:
-            logger.error(f"Diagnostic API call failed: {e}")
-            logger.error("API call returned empty — possible Gateway auth or subscription issue")
-
         # 1. Always Refresh grid from sheet
         self.grid_state = await self.sheet.fetch_grid()
         if not self.grid_state:
@@ -576,6 +723,33 @@ class GridEngine:
                     row.status = pending_status
                     row.has_y = pending_status.startswith("OWNED:") or pending_status.startswith("WORKING_SELL:")
 
+        # 1.2 Fetch broker snapshot and open orders early for reconciliation
+        snapshot = await self.broker.get_position_snapshot()
+        if not snapshot.is_ready:
+            logger.warning("Broker state is UNKNOWN. Skipping tick.")
+            return
+        positions = snapshot.positions
+        broker_shares = positions.get(TICKER, 0)
+        open_orders = await self.broker.get_open_orders()
+        broker_order_ids = {str(o['order_id']) for o in open_orders}
+
+        # 1.3 Startup / early reconciliation halt checks
+        await self._check_reconciliation_and_halt(open_orders, broker_shares)
+        if self._halted_reconciliation:
+            return
+
+        # 0.1 Diagnostic: fetch balance and price
+        try:
+            balance = await self.broker.get_wallet_balance()
+            await self.sheet.write_cash_value(balance)
+            price = await self.broker.get_price(TICKER)
+            self.last_price = price
+            if balance == 0 or price == 0:
+                logger.error("API call returned empty — possible Gateway auth or subscription issue")
+        except Exception as e:
+            logger.error(f"Diagnostic API call failed: {e}")
+            logger.error("API call returned empty — possible Gateway auth or subscription issue")
+
         # 1.2 Bridge Anchor wait for sheet recalculation
         if self._bridge_state == 'ANCHOR_RECALC_PENDING':
             # check if row 7 sell price reflects the new anchor
@@ -587,13 +761,7 @@ class GridEngine:
                 logger.debug(f"ANCHOR_RECALC_PENDING: Sheet recalculated correctly (Row 7 buy price matches {self._bridge_fill_price}).")
 
         # 3. Circuit Breaker
-        snapshot = await self.broker.get_position_snapshot()
-        if not snapshot.is_ready:
-            logger.warning("Broker state is UNKNOWN. Skipping circuit breaker and trading for this tick.")
-            return
-
-        positions = snapshot.positions
-        broker_shares = positions.get(TICKER, 0)
+        # (Snapshot and shares are already fetched in section 1.2)
 
         # Bug 1 Fix: Write G7 only after a full sell cycle complete
         if self.last_broker_shares > 0 and broker_shares == 0:
@@ -611,8 +779,7 @@ class GridEngine:
         mismatch_active = False
 
         # 4. Get current open orders for evaluation (needed for both reconciliation and grid eval)
-        open_orders = await self.broker.get_open_orders()
-        broker_order_ids = {str(o['order_id']) for o in open_orders}
+        # (open_orders and broker_order_ids are already fetched in section 1.2)
 
         # Quick scan for active TRIM_SELL to re-establish bridge state before circuit breaker
         if self._bridge_state != 'TRIM_PENDING':
@@ -875,6 +1042,36 @@ class GridEngine:
                                 if self.config.dry_run:
                                     logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=SELL row=7 qty={excess} limit={trim_limit_price} reason=Bridge Anchor trim")
                                 else:
+                                    # --- Hard Pre-SELL Guard for TRIM_SELL ---
+                                    broker_working_sell_qty = sum(
+                                        o.get('qty', 0) for o in open_orders
+                                        if o.get('action') == 'SELL' and o.get('ticker') == TICKER
+                                    )
+                                    bot_pending_sell_qty = 0
+                                    for o_id in self.order_manager.get_tracked_order_ids():
+                                        _, o_action = self.order_manager.get_row_and_action(o_id)
+                                        if o_action in ('SELL', 'TRIM_SELL'):
+                                            if o_id not in broker_order_ids:
+                                                o_row_idx, _ = self.order_manager.get_row_and_action(o_id)
+                                                if o_row_idx in self.grid_state.rows:
+                                                    bot_pending_sell_qty += self.grid_state.rows[o_row_idx].shares
+
+                                    available_to_sell = broker_shares - broker_working_sell_qty - bot_pending_sell_qty
+
+                                    if available_to_sell < excess:
+                                        self._halt_for_reconciliation_error(
+                                            code="SELL_POSITION_MISMATCH_HALT",
+                                            symbol=TICKER,
+                                            row=7,
+                                            action="TRIM_SELL",
+                                            details=f"Hard pre-SELL guard triggered. Requested TRIM_SELL for {excess} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {broker_working_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
+                                            severity="CRITICAL"
+                                        )
+                                        self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
+                                        self._bridge_state = 'BRIDGE_HALTED'
+                                        return
+                                    # --- End Hard Pre-SELL Guard ---
+
                                     trim_order_id = await self.broker.get_next_order_id()
                                     self.order_manager.track(7, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL', broker=self.broker, on_update=self._handle_order_update)
 
@@ -1022,6 +1219,39 @@ class GridEngine:
                                 if self.config.dry_run:
                                     logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=SELL row={row.row_index} qty={row.shares} limit={row.sell_price} reason=missing sell for owned row")
                                 else:
+                                    # --- Hard Pre-SELL Guard ---
+                                    broker_working_sell_qty = sum(
+                                        o.get('qty', 0) for o in open_orders
+                                        if o.get('action') == 'SELL' and o.get('ticker') == TICKER
+                                    )
+                                    # Calculate bot pending sell qty (tracked but not in open orders)
+                                    bot_pending_sell_qty = 0
+                                    for o_id in self.order_manager.get_tracked_order_ids():
+                                        _, o_action = self.order_manager.get_row_and_action(o_id)
+                                        if o_action in ('SELL', 'TRIM_SELL'):
+                                            if o_id not in broker_order_ids:
+                                                # Assuming each row only has one active sell at a time, we could look up the qty.
+                                                # To be safe, we can look up the row and its shares.
+                                                o_row_idx, _ = self.order_manager.get_row_and_action(o_id)
+                                                if o_row_idx in self.grid_state.rows:
+                                                    bot_pending_sell_qty += self.grid_state.rows[o_row_idx].shares
+
+                                    available_to_sell = broker_shares - broker_working_sell_qty - bot_pending_sell_qty
+
+                                    if available_to_sell < row.shares:
+                                        self._halt_for_reconciliation_error(
+                                            code="SELL_POSITION_MISMATCH_HALT",
+                                            symbol=TICKER,
+                                            row=row.row_index,
+                                            action="SELL",
+                                            details=f"Hard pre-SELL guard triggered. Requested SELL for {row.shares} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {broker_working_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
+                                            severity="CRITICAL"
+                                        )
+                                        # Set row state to ERROR_RECONCILE_REQUIRED
+                                        self._update_row_status_in_memory(row.row_index, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
+                                        return
+                                    # --- End Hard Pre-SELL Guard ---
+
                                     order_id = await self.broker.get_next_order_id()
                                     self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'SELL',
                                                         broker=self.broker, on_update=self._handle_order_update)
@@ -1260,6 +1490,40 @@ class GridEngine:
                         logger.info("Anchor BUY cancelled/errored with 0 fill. Updating G7 anchor.")
                         asyncio.create_task(self._write_fresh_anchor_ask())
 
+                # Async rejection safety check (Short Sale or 0 fills)
+                # Check for error or cancel with 0 fills for SELL / TRIM_SELL
+                is_short_reject = False
+                if action in ('SELL', 'TRIM_SELL'):
+                    if result.status == 'error' or (result.status == 'cancelled' and (result.filled_qty is None or result.filled_qty == 0)):
+                        if result.error_code == 201 or (result.error_msg and "Short stock positions can only be held in a margin account" in result.error_msg) or (result.reason and "Short stock positions can only be held in a margin account" in result.reason) or getattr(result, 'reason', '') in ('Inactive', 'Rejected'):
+                            is_short_reject = True
+                        elif result.error_code == 10329: # Explicit terminal error or similar we might want to halt on if we can't short
+                            pass
+                        elif result.status == 'error' and "Short stock" in str(result.error_msg):
+                            is_short_reject = True
+
+                        # Let's just say any explicit rejection that mentions short stock or error 201
+                        # or 'Inactive'/'Rejected' reason
+                        if is_short_reject or getattr(result, 'reason', '') in ('Inactive', 'Rejected') or (result.error_code == 201) or (result.error_msg and "Short stock" in result.error_msg):
+                            is_short_reject = True
+
+                if is_short_reject:
+                    logger.error(f"Async rejection safety triggered for order {order_id}. Result: {result}")
+                    self._halt_for_reconciliation_error(
+                        code="IBKR_SHORT_REJECTION_HALT",
+                        symbol=TICKER,
+                        row=row_index,
+                        action=action,
+                        details=f"Async order failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
+                        severity="CRITICAL"
+                    )
+                    new_status = "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
+                    self._update_row_status_in_memory(row_index, new_status)
+                    if action == 'TRIM_SELL':
+                        self._bridge_state = 'BRIDGE_HALTED'
+                    asyncio.create_task(self._sync_to_sheet())
+                    return
+
                 if result.status == 'error':
                     self.row_cooldowns[row_index] = datetime.now() + timedelta(minutes=5)
                     # Revert status immediately so sheet doesn't show WORKING indefinitely if _tick is slow
@@ -1276,7 +1540,7 @@ class GridEngine:
                         if self.grid_state and row_index in self.grid_state.rows:
                             status = self.grid_state.rows[row_index].status
                             if "OWNED:" in status:
-                                owned_id = status.split("OWNED:")[1].split("|")[0]
+                                owned_id = _extract_order_id_from_status(status, "OWNED:") or "0"
                         new_status = f"OWNED:{owned_id}"
                     elif action == 'BRIDGE_BUY':
                         logger.error(f"BRIDGE_BUY order {order_id} errored. Returning row 7 to WORKING_SELL and reverting bridge state.")
