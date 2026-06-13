@@ -92,7 +92,7 @@ class GridEngine:
         self._halted_reconciliation = False
         self._error_dedupe_keys = set()
 
-    def _halt_for_reconciliation_error(
+    async def _halt_for_reconciliation_error(
         self,
         code: str,
         symbol: str,
@@ -100,6 +100,8 @@ class GridEngine:
         action: str,
         details: str,
         severity: str = "CRITICAL",
+        open_orders_count: Optional[int] = None,
+        broker_shares: Optional[int] = None,
     ):
         """
         Halts the bot due to a reconciliation mismatch and logs the issue.
@@ -125,10 +127,8 @@ class GridEngine:
 
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Fire and forget the error log
-            import asyncio
-            asyncio.create_task(
-                self.sheet.append_error(
+            try:
+                await self.sheet.append_error(
                     timestamp=timestamp,
                     severity=severity,
                     code=code,
@@ -138,10 +138,31 @@ class GridEngine:
                     bot_status="HALTED_RECONCILIATION",
                     details=details
                 )
-            )
+            except Exception as e:
+                logger.error(f"Failed to append to Errors tab during halt: {e}")
 
-        # We don't try to wait for this inside the regular tick flow, just let it update Health next cycle
-        # Or wait, _log_health_periodic will use run_status based on self._halted_reconciliation.
+            try:
+                health_data = {
+                    "last_price": self.last_price,
+                    "open_orders_count": open_orders_count if open_orders_count is not None else len(self.order_manager.get_tracked_order_ids()),
+                    "last_fill_time": self.last_fill_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_fill_time else "Never",
+                    "status": "HALTED_RECONCILIATION",
+                    "position": broker_shares if broker_shares is not None else 0,
+                    "market_price": self.last_price,
+                    "market_value": (broker_shares if broker_shares is not None else 0) * self.last_price,
+                    "avg_cost": 0,
+                    "net_liquidation_value": None
+                }
+                await self.sheet.log_health(health_data)
+            except Exception as e:
+                logger.error(f"Failed to log Health status during halt: {e}")
+
+    async def _safe_async_halt(self, **kwargs):
+        """Wrapper for calling the async halt from sync callbacks."""
+        try:
+            await self._halt_for_reconciliation_error(**kwargs)
+        except Exception as e:
+            logger.error(f"Unexpected error in safe async halt wrapper: {e}", exc_info=True)
 
     def _parse_hhmm(self, value: str) -> time:
         try:
@@ -521,23 +542,52 @@ class GridEngine:
                     if abs(qty - row7.shares) < 0.01 and aux_price is not None and abs(aux_price - row7.sell_price) < 0.02:
                         continue # Looks like our bridge anchor, we will adopt it in normal tick flow
 
-                # Check if it matches an untracked sheet state order
+                # Check if it matches an untracked sheet state order STRICTLY
                 sheet_matched = False
                 for row in self.grid_state.rows.values():
                     if oid in row.status:
-                        sheet_matched = True
+                        # Validate the intent matches strictly
+                        is_buy = "WORKING_BUY" in row.status
+                        is_sell = "WORKING_SELL" in row.status
+                        is_trim = "TRIM_SELL" in row.status
+
+                        expected_action = ""
+                        expected_qty = 0
+                        expected_price = 0.0
+
+                        if is_buy:
+                            expected_action = "BUY"
+                            expected_qty = row.shares
+                            expected_price = row.buy_price
+                        elif is_sell:
+                            expected_action = "SELL"
+                            expected_qty = row.shares
+                            expected_price = row.sell_price
+                        elif is_trim:
+                            expected_action = "SELL"
+                            # We don't have perfect trim qty tracking across restarts easily without state,
+                            # but we can conservatively just halt if it doesn't match perfectly.
+                            # For safety, let's just say if it's a TRIM_SELL, it must be evaluated carefully
+                            # or halt. Better to halt if we can't prove it.
+                            pass
+
+                        if expected_action == action and abs(expected_qty - qty) < 0.01 and abs(expected_price - o.get('limit_price', 0)) < 0.01:
+                            sheet_matched = True
                         break
+
                 if sheet_matched:
                     continue
 
             # If we get here, it's an external open order
-            self._halt_for_reconciliation_error(
+            await self._halt_for_reconciliation_error(
                 code="EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED",
                 symbol=TICKER,
                 row=None,
                 action="NO ACTION (HALT)",
                 details=f"Unmatched external/unknown active open order found (ID: {oid}). Manual reconciliation required.",
-                severity="CRITICAL"
+                severity="CRITICAL",
+                open_orders_count=len(open_orders),
+                broker_shares=broker_shares
             )
             return
 
@@ -545,8 +595,9 @@ class GridEngine:
         if not self.grid_state:
             return
 
-        # Find required shares based on row state
+        # Sum required shares based on row state across ALL rows
         # A row requires owned shares if it is OWNED, WORKING_SELL, BRIDGE_BUY, or TRIM_SELL
+        total_required_shares = 0
         for row in self.grid_state.rows.values():
             requires_shares = False
             state_parts = row.status.split('|')
@@ -556,18 +607,21 @@ class GridEngine:
                     break
 
             if requires_shares:
-                # Does the broker have enough shares to support this row alone?
-                # We check `broker_shares` vs `row.shares`.
-                if broker_shares < row.shares:
-                    self._halt_for_reconciliation_error(
-                        code="SELL_POSITION_MISMATCH_HALT",
-                        symbol=TICKER,
-                        row=row.row_index,
-                        action="NO ACTION (HALT)",
-                        details=f"Startup reconciliation halt. Tracker row {row.row_index} claimed an owned/working state for {row.shares} {TICKER} shares, but broker truth for the configured account showed {broker_shares} {TICKER} shares. A SELL would exceed the account's long position. No order was sent. Bot halted. Reconcile Tracker row {row.row_index} with actual broker holdings before restarting.",
-                        severity="CRITICAL"
-                    )
-                    return
+                total_required_shares += row.shares
+
+        # Does the broker have enough shares to support ALL claimed rows?
+        if broker_shares < total_required_shares:
+            await self._halt_for_reconciliation_error(
+                code="SELL_POSITION_MISMATCH_HALT",
+                symbol=TICKER,
+                row="AGGREGATE",
+                action="NO ACTION (HALT)",
+                details=f"Startup reconciliation halt. Tracker claims {total_required_shares} {TICKER} shares are required by owned/working rows, but broker truth for the configured account showed {broker_shares} {TICKER} shares. A SELL would exceed the account's long position. No order was sent. Bot halted. Reconcile Tracker rows with actual broker holdings before restarting.",
+                severity="CRITICAL",
+                open_orders_count=len(open_orders),
+                broker_shares=broker_shares
+            )
+            return
 
     async def _evaluate_bridge_anchor(self):
         """
@@ -607,16 +661,17 @@ class GridEngine:
             return
         broker_shares = snapshot.positions.get(TICKER, 0)
         if broker_shares < row7.shares:
-            self._halt_for_reconciliation_error(
+            # Set row state to ERROR_RECONCILE_REQUIRED first so it's ready for sync
+            self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:BRIDGE_POSITION_MISMATCH_HALT")
+            await self._halt_for_reconciliation_error(
                 code="BRIDGE_POSITION_MISMATCH_HALT",
                 symbol=TICKER,
                 row=7,
                 action="BRIDGE_BUY",
                 details=f"Hard bridge-anchor guard triggered. Tracker row 7 assumes ownership of {row7.shares} shares, but broker truth shows {broker_shares}. Halting.",
-                severity="CRITICAL"
+                severity="CRITICAL",
+                broker_shares=broker_shares
             )
-            # Set row state to ERROR_RECONCILE_REQUIRED
-            self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:BRIDGE_POSITION_MISMATCH_HALT")
             return
         elif broker_shares != row7.shares:
             # Maybe more shares? Cancel bridge anchor if any
@@ -1059,16 +1114,18 @@ class GridEngine:
                                     available_to_sell = broker_shares - broker_working_sell_qty - bot_pending_sell_qty
 
                                     if available_to_sell < excess:
-                                        self._halt_for_reconciliation_error(
+                                        self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
+                                        self._bridge_state = 'BRIDGE_HALTED'
+                                        await self._halt_for_reconciliation_error(
                                             code="SELL_POSITION_MISMATCH_HALT",
                                             symbol=TICKER,
                                             row=7,
                                             action="TRIM_SELL",
                                             details=f"Hard pre-SELL guard triggered. Requested TRIM_SELL for {excess} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {broker_working_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
-                                            severity="CRITICAL"
+                                            severity="CRITICAL",
+                                            open_orders_count=len(open_orders),
+                                            broker_shares=broker_shares
                                         )
-                                        self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
-                                        self._bridge_state = 'BRIDGE_HALTED'
                                         return
                                     # --- End Hard Pre-SELL Guard ---
 
@@ -1081,10 +1138,31 @@ class GridEngine:
                                         order_id=trim_order_id
                                     )
                                     if result.status == 'error':
-                                        logger.error(f"Failed to place trim SELL order: {result.error_msg}")
-                                        self._bridge_state = 'BRIDGE_HALTED'
-                                        self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
-                                        return
+                                        # Hard TRIM_SELL error safety guard
+                                        is_short_reject = False
+                                        if result.error_code == 201 or (result.error_msg and "Short stock" in result.error_msg) or getattr(result, 'reason', '') in ('Inactive', 'Rejected'):
+                                            is_short_reject = True
+
+                                        if is_short_reject:
+                                            self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
+                                            self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT")
+                                            self._bridge_state = 'BRIDGE_HALTED'
+                                            await self._halt_for_reconciliation_error(
+                                                code="IBKR_SHORT_REJECTION_HALT",
+                                                symbol=TICKER,
+                                                row=7,
+                                                action="TRIM_SELL",
+                                                details=f"Immediate TRIM_SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
+                                                severity="CRITICAL",
+                                                open_orders_count=len(open_orders),
+                                                broker_shares=broker_shares
+                                            )
+                                            return
+                                        else:
+                                            logger.error(f"Failed to place trim SELL order: {result.error_msg}")
+                                            self._bridge_state = 'BRIDGE_HALTED'
+                                            self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
+                                            return
                                     else:
                                         logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
                                         self._bridge_state = 'TRIM_PENDING'
@@ -1239,16 +1317,18 @@ class GridEngine:
                                     available_to_sell = broker_shares - broker_working_sell_qty - bot_pending_sell_qty
 
                                     if available_to_sell < row.shares:
-                                        self._halt_for_reconciliation_error(
+                                        # Set row state to ERROR_RECONCILE_REQUIRED
+                                        self._update_row_status_in_memory(row.row_index, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
+                                        await self._halt_for_reconciliation_error(
                                             code="SELL_POSITION_MISMATCH_HALT",
                                             symbol=TICKER,
                                             row=row.row_index,
                                             action="SELL",
                                             details=f"Hard pre-SELL guard triggered. Requested SELL for {row.shares} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {broker_working_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
-                                            severity="CRITICAL"
+                                            severity="CRITICAL",
+                                            open_orders_count=len(open_orders),
+                                            broker_shares=broker_shares
                                         )
-                                        # Set row state to ERROR_RECONCILE_REQUIRED
-                                        self._update_row_status_in_memory(row.row_index, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
                                         return
                                     # --- End Hard Pre-SELL Guard ---
 
@@ -1266,12 +1346,32 @@ class GridEngine:
                                     elif result.status == 'submitted':
                                         self._update_row_status_in_memory(row.row_index, f"WORKING_SELL:{result.order_id}")
                                     elif result.status == 'error':
-                                        self.order_manager.mark_cancelled(result.order_id)
-                                        self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
-                                        # Fix: Preserve Owned state for SELL
-                                        new_status = f"OWNED:{owned_id if owned_id else 0}"
-                                        logger.error(f"SELL order for row {row.row_index} failed (Code: {result.error_code}). Reverting to {new_status} and cooling down.")
-                                        self._update_row_status_in_memory(row.row_index, new_status)
+                                        # Hard SELL error safety guard
+                                        is_short_reject = False
+                                        if result.error_code == 201 or (result.error_msg and "Short stock" in result.error_msg) or getattr(result, 'reason', '') in ('Inactive', 'Rejected'):
+                                            is_short_reject = True
+
+                                        if is_short_reject:
+                                            self.order_manager.mark_cancelled(result.order_id)
+                                            self._update_row_status_in_memory(row.row_index, "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT")
+                                            await self._halt_for_reconciliation_error(
+                                                code="IBKR_SHORT_REJECTION_HALT",
+                                                symbol=TICKER,
+                                                row=row.row_index,
+                                                action="SELL",
+                                                details=f"Immediate SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
+                                                severity="CRITICAL",
+                                                open_orders_count=len(open_orders),
+                                                broker_shares=broker_shares
+                                            )
+                                            return
+                                        else:
+                                            self.order_manager.mark_cancelled(result.order_id)
+                                            self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
+                                            # Fix: Preserve Owned state for SELL
+                                            new_status = f"OWNED:{owned_id if owned_id else 0}"
+                                            logger.error(f"SELL order for row {row.row_index} failed (Code: {result.error_code}). Reverting to {new_status} and cooling down.")
+                                            self._update_row_status_in_memory(row.row_index, new_status)
                         elif row.row_index > distal_y:
                             if mismatch_active:
                                 logger.warning(f"Skipping BUY order for row {row.row_index} due to share mismatch")
@@ -1509,18 +1609,20 @@ class GridEngine:
 
                 if is_short_reject:
                     logger.error(f"Async rejection safety triggered for order {order_id}. Result: {result}")
-                    self._halt_for_reconciliation_error(
+                    new_status = "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
+                    self._update_row_status_in_memory(row_index, new_status)
+                    if action == 'TRIM_SELL':
+                        self._bridge_state = 'BRIDGE_HALTED'
+
+                    # Queue sync to sheet and call async halt helper via task
+                    asyncio.create_task(self._safe_async_halt(
                         code="IBKR_SHORT_REJECTION_HALT",
                         symbol=TICKER,
                         row=row_index,
                         action=action,
                         details=f"Async order failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
                         severity="CRITICAL"
-                    )
-                    new_status = "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
-                    self._update_row_status_in_memory(row_index, new_status)
-                    if action == 'TRIM_SELL':
-                        self._bridge_state = 'BRIDGE_HALTED'
+                    ))
                     asyncio.create_task(self._sync_to_sheet())
                     return
 

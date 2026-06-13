@@ -99,7 +99,7 @@ async def test_share_mismatch_warn_retracking(mock_broker, mock_sheet, config):
         }
     )
     mock_sheet.fetch_grid.return_value = grid_state
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10, 'limit_price': 105.0}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
     await engine._tick()

@@ -63,6 +63,59 @@ async def test_startup_mismatch_halt(engine, mock_broker, mock_sheet):
     call_args = mock_sheet.append_error.call_args[1]
     assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
 
+@pytest.mark.asyncio
+async def test_startup_aggregate_mismatch(engine, mock_broker, mock_sheet):
+    """
+    Test A2: Startup Aggregate Mismatch
+    - Row 7 requires 100 shares
+    - Row 8 requires 100 shares
+    - Broker has 150 shares
+    - Expected halt with SELL_POSITION_MISMATCH_HALT
+    """
+    mock_sheet.fetch_grid.return_value = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=100),
+        8: GridRow(row_index=8, status="OWNED:0", has_y=True, sell_price=79.70, buy_price=79.00, shares=100)
+    })
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 150})
+
+    await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    assert mock_broker.place_limit_order.call_count == 0
+    mock_sheet.append_error.assert_called_once()
+    call_args = mock_sheet.append_error.call_args[1]
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+    assert call_args['row'] == "AGGREGATE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_field", ["side", "qty", "price"])
+async def test_strict_external_order_mismatch(engine, mock_broker, mock_sheet, wrong_field):
+    """
+    Test strict external order matching.
+    If order ID matches but side, qty, or price doesn't perfectly match intent, halt.
+    """
+    mock_sheet.fetch_grid.return_value = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+    })
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 136})
+
+    action = "SELL" if wrong_field != "side" else "BUY"
+    qty = 136 if wrong_field != "qty" else 50
+    price = 78.70 if wrong_field != "price" else 99.0
+
+    mock_broker.get_open_orders.return_value = [
+        {'order_id': '100', 'action': action, 'ticker': 'TQQQ', 'qty': qty, 'limit_price': price}
+    ]
+
+    await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    assert mock_broker.place_limit_order.call_count == 0
+    mock_sheet.append_error.assert_called_once()
+    call_args = mock_sheet.append_error.call_args[1]
+    assert call_args['code'] == "EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED"
+
 
 @pytest.mark.asyncio
 async def test_pre_sell_guard(engine, mock_broker, mock_sheet):
@@ -147,6 +200,31 @@ async def test_over_sell_guard(engine, mock_broker, mock_sheet):
 
 
 @pytest.mark.asyncio
+async def test_immediate_sell_error_halt(engine, mock_broker, mock_sheet):
+    """
+    Test Immediate place_limit_order SELL error
+    - broker returns OrderResult(status="error", error_code=201)
+    """
+    mock_sheet.fetch_grid.return_value = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+    })
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 136})
+    mock_broker.place_limit_order.return_value = OrderResult(
+        order_id="100", status="error", error_code=201, error_msg="Short stock positions can only be held in a margin account"
+    )
+
+    await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    # Let tasks finish
+    await asyncio.sleep(0.01)
+    mock_sheet.append_error.assert_called_once()
+    call_args = mock_sheet.append_error.call_args[1]
+    assert call_args['code'] == "IBKR_SHORT_REJECTION_HALT"
+    # The status gets synced immediately. Let's check grid state directly.
+    assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
+
+@pytest.mark.asyncio
 async def test_async_ibkr_201_rejection(engine, mock_broker, mock_sheet):
     """
     Test E: Async IBKR 201 rejection
@@ -162,6 +240,9 @@ async def test_async_ibkr_201_rejection(engine, mock_broker, mock_sheet):
     # Simulate a rejection via _handle_order_update
     result = OrderResult(order_id="100", status="error", error_code=201, error_msg="Short stock positions can only be held in a margin account", reason="Rejected")
     engine._handle_order_update(result)
+
+    # since it's queued in an async task from a sync context, we need to let the task run
+    await asyncio.sleep(0.05)
 
     assert engine._halted_reconciliation is True
     # Let the background sync task run
