@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "Starting V7_tqqq_bot runtime..."
-echo "[PR09] Parsing Home Assistant options..."
+echo "Parsing Home Assistant options..."
 
 ACTIVE_JTS_DIR="/root/Jts"
 ACTIVE_IBC_DIR="/root/ibc"
@@ -15,7 +15,7 @@ PERSIST_JAVA_DIR="/data/ibgateway/persist/root_java"
 # We must export this so envsubst can use it in ibc_config.ini.template
 export JTS_SETTINGS_DIR="${ACTIVE_JTS_DIR}"
 
-echo "[PR09.1] Matching v6 Gateway settings behavior: active settings path /root/Jts"
+echo "Matching v6 Gateway settings behavior: active settings path /root/Jts"
 
 if [ -f /data/options.json ]; then
     # Bot / Account Config
@@ -31,6 +31,7 @@ if [ -f /data/options.json ]; then
     READONLY_API=$(jq -r '.readonly_api // false' /data/options.json)
     ENABLE_VNC=$(jq -r '.enable_vnc // false' /data/options.json)
     VNC_PORT=$(jq -r '.vnc_port // 5900' /data/options.json)
+    GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=$(jq -r '.gateway_settings_sync_interval_seconds // 300' /data/options.json)
 
     if [ "$MASK_LOGS" = "true" ]; then
         if [[ ${#IBKR_ACCOUNT_ID} -gt 6 ]]; then
@@ -57,10 +58,11 @@ else
     READONLY_API="false"
     ENABLE_VNC="false"
     VNC_PORT=5900
+    GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=300
 fi
 
 if [ "$GATEWAY_HOST" != "127.0.0.1" ] && [ "$GATEWAY_HOST" != "localhost" ]; then
-    echo "[PR09] Warning: bundled tqqq_bot only supports local Gateway access. Forcing ibkr_host to 127.0.0.1."
+    echo "Warning: bundled tqqq_bot only supports local Gateway access. Forcing ibkr_host to 127.0.0.1."
     GATEWAY_HOST="127.0.0.1"
 fi
 
@@ -82,14 +84,14 @@ if [ "$READONLY_API" = "true" ]; then
 fi
 export READONLY_VAL
 
-echo "[PR09] Configuring bundled Gateway API for local port ${GATEWAY_PORT}"
-echo "[PR09] readonly_api=${READONLY_API}"
-echo "[PR09] enable_vnc=${ENABLE_VNC}"
-echo "[PR09] Gateway/JTS settings directory: ${JTS_SETTINGS_DIR}"
-echo "[PR09] Gateway API access intended for localhost/127.0.0.1 only"
+echo "Configuring bundled Gateway API for local port ${GATEWAY_PORT}"
+echo "readonly_api=${READONLY_API}"
+echo "enable_vnc=${ENABLE_VNC}"
+echo "Gateway/JTS settings directory: ${JTS_SETTINGS_DIR}"
+echo "Gateway API access intended for localhost/127.0.0.1 only"
 echo "Bot configured to connect to Gateway at: ${GATEWAY_HOST}:${GATEWAY_PORT}"
 
-echo "[PR09] Creating persistent Gateway settings directories..."
+echo "Creating persistent Gateway settings directories..."
 mkdir -p "${PERSIST_JTS_DIR}"
 mkdir -p "${PERSIST_JAVA_DIR}"
 chmod 700 /data/ibgateway/persist "${PERSIST_JTS_DIR}" "${PERSIST_JAVA_DIR}"
@@ -98,22 +100,22 @@ mkdir -p "${ACTIVE_JTS_DIR}"
 mkdir -p "${ACTIVE_IBC_DIR}"
 mkdir -p /root/.java
 
-echo "[PR09.1] Restoring persisted Gateway settings from ${PERSIST_JTS_DIR}"
+echo "Restoring persisted Gateway settings from ${PERSIST_JTS_DIR}"
 rsync -a "${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/" || true
-echo "[PR09.1] Restoring persisted Java preferences from ${PERSIST_JAVA_DIR}"
+echo "Restoring persisted Java preferences from ${PERSIST_JAVA_DIR}"
 rsync -a "${PERSIST_JAVA_DIR}/" /root/.java/ || true
 
 if [ ! -f "$IBC_TEMPLATE_FILE" ]; then
-    echo "[PR09] ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
+    echo "ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
     exit 1
 fi
 
-echo "[PR09] Rendering active IBC config..."
+echo "Rendering active IBC config..."
 envsubst < "$IBC_TEMPLATE_FILE" > "$IBC_CONFIG_FILE"
 chmod 600 "$IBC_CONFIG_FILE"
-echo "[PR09.1] Active IBC config written to ${IBC_CONFIG_FILE}"
+echo "Active IBC config written to ${IBC_CONFIG_FILE}"
 
-echo "[PR09] Patching active runtime jts.ini..."
+echo "Patching active runtime jts.ini..."
 touch "${ACTIVE_JTS_DIR}/jts.ini"
 grep -q "^BypassOrderPrecautions=" "${ACTIVE_JTS_DIR}/jts.ini" || echo "BypassOrderPrecautions=true" >> "${ACTIVE_JTS_DIR}/jts.ini"
 grep -q "^BypassRedirectOrderWarning=" "${ACTIVE_JTS_DIR}/jts.ini" || echo "BypassRedirectOrderWarning=true" >> "${ACTIVE_JTS_DIR}/jts.ini"
@@ -140,25 +142,72 @@ sync_gateway_settings() {
 }
 
 start_persistence_loop() {
-    echo "[PR09.1] Persistent settings sync loop started"
+    echo "Persistent Gateway settings sync loop started; interval=${GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS}s."
     while true; do
-        sleep 60
+        sleep "$GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS"
         sync_gateway_settings
     done
 }
 
-# Start the background sync loop
-start_persistence_loop &
+SHUTTING_DOWN=false
+
+shutdown_handler() {
+    if [ "$SHUTTING_DOWN" = "true" ]; then
+        return
+    fi
+    SHUTTING_DOWN=true
+
+    echo "Shutdown signal received; stopping bot and Gateway processes."
+
+    if [ -n "${PERSISTENCE_PID:-}" ] && kill -0 "$PERSISTENCE_PID" 2>/dev/null; then
+        kill -TERM "$PERSISTENCE_PID"
+    fi
+
+    if [ -n "${BOT_PID:-}" ] && kill -0 "$BOT_PID" 2>/dev/null; then
+        kill -TERM "$BOT_PID"
+    fi
+
+    if [ -n "${IBC_PID:-}" ] && kill -0 "$IBC_PID" 2>/dev/null; then
+        kill -TERM "$IBC_PID"
+    fi
+
+    if [ -n "${XVFB_PID:-}" ] && kill -0 "$XVFB_PID" 2>/dev/null; then
+        kill -TERM "$XVFB_PID"
+    fi
+
+    if [ "$ENABLE_VNC" = "true" ]; then
+        if [ -n "${X11VNC_PID:-}" ] && kill -0 "$X11VNC_PID" 2>/dev/null; then
+            kill -TERM "$X11VNC_PID"
+        else
+            pkill -TERM x11vnc || true
+        fi
+    fi
+
+    # Wait briefly for all child processes to stop
+    sleep 2
+
+    if [ -n "${BOT_PID:-}" ]; then wait "$BOT_PID" 2>/dev/null || true; fi
+    if [ -n "${IBC_PID:-}" ]; then wait "$IBC_PID" 2>/dev/null || true; fi
+    if [ -n "${XVFB_PID:-}" ]; then wait "$XVFB_PID" 2>/dev/null || true; fi
+    if [ -n "${PERSISTENCE_PID:-}" ]; then wait "$PERSISTENCE_PID" 2>/dev/null || true; fi
+
+    echo "Graceful shutdown complete."
+}
+
+trap 'shutdown_handler' SIGTERM SIGINT
 
 echo "Starting Xvfb..."
 Xvfb :99 -ac -screen 0 1024x768x16 &
+XVFB_PID=$!
 export DISPLAY=:99
 
+X11VNC_PID=""
 if [ "$ENABLE_VNC" = "true" ]; then
-    echo "[PR09] Starting x11vnc on port ${VNC_PORT} because enable_vnc=true..."
-    x11vnc -display :99 -forever -nopw -bg -rfbport "$VNC_PORT" &
+    echo "Starting x11vnc on port ${VNC_PORT} because enable_vnc=true..."
+    x11vnc -display :99 -forever -nopw -rfbport "$VNC_PORT" &
+    X11VNC_PID=$!
 else
-    echo "[PR09] VNC disabled."
+    echo "VNC disabled."
 fi
 
 echo "Starting IB Gateway via IBC..."
@@ -176,8 +225,22 @@ IBC_PID=$!
 echo "Waiting for Gateway to initialize on port ${GATEWAY_PORT}..."
 python3 /app/wait_for_gateway.py --port "$GATEWAY_PORT" --timeout 300
 
-echo "Gateway is ready! Starting the Python bot runtime..."
-echo "[PR09.1] Gateway became ready; syncing active Gateway settings to persistent storage"
+echo "Gateway port is ready; running initial persistent settings sync."
 sync_gateway_settings
+echo "Initial Gateway settings sync complete."
 
-exec python -m main
+# Start the background sync loop AFTER gateway is ready
+start_persistence_loop &
+PERSISTENCE_PID=$!
+
+echo "Gateway is ready! Starting the Python bot runtime..."
+python -m main &
+BOT_PID=$!
+
+set +e
+wait "$BOT_PID"
+BOT_EXIT_CODE=$?
+set -e
+
+shutdown_handler
+exit "$BOT_EXIT_CODE"
