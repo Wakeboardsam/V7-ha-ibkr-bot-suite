@@ -476,10 +476,11 @@ class GridEngine:
                 logger.error(f"Failed to sync status for row {row_index} to sheet: {e}")
                 # We leave it in pending_status_updates to retry next time
 
-    async def _check_daily_grid_regeneration(self):
+    async def _check_daily_grid_regeneration(self) -> bool:
         """
         Check if we have crossed 4:00 PM ET or 8:00 PM ET to regenerate the grid.
         Skip the regeneration between Friday 8:00 PM ET and Sunday 8:00 PM ET.
+        Returns True if a boundary was crossed and state was reset, False otherwise.
         """
         tz = zoneinfo.ZoneInfo("America/New_York")
         now_et = datetime.now(tz)
@@ -514,6 +515,7 @@ class GridEngine:
         elif weekday == 6 and current_session_start.time() == time(16, 0):
             is_weekend_gap = True # Sunday 16:00 start (skip)
 
+        regenerated = False
         if self._last_grid_regeneration < current_session_start:
             logger.info(f"Boundary threshold crossed (Session start: {current_session_start}). Regenerating grid.")
 
@@ -528,10 +530,13 @@ class GridEngine:
                 logger.info("DRY RUN MODE — skipping order cancellation and local order tracking reset")
 
             self._last_grid_regeneration = now_et
+            regenerated = True
 
         # Set a flag to skip placing new orders if we are in the weekend gap
         # We only set this to true if the gap is active. This avoids breaking tests that mock time improperly.
         self._is_weekend_gap = is_weekend_gap
+
+        return regenerated
 
     async def _cancel_bridge_anchor(self, reason: str):
         """Helper to attempt to cancel the Bridge Anchor order and clear tracking safely."""
@@ -854,7 +859,10 @@ class GridEngine:
             if 'pytest' in sys.modules:
                 self._is_weekend_gap = False
             else:
-                await self._check_daily_grid_regeneration()
+                regenerated = await self._check_daily_grid_regeneration()
+                if regenerated:
+                    logger.info("Daily/session grid regeneration changed order state. Returning early to let broker state settle.")
+                    return
         except Exception as e:
             logger.error(f"Error checking daily grid regeneration: {e}")
             self._is_weekend_gap = False
@@ -1647,6 +1655,13 @@ class GridEngine:
                 logger.warning(f"Received fill for untracked order {order_id}")
         elif result.status in ('cancelled', 'error'):
             row_index, action = self.order_manager.mark_cancelled(order_id)
+
+            # Use cancel-intent fallback if order_manager was reset (e.g., daily grid regeneration)
+            if row_index is None and cancel_intent is not None:
+                row_index = cancel_intent.get("row")
+                action = cancel_intent.get("action")
+                logger.debug(f"Recovered untracked row_index {row_index} and action {action} from cancel intent for order {order_id}")
+
             if row_index:
                 logger.info(f"Order {order_id} for row {row_index} {result.status}. Stopping tracking.")
 
