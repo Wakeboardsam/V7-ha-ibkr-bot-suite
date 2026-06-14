@@ -81,10 +81,9 @@ async def test_handle_sell_error_preserves_owned(mock_broker, mock_sheet, config
     with patch.object(GridState, 'distal_y_row', 10):
         await engine._tick()
 
-    # Should revert to OWNED:999 (preserving the historical ID if possible, or OWNED:0)
-    # In our implementation it uses owned_id from the status string if found.
-    mock_sheet.update_row_status.assert_called_with(10, "OWNED:999")
-    assert 10 in engine.row_cooldowns
+        # Should halt with ERROR_RECONCILE_REQUIRED due to PR14 immediate SELL error strict checking
+        mock_sheet.update_row_status.assert_called_with(10, "ERROR_RECONCILE_REQUIRED:SELL_ORDER_ERROR_RECONCILE_REQUIRED")
+        assert engine._halted_reconciliation is True
 
 @pytest.mark.asyncio
 async def test_skip_failed_level(mock_broker, mock_sheet, config):

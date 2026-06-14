@@ -71,7 +71,9 @@ class SheetInterface:
 
             try:
                 status = str(row_values[0]).strip() if row_values[0] else "IDLE"
-                has_y = str(row_values[1]).strip().upper() == "Y"
+                # For safety, treat ERROR_RECONCILE_REQUIRED as equivalent to has_y = True for protective bounds
+                status = str(row_values[0]).strip() if row_values[0] else "IDLE"
+                has_y = str(row_values[1]).strip().upper() == "Y" or status.startswith("ERROR_RECONCILE_REQUIRED")
                 # row_values[2] is Column E (empty or notes in legacy)
 
                 # Use robust parsing for numeric fields to handle formatted accounting cells
@@ -146,16 +148,38 @@ class SheetInterface:
             logger.error(f"Failed to queue fill logging: {e}")
             return False
 
+    async def append_error(
+        self,
+        timestamp: str,
+        severity: str,
+        code: str,
+        symbol: str,
+        row: str,
+        action: str,
+        bot_status: str,
+        details: str,
+    ) -> bool:
+        try:
+            row_data = [timestamp, severity, code, symbol, row, action, bot_status, details]
+            await asyncio.to_thread(self._append_row_with_guard, ERRORS_TAB_NAME, row_data, ERRORS_HEADERS)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to append error to sheet: {e}")
+            return False
+
     async def log_error(self, error_msg: str) -> bool:
         logger.error(f"BOT ERROR: {error_msg}")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        try:
-            await asyncio.to_thread(self._append_row_with_guard, ERRORS_TAB_NAME, [timestamp, error_msg], ERRORS_HEADERS)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to log error to sheet: {e}")
-            return False
+        return await self.append_error(
+            timestamp=timestamp,
+            severity="ERROR",
+            code="ERROR",
+            symbol="",
+            row="",
+            action="",
+            bot_status="",
+            details=error_msg
+        )
 
     async def log_health(self, health_data: dict) -> bool:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -234,6 +234,10 @@ async def test_bridge_trim_invalid_bid_halts(mock_broker, mock_sheet, config):
 
     await engine._tick()
 
+    # This specific test was to check that invalid bids halt the bridge logic instead
+    # of canceling the existing order immediately without halting.
+    # Because invalid bids just mark bridge state to BRIDGE_HALTED without canceling
+    # any orders, we check that BRIDGE_HALTED is correctly set.
     assert engine._bridge_state == 'BRIDGE_HALTED'
     mock_sheet.log_error.assert_called()
     mock_broker.place_limit_order.assert_not_called()
@@ -300,21 +304,37 @@ async def test_bridge_anchor_failed_cancel_halts(mock_broker, mock_sheet, config
     engine.order_manager.track(7, OrderResult(order_id="ORD-BRIDGE", status="submitted"), 'BRIDGE_BUY')
 
     mock_sheet.fetch_grid.return_value = setup_grid_state([
-        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7'},
-        {'row_index': 8, 'status': 'OWNED:123'}
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7|BRIDGE_BUY:ORD-BRIDGE', 'shares': 10, 'sell_price': 105.0},
+        {'row_index': 8, 'status': 'OWNED:123', 'shares': 10, 'sell_price': 110.0}
     ])
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 20})
 
     engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
     mock_broker.cancel_order.return_value = False
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7'}] # Order still active!
+
+    # We must ensure get_open_orders returns correctly so it passes startup checks
+    # but still shows the order is open during the failed-cancel fallback check.
+    # To pass the new strict matcher, intent must map exactly.
+    mock_broker.get_open_orders.return_value = [
+        {'order_id': 'ORD-BRIDGE', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'qty': 10, 'limit_price': 105.0, 'aux_price': 105.0},
+        {'order_id': 'ORD-SELL-7', 'ticker': 'TQQQ', 'action': 'SELL', 'qty': 10, 'limit_price': 105.0}
+    ] # Order still active!
 
     await engine._tick()
 
+    assert engine._halted_reconciliation is True
     assert engine._bridge_state == 'BRIDGE_HALTED'
-    # Wait, in the actual loop, _cancel_bridge_anchor is awaited and sets BRIDGE_HALTED and returns.
-    # However, because of how engine loops, if the row 7 is idle and not armed, it calls clear_action_for_row directly there.
-    # Let's fix the engine so it doesn't clear if bridge halted.
+    assert "ORD-BRIDGE" in engine._bot_initiated_cancel_ids
+
+    # Check it actually logged the error
+    # We must await the sleep slightly to let the halt task fire
+    import asyncio
+    await asyncio.sleep(0.05)
+    mock_sheet.append_error.assert_called_once()
+    assert mock_sheet.append_error.call_args[1]['code'] == "BRIDGE_CANCEL_FAILED_HALT"
+
+    # Local tracker state remains
+    assert engine.order_manager.has_open_action(7, 'BRIDGE_BUY')
 
 @pytest.mark.asyncio
 async def test_bridge_anchor_retrack_trim_pending(mock_broker, mock_sheet, config):
@@ -395,7 +415,10 @@ async def test_bridge_anchor_wait_for_recalc(mock_broker, mock_sheet, config):
     # because row 7 sell price (100.0) != 105.0, it should return early
     # it shouldn't log "Shares match perfectly" or clear the state
     assert engine._bridge_state == 'ANCHOR_RECALC_PENDING'
-    mock_broker.get_open_orders.assert_not_called()
+    # Since PR14, get_open_orders is called at the very beginning of _tick for reconciliation
+    # mock_broker.get_open_orders.assert_not_called() is no longer valid.
+    # But we can assert place_limit_order is not called
+    mock_broker.place_limit_order.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_bridge_anchor_recalc_complete(mock_broker, mock_sheet, config):

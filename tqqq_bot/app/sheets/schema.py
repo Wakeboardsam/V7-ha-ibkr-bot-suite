@@ -40,4 +40,13 @@ HEALTH_HEADERS = [
     "POSITION", "MARKET_PRICE", "MARKET_VALUE", "AVG_COST",
     "NET_LIQUIDATION_VALUE"
 ]
-ERRORS_HEADERS = ["TIMESTAMP", "ERROR_MSG"]
+ERRORS_HEADERS = [
+    "Timestamp",
+    "Severity",
+    "Code",
+    "Symbol",
+    "Row",
+    "Action",
+    "Bot Status",
+    "Details",
+]

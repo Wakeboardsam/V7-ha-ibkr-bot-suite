@@ -322,7 +322,7 @@ class IBKRAdapter(BrokerBase):
         try:
             account_values = self.ib.accountValues()
             if self.account_id:
-                account_values = [v for v in account_values if getattr(v, "account", None) == self.account_id or getattr(v, "account", None) is None]
+                account_values = [v for v in account_values if getattr(v, "account", None) == self.account_id]
 
             if not account_values:
                 logger.error("API call returned empty — possible Gateway auth or subscription issue")
@@ -371,7 +371,7 @@ class IBKRAdapter(BrokerBase):
         try:
             account_values = self.ib.accountValues()
             if self.account_id:
-                account_values = [v for v in account_values if getattr(v, "account", None) == self.account_id or getattr(v, "account", None) is None]
+                account_values = [v for v in account_values if getattr(v, "account", None) == self.account_id]
 
             if not account_values:
                 logger.error("API call returned empty \u2014 possible Gateway auth or subscription issue")
@@ -408,6 +408,7 @@ class IBKRAdapter(BrokerBase):
                 status="dry_run_blocked",
                 error_msg="DRY RUN: order was not submitted to broker"
             )
+
 
         from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
         exchange = get_dynamic_exchange()
@@ -570,6 +571,10 @@ class IBKRAdapter(BrokerBase):
             self._on_execution_callbacks.append(on_execution)
 
     def _check_account_safety_for_orders(self):
+        if not self.account_id and not self.dry_run:
+            logger.critical("No account_id is configured. Live trading operations are strictly disabled without an explicit account_id.")
+            raise ValueError("No account_id configured for live trading.")
+
         accounts = list(set([v.account for v in self.ib.accountValues() if getattr(v, "account", None)]))
         if len(accounts) > 1:
             masked_accounts = [self._mask_account(a) for a in accounts]
@@ -621,6 +626,10 @@ class IBKRAdapter(BrokerBase):
         )
 
     async def cancel_order(self, order_id: str) -> bool:
+        if not self.account_id and not self.dry_run:
+            logger.critical("No account_id configured. Refusing to cancel order for live safety.")
+            return False
+
         if self.dry_run:
             logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={order_id}")
             return False
@@ -628,6 +637,11 @@ class IBKRAdapter(BrokerBase):
         # Find the order
         for trade in self.ib.trades():
             if str(trade.order.orderId) == order_id:
+                if self.account_id:
+                    trade_account = getattr(trade.order, "account", None)
+                    if trade_account != self.account_id:
+                        logger.warning(f"Refusing to cancel order {order_id} because it belongs to account {self._mask_account(trade_account) if trade_account else 'None'}, expected {self._mask_account(self.account_id)}.")
+                        return False
                 self.ib.cancelOrder(trade.order)
                 return True
         return False
@@ -637,7 +651,9 @@ class IBKRAdapter(BrokerBase):
         for trade in self.ib.trades():
             if self.account_id:
                 trade_account = getattr(trade.order, "account", None)
-                if trade_account and trade_account != self.account_id:
+                if trade_account != self.account_id:
+                    if trade_account is None:
+                        logger.debug(f"get_open_orders: excluding order {trade.order.orderId} due to missing account_id")
                     continue
 
             if trade.isActive():
@@ -660,7 +676,7 @@ class IBKRAdapter(BrokerBase):
         for pos in self.ib.positions():
             if self.account_id:
                 pos_account = getattr(pos, "account", None)
-                if pos_account and pos_account != self.account_id:
+                if pos_account != self.account_id:
                     continue
             positions[pos.contract.symbol] = int(pos.position)
         return positions
@@ -680,7 +696,7 @@ class IBKRAdapter(BrokerBase):
         for item in self.ib.portfolio():
             if self.account_id:
                 item_account = getattr(item, "account", None)
-                if item_account and item_account != self.account_id:
+                if item_account != self.account_id:
                     continue
 
             if item.contract.symbol == ticker:
@@ -700,7 +716,9 @@ class IBKRAdapter(BrokerBase):
             execution = fill.execution
             if self.account_id:
                 exec_account = getattr(execution, "acctNumber", None)
-                if exec_account and exec_account != self.account_id:
+                if exec_account != self.account_id:
+                    if exec_account is None:
+                        logger.debug(f"_on_exec_details: ignoring fill for unknown account, expected {self._mask_account(self.account_id)}")
                     return
 
             side_map = {
@@ -734,6 +752,14 @@ class IBKRAdapter(BrokerBase):
     def _on_order_status(self, trade: Trade):
         status = trade.orderStatus.status
         order_id = str(trade.order.orderId)
+
+        if self.account_id:
+            trade_account = getattr(trade.order, "account", None)
+            if trade_account != self.account_id:
+                if trade_account is None:
+                    logger.debug(f"_on_order_status: ignoring status update for order {order_id} (missing account), expected {self._mask_account(self.account_id)}")
+                return
+
         callback = self._on_update_callbacks.get(order_id)
 
         known_accts = [self.account_id] if self.account_id else []
