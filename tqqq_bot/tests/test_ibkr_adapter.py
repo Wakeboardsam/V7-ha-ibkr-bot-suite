@@ -306,11 +306,21 @@ async def test_strict_account_scoping_callbacks(mock_ib):
         def __init__(self, acc):
             self.execution = MockExecution(acc)
 
+    # Callback ignores missing account order
+    trade.order.account = None
+    adapter._on_order_status(trade)
+    mock_callback.assert_not_called()
+
     # Fill ignores mismatching execution
     fill = MockFill("OTHER")
 
     exec_callback = MagicMock()
     adapter.subscribe_to_executions(exec_callback)
+    adapter._on_exec_details(trade, fill)
+    exec_callback.assert_not_called()
+
+    # Fill ignores missing account execution
+    fill.execution.acctNumber = None
     adapter._on_exec_details(trade, fill)
     exec_callback.assert_not_called()
 

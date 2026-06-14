@@ -57,6 +57,13 @@ async def main():
         config.ibkr_host = "127.0.0.1"
 
     if config.active_broker == "ibkr":
+        if not config.dry_run and not config.ibkr_account_id:
+            logger.critical(
+                "LIVE IBKR MODE REFUSED: ibkr_account_id is required when dry_run is false. "
+                "This gateway may see multiple accounts/orders, so unscoped live operation is unsafe."
+            )
+            sys.exit(1)
+
         broker = IBKRAdapter(
             host=config.ibkr_host,
             port=config.ibkr_port,
