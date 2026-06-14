@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from datetime import datetime
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from config.schema import AppConfig
@@ -223,6 +224,130 @@ async def test_immediate_sell_error_halt(engine, mock_broker, mock_sheet):
     assert call_args['code'] == "IBKR_SHORT_REJECTION_HALT"
     # The status gets synced immediately. Let's check grid state directly.
     assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT"
+
+@pytest.mark.asyncio
+async def test_immediate_generic_sell_error_halt(engine, mock_broker, mock_sheet):
+    """
+    Test Immediate place_limit_order generic SELL error
+    - broker returns OrderResult(status="error", error_msg="some broker error")
+    """
+    mock_sheet.fetch_grid.return_value = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+    })
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 136})
+    mock_broker.place_limit_order.return_value = OrderResult(
+        order_id="100", status="error", error_msg="some broker error"
+    )
+
+    await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    await asyncio.sleep(0.01)
+    mock_sheet.append_error.assert_called_once()
+    call_args = mock_sheet.append_error.call_args[1]
+    assert call_args['code'] == "SELL_ORDER_ERROR_RECONCILE_REQUIRED"
+    assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:SELL_ORDER_ERROR_RECONCILE_REQUIRED"
+
+@pytest.mark.asyncio
+async def test_immediate_generic_trim_sell_error_halt(engine, mock_broker, mock_sheet):
+    """
+    Test Immediate place_limit_order generic TRIM_SELL error
+    - expected hard halt, BRIDGE_HALTED, Errors row, Health halt
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+    })
+
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 150})
+    # Set bridge state to trigger the trim order logic
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+
+    # Simulate a generic error on placement
+    mock_broker.place_limit_order.return_value = OrderResult(
+        order_id="101", status="error", error_msg="some trim broker error"
+    )
+    # Give a dummy bid/ask so trim logic runs
+    mock_broker.get_bid_ask.return_value = (78.0, 78.1)
+
+    # Track order manager intent to bypass pre-sell guard's local pending checks
+    # The pre-sell guard relies on `broker_working_sell_qty` and `bot_pending_sell_qty`.
+    # Wait, the pre-sell guard for TRIM_SELL checks:
+    # available_to_sell = broker_shares(150) - 0 - 0 = 150.
+    # excess is 150 - 136 = 14.
+    # 150 >= 14, so it should PASS the pre-sell guard.
+
+    with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock):
+        # mock broker.get_open_orders to return empty so it doesn't fail pre-sell guard math for trim
+        mock_broker.get_open_orders.return_value = []
+        engine.config.bridge_max_auto_trim_shares = 20 # increase max trim otherwise it halts before place_limit_order
+
+        # Since _tick() calls fetch_grid(), we need to mock it properly here again
+        # The test previously set engine.grid_state before calling _tick(), but fetch_grid overrides it.
+        mock_sheet.fetch_grid.return_value = GridState(rows={
+            7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+        })
+
+        await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    assert engine._bridge_state == 'BRIDGE_HALTED'
+    await asyncio.sleep(0.01)
+    mock_sheet.append_error.assert_called_once()
+    call_args = mock_sheet.append_error.call_args[1]
+    assert call_args['code'] == "TRIM_SELL_ORDER_ERROR_RECONCILE_REQUIRED"
+
+@pytest.mark.asyncio
+async def test_bot_initiated_sell_cancel(engine, mock_broker, mock_sheet):
+    """
+    Test bot-initiated SELL cancel
+    - Mark order as bot-initiated cancel
+    - Simulate cancelled/no-fill SELL
+    - Expected: ownership preserved, no error halt
+    """
+    engine.order_manager.track(7, OrderResult(order_id="100", status="submitted"), 'SELL')
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+    })
+
+    # Mark intent
+    engine._bot_initiated_cancel_ids["100"] = {
+        "reason": "maintenance",
+        "row": 7,
+        "action": "SELL",
+        "timestamp": datetime.now()
+    }
+
+    result = OrderResult(order_id="100", status="cancelled", filled_qty=0)
+    engine._handle_order_update(result)
+
+    await asyncio.sleep(0.01)
+
+    assert engine._halted_reconciliation is False
+    assert engine.grid_state.rows[7].status == "OWNED:0"
+    mock_sheet.append_error.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_unexpected_sell_cancel_halt(engine, mock_broker, mock_sheet):
+    """
+    Test unexpected SELL cancel
+    - No bot-initiated marker
+    - Simulate cancelled/no-fill SELL
+    - Expected: ERROR_RECONCILE_REQUIRED halt
+    """
+    engine.order_manager.track(7, OrderResult(order_id="100", status="submitted"), 'SELL')
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
+    })
+
+    # No intent marked
+    result = OrderResult(order_id="100", status="cancelled", filled_qty=0)
+    engine._handle_order_update(result)
+
+    await asyncio.sleep(0.01)
+
+    assert engine._halted_reconciliation is True
+    assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:SELL_CANCELLED_NO_FILL_HALT"
+    mock_sheet.append_error.assert_called_once()
 
 @pytest.mark.asyncio
 async def test_async_ibkr_201_rejection(engine, mock_broker, mock_sheet):

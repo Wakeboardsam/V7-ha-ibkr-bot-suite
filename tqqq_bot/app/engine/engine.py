@@ -94,6 +94,18 @@ class GridEngine:
         self._health_written_keys = set()
         self._last_reconciliation_halt = None
         self._halt_notification_retry_task = None
+        self._bot_initiated_cancel_ids = {}
+
+    async def _cancel_order_with_intent(self, oid: str, reason: str):
+        """Helper to cancel an order and store the intent to avoid unexpected cancel halts."""
+        row_idx, action = self.order_manager.get_row_and_action(oid)
+        self._bot_initiated_cancel_ids[str(oid)] = {
+            "reason": reason,
+            "row": row_idx,
+            "action": action,
+            "timestamp": datetime.now()
+        }
+        await self.broker.cancel_order(oid)
 
     async def _halt_for_reconciliation_error(
         self,
@@ -346,7 +358,7 @@ class GridEngine:
             except asyncio.TimeoutError:
                 pass
 
-    async def _cancel_all_orders(self):
+    async def _cancel_all_orders(self, reason: str = "shutdown_or_maintenance"):
         if self.config.dry_run:
             logger.info("DRY RUN MODE — skipping shutdown order cancellation")
             return
@@ -355,11 +367,8 @@ class GridEngine:
         if tracked_ids:
             logger.info(f"Cancelling {len(tracked_ids)} tracked orders...")
             for oid in tracked_ids:
-                success = await self.broker.cancel_order(oid)
-                if success:
-                    logger.info(f"Cancelled order: {oid}")
-                else:
-                    logger.warning(f"Failed to cancel order: {oid}")
+                await self._cancel_order_with_intent(oid, reason)
+                logger.info(f"Requested cancellation for order: {oid}")
 
     async def _log_health_periodic(self):
         while not self._shutdown_event.is_set():
@@ -510,7 +519,7 @@ class GridEngine:
 
             # Cancel all previous session's orders from the broker to ensure clean slate
             # (Especially important for the Gap session's GTC orders so they don't linger)
-            await self._cancel_all_orders()
+            await self._cancel_all_orders(reason="session_boundary_regeneration")
 
             # Clear internally tracked orders.
             if not self.config.dry_run:
@@ -535,18 +544,7 @@ class GridEngine:
                 logger.info(f"DRY RUN: would cancel Bridge Anchor order {oid}, leaving broker and sheet state unchanged")
                 continue
 
-            success = await self.broker.cancel_order(oid)
-            if not success:
-                # verify if it actually exists in open orders before considering it a true failure
-                open_orders = await self.broker.get_open_orders()
-                still_open = any(str(o['order_id']) == str(oid) for o in open_orders)
-                if still_open:
-                    logger.error(f"Failed to cancel active Bridge Anchor order {oid}. Halting.")
-                    self._bridge_state = 'BRIDGE_HALTED'
-                    all_cancelled = False
-                    continue # Let it process other open bridge orders if any, but clear won't happen
-                else:
-                    logger.warning(f"Failed to cancel Bridge Anchor order {oid}, but it's no longer open on broker.")
+            await self._cancel_order_with_intent(oid, reason)
 
         if all_cancelled and not self.config.dry_run:
             self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
@@ -952,7 +950,7 @@ class GridEngine:
                     if self.config.dry_run:
                         logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=session boundary regeneration")
                     else:
-                        await self.broker.cancel_order(oid)
+                        await self._cancel_order_with_intent(oid, reason="stale_session_boundary_cleanup")
                     stale_cancelled = True
                 # If we ever transition the other way, we'd also clean it up:
                 elif current_desired_exchange == 'OVERNIGHT' and (o_exchange == 'SMART' or o_tif == 'GTC'):
@@ -960,7 +958,7 @@ class GridEngine:
                     if self.config.dry_run:
                         logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=session boundary regeneration")
                     else:
-                        await self.broker.cancel_order(oid)
+                        await self._cancel_order_with_intent(oid, reason="stale_session_boundary_cleanup")
                     stale_cancelled = True
 
         if stale_cancelled:
@@ -1004,7 +1002,7 @@ class GridEngine:
                 if self.config.dry_run:
                     logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=untracked or stale Bridge Anchor")
                 else:
-                    await self.broker.cancel_order(oid)
+                    await self._cancel_order_with_intent(oid, reason="untracked_stale_bridge_anchor")
                 untracked_or_duplicate_cancelled = True
 
         if untracked_or_duplicate_cancelled:
@@ -1031,7 +1029,7 @@ class GridEngine:
                     if self.config.dry_run:
                         logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=protective row 7 SELL gone")
                     else:
-                        await self.broker.cancel_order(oid)
+                        await self._cancel_order_with_intent(oid, reason="bridge_safety_violation_missing_sell")
                 if not self.config.dry_run:
                     self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
                     if self.grid_state and 7 in self.grid_state.rows:
@@ -1211,26 +1209,22 @@ class GridEngine:
                                         if result.error_code == 201 or (result.error_msg and "Short stock" in result.error_msg) or getattr(result, 'reason', '') in ('Inactive', 'Rejected'):
                                             is_short_reject = True
 
-                                        if is_short_reject:
-                                            self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
-                                            self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT")
-                                            self._bridge_state = 'BRIDGE_HALTED'
-                                            await self._halt_for_reconciliation_error(
-                                                code="IBKR_SHORT_REJECTION_HALT",
-                                                symbol=TICKER,
-                                                row=7,
-                                                action="TRIM_SELL",
-                                                details=f"Immediate TRIM_SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
-                                                severity="CRITICAL",
-                                                open_orders_count=len(open_orders),
-                                                broker_shares=broker_shares
-                                            )
-                                            return
-                                        else:
-                                            logger.error(f"Failed to place trim SELL order: {result.error_msg}")
-                                            self._bridge_state = 'BRIDGE_HALTED'
-                                            self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
-                                            return
+                                        code = "IBKR_SHORT_REJECTION_HALT" if is_short_reject else "TRIM_SELL_ORDER_ERROR_RECONCILE_REQUIRED"
+
+                                        self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
+                                        self._update_row_status_in_memory(7, f"ERROR_RECONCILE_REQUIRED:{code}")
+                                        self._bridge_state = 'BRIDGE_HALTED'
+                                        await self._halt_for_reconciliation_error(
+                                            code=code,
+                                            symbol=TICKER,
+                                            row=7,
+                                            action="TRIM_SELL",
+                                            details=f"Immediate TRIM_SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). Halting to preserve Tracker state.",
+                                            severity="CRITICAL",
+                                            open_orders_count=len(open_orders),
+                                            broker_shares=broker_shares
+                                        )
+                                        return
                                     else:
                                         logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
                                         self._bridge_state = 'TRIM_PENDING'
@@ -1421,27 +1415,21 @@ class GridEngine:
                                         if result.error_code == 201 or (result.error_msg and "Short stock" in result.error_msg) or getattr(result, 'reason', '') in ('Inactive', 'Rejected'):
                                             is_short_reject = True
 
-                                        if is_short_reject:
-                                            self.order_manager.mark_cancelled(result.order_id)
-                                            self._update_row_status_in_memory(row.row_index, "ERROR_RECONCILE_REQUIRED:IBKR_SHORT_REJECTION_HALT")
-                                            await self._halt_for_reconciliation_error(
-                                                code="IBKR_SHORT_REJECTION_HALT",
-                                                symbol=TICKER,
-                                                row=row.row_index,
-                                                action="SELL",
-                                                details=f"Immediate SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). This may be a short-sale rejection or other safety rejection. Halting to preserve Tracker state.",
-                                                severity="CRITICAL",
-                                                open_orders_count=len(open_orders),
-                                                broker_shares=broker_shares
-                                            )
-                                            return
-                                        else:
-                                            self.order_manager.mark_cancelled(result.order_id)
-                                            self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
-                                            # Fix: Preserve Owned state for SELL
-                                            new_status = f"OWNED:{owned_id if owned_id else 0}"
-                                            logger.error(f"SELL order for row {row.row_index} failed (Code: {result.error_code}). Reverting to {new_status} and cooling down.")
-                                            self._update_row_status_in_memory(row.row_index, new_status)
+                                        code = "IBKR_SHORT_REJECTION_HALT" if is_short_reject else "SELL_ORDER_ERROR_RECONCILE_REQUIRED"
+
+                                        self.order_manager.mark_cancelled(result.order_id)
+                                        self._update_row_status_in_memory(row.row_index, f"ERROR_RECONCILE_REQUIRED:{code}")
+                                        await self._halt_for_reconciliation_error(
+                                            code=code,
+                                            symbol=TICKER,
+                                            row=row.row_index,
+                                            action="SELL",
+                                            details=f"Immediate SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). Halting to preserve Tracker state.",
+                                            severity="CRITICAL",
+                                            open_orders_count=len(open_orders),
+                                            broker_shares=broker_shares
+                                        )
+                                        return
                         elif row.row_index > distal_y:
                             if mismatch_active:
                                 logger.warning(f"Skipping BUY order for row {row.row_index} due to share mismatch")
@@ -1518,7 +1506,7 @@ class GridEngine:
                                 if self.config.dry_run:
                                     logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=outside maintenance window")
                                 else:
-                                    await self.broker.cancel_order(oid)
+                                    await self._cancel_order_with_intent(oid, reason="outside_active_window")
                                     self.order_manager.mark_cancelled(oid)
 
                         # Update status
@@ -1591,6 +1579,15 @@ class GridEngine:
 
     def _handle_order_update(self, result: OrderResult):
         order_id = result.order_id
+
+        # Pop cancel intent if any (expire if older than 15 mins)
+        cancel_intent = self._bot_initiated_cancel_ids.pop(str(order_id), None)
+        if cancel_intent:
+            age = datetime.now() - cancel_intent.get("timestamp", datetime.min)
+            if age.total_seconds() > 900:
+                cancel_intent = None
+
+        import asyncio
         if result.status == 'filled':
             self.last_fill_time = datetime.now()
             row_index, action = self.order_manager.mark_filled(order_id)
@@ -1720,6 +1717,24 @@ class GridEngine:
                             # Since we don't have a flag right now, and the prompt says "If uncertain, halt with ERROR_RECONCILE_REQUIRED."
                             is_unexpected_sell_drop = True
 
+                # Apply bot-initiated cancel exception
+                if action in ('SELL', 'TRIM_SELL') and result.status == 'cancelled' and cancel_intent is not None:
+                    # Valid bot-initiated cancel, do not halt
+                    logger.info(f"Order {order_id} cancelled intentionally by bot (Reason: {cancel_intent.get('reason')}). Preserving ownership for row {row_index}.")
+                    self.order_manager.mark_cancelled(order_id)
+                    owned_id = "0"
+                    if self.grid_state and row_index in self.grid_state.rows:
+                        status = self.grid_state.rows[row_index].status
+                        if "OWNED:" in status:
+                            owned_id = _extract_order_id_from_status(status, "OWNED:") or "0"
+                    new_status = f"OWNED:{owned_id}"
+                    self._update_row_status_in_memory(row_index, new_status)
+                    if action == 'TRIM_SELL':
+                        self._bridge_state = 'BRIDGE_HALTED' # Trim was aborted, so bridge flow halts normally (not a hard crash)
+                    import asyncio
+                    asyncio.create_task(self._sync_to_sheet())
+                    return
+
                 if is_short_reject or (action in ('SELL', 'TRIM_SELL') and is_unexpected_sell_drop):
                     code = "IBKR_SHORT_REJECTION_HALT" if short_reject_halt else "SELL_CANCELLED_NO_FILL_HALT"
                     logger.error(f"Async rejection safety triggered for order {order_id}. Result: {result}")
@@ -1733,6 +1748,7 @@ class GridEngine:
                         self._bridge_state = 'BRIDGE_HALTED'
 
                     # Queue sync to sheet and call async halt helper via task
+                    import asyncio
                     asyncio.create_task(self._safe_async_halt(
                         code=code,
                         symbol=TICKER,
@@ -1760,6 +1776,7 @@ class GridEngine:
 
                     logger.info(f"Setting {new_status} and cooldown for row {row_index} due to async order error.")
                     self._update_row_status_in_memory(row_index, new_status)
+                    import asyncio
                     asyncio.create_task(self._sync_to_sheet())
                 else:
                     # Cancelled explicitly
@@ -1776,4 +1793,5 @@ class GridEngine:
 
                     logger.info(f"Setting {new_status} for row {row_index} due to async order cancellation.")
                     self._update_row_status_in_memory(row_index, new_status)
+                    import asyncio
                     asyncio.create_task(self._sync_to_sheet())
