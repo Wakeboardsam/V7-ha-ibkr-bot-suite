@@ -96,7 +96,7 @@ class GridEngine:
         self._halt_notification_retry_task = None
         self._bot_initiated_cancel_ids = {}
 
-    async def _cancel_order_with_intent(self, oid: str, reason: str):
+    async def _cancel_order_with_intent(self, oid: str, reason: str) -> bool:
         """Helper to cancel an order and store the intent to avoid unexpected cancel halts."""
         row_idx, action = self.order_manager.get_row_and_action(oid)
         self._bot_initiated_cancel_ids[str(oid)] = {
@@ -105,7 +105,7 @@ class GridEngine:
             "action": action,
             "timestamp": datetime.now()
         }
-        await self.broker.cancel_order(oid)
+        return await self.broker.cancel_order(oid)
 
     async def _halt_for_reconciliation_error(
         self,
@@ -549,7 +549,30 @@ class GridEngine:
                 logger.info(f"DRY RUN: would cancel Bridge Anchor order {oid}, leaving broker and sheet state unchanged")
                 continue
 
-            await self._cancel_order_with_intent(oid, reason)
+            success = await self._cancel_order_with_intent(oid, reason)
+            if not success:
+                # verify if it actually exists in open orders before considering it a true failure
+                try:
+                    open_orders = await self.broker.get_open_orders()
+                    still_open = any(str(o['order_id']) == str(oid) for o in open_orders)
+                except Exception as e:
+                    logger.error(f"Failed to fetch open orders during bridge cancel fallback: {e}")
+                    still_open = True # Treat as unsafe if inconclusive
+
+                if still_open:
+                    self._bridge_state = 'BRIDGE_HALTED'
+                    all_cancelled = False
+                    await self._halt_for_reconciliation_error(
+                        code="BRIDGE_CANCEL_FAILED_HALT",
+                        symbol=TICKER,
+                        row=7,
+                        action="BRIDGE_BUY",
+                        details=f"Failed to cancel active Bridge Anchor order {oid}. The order may still be live at the broker. Halting for manual review.",
+                        severity="CRITICAL"
+                    )
+                    continue # Let it process other open bridge orders if any, but clear won't happen
+                else:
+                    logger.warning(f"Failed to cancel Bridge Anchor order {oid}, but it's no longer open on broker.")
 
         if all_cancelled and not self.config.dry_run:
             self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
