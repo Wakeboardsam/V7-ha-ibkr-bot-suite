@@ -105,4 +105,19 @@ class SchwabAdapter(BrokerBase):
         raise NotImplementedError
 
     async def get_verified_symbol_snapshot(self, symbol: str) -> SymbolSnapshot:
-        raise NotImplementedError
+        return SymbolSnapshot(
+            symbol=symbol,
+            account_id_masked="",
+            position_qty=None,
+            market_price=None,
+            market_value=None,
+            avg_cost=None,
+            net_liquidation=None,
+            cash=None,
+            open_orders_count=0,
+            working_buy_qty=0,
+            working_sell_qty=0,
+            active_broker_orders=[],
+            snapshot_status="UNAVAILABLE",
+            snapshot_error="SchwabAdapter get_verified_symbol_snapshot not implemented"
+        )

@@ -200,3 +200,53 @@ class TestHealthSnapshot(unittest.IsolatedAsyncioTestCase):
         health_data = self.mock_sheet.log_health.call_args[0][0]
         self.assertEqual(health_data["order_match_status"], "MISMATCH")
         self.assertEqual(health_data["unmatched_broker_orders"], "1")
+
+
+    async def test_health_snapshot_account_scope_missing(self):
+        snapshot = SymbolSnapshot(
+            symbol="TQQQ",
+            account_id_masked="",
+            position_qty=None,
+            market_price=None,
+            market_value=None,
+            avg_cost=None,
+            net_liquidation=None,
+            cash=None,
+            open_orders_count=0,
+            working_buy_qty=0,
+            working_sell_qty=0,
+            active_broker_orders=[],
+            snapshot_status="ACCOUNT_SCOPE_MISSING",
+            snapshot_error="Account ID is missing or unconfigured"
+        )
+        self.mock_broker.get_verified_symbol_snapshot.return_value = snapshot
+        self.engine.order_manager.get_tracked_order_ids = MagicMock(return_value=[])
+
+        import asyncio
+        self.engine._shutdown_event.clear()
+        task = asyncio.create_task(self.engine._log_health_periodic())
+        await asyncio.sleep(0.01) # Yield to event loop to let it run one cycle
+        self.engine._shutdown_event.set()
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        self.mock_sheet.log_error.assert_called_once()
+        self.assertTrue(self.engine._snapshot_error_logged)
+
+        # Run second time
+        self.mock_sheet.log_error.reset_mock()
+        self.engine._shutdown_event.clear()
+        task = asyncio.create_task(self.engine._log_health_periodic())
+        await asyncio.sleep(0.01) # Yield to event loop to let it run one cycle
+        self.engine._shutdown_event.set()
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self.mock_sheet.log_error.assert_not_called() # Deduplicated
