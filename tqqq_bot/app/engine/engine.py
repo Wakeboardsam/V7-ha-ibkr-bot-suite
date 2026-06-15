@@ -189,9 +189,9 @@ class GridEngine:
                     "last_fill_time": self.last_fill_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_fill_time else "Never",
                     "status": "HALTED_RECONCILIATION",
                     "position": payload['broker_shares'],
-                    "market_price": self.last_price,
-                    "market_value": payload['broker_shares'] * self.last_price,
-                    "avg_cost": 0,
+                    "broker_market_price": "",
+                    "broker_market_value": "",
+                    "broker_avg_cost": "",
                     "net_liquidation_value": None
                 }
                 ok = await self.sheet.log_health(health_data)
@@ -499,9 +499,9 @@ class GridEngine:
                     "last_fill_time": last_fill_str,
                     "status": run_status,
                     "position": snapshot.position_qty if snapshot.position_qty is not None else "",
-                    "market_price": snapshot.market_price if snapshot.market_price is not None else "",
-                    "market_value": snapshot.market_value if snapshot.market_value is not None else "",
-                    "avg_cost": snapshot.avg_cost if snapshot.avg_cost is not None else "",
+                    "broker_market_price": snapshot.market_price if snapshot.market_price is not None else "",
+                    "broker_market_value": snapshot.market_value if snapshot.market_value is not None else "",
+                    "broker_avg_cost": snapshot.avg_cost if snapshot.avg_cost is not None else "",
                     "net_liquidation_value": snapshot.net_liquidation if snapshot.net_liquidation is not None else "",
                     "configured_account": snapshot.account_id_masked,
                     "snapshot_status": snapshot.snapshot_status,
