@@ -1738,6 +1738,47 @@ class GridEngine:
         # Queue the fill to be written asynchronously
         asyncio.create_task(self.sheet.log_fill(exec_data))
 
+
+    async def _handle_session_boundary_cancel_async(self, order_id: str, row_index: int, action: str, result: OrderResult, is_short_reject: bool, short_reject_halt: bool):
+        logger.info(f"Verifying session boundary cancel for order {order_id} (row {row_index}) via snapshot...")
+        snap = await self.broker.get_verified_symbol_snapshot(TICKER)
+
+        if snap and snap.position_qty is not None and snap.position_qty > 0:
+            logger.info(f"Session boundary SELL cancel verified for order {order_id}. Position > 0. Preserving ownership.")
+
+            # Preserve ownership by stripping WORKING_SELL but keeping the rest
+            if self.grid_state and row_index in self.grid_state.rows:
+                current_status = self.grid_state.rows[row_index].status
+                new_status = _remove_status_part(current_status, 'WORKING_SELL:')
+            else:
+                new_status = "OWNED:0"
+            self._update_row_status_in_memory(row_index, new_status)
+
+            if action == 'TRIM_SELL':
+                self._bridge_state = 'BRIDGE_HALTED'
+
+            await self._sync_to_sheet()
+        else:
+            logger.warning(f"Session boundary SELL cancel for {order_id}, but snapshot position unavailable/0. Halting.")
+            # Trigger halt
+            code = "IBKR_SHORT_REJECTION_HALT" if short_reject_halt else "SELL_CANCELLED_NO_FILL_HALT"
+            new_status = f"ERROR_RECONCILE_REQUIRED:{code}"
+            self._update_row_status_in_memory(row_index, new_status)
+            self._halted_reconciliation = True
+
+            if action == 'TRIM_SELL':
+                self._bridge_state = 'BRIDGE_HALTED'
+
+            asyncio.create_task(self._safe_async_halt(
+                code=code,
+                symbol=TICKER,
+                row=row_index,
+                action=action,
+                details=f"Unexpected SELL failure (Status: {result.status}, Reason: {result.reason}, Msg: {result.error_msg}). Halting to preserve Tracker state.",
+                severity="CRITICAL"
+            ))
+            await self._sync_to_sheet()
+
     def _handle_order_update(self, result: OrderResult):
         order_id = result.order_id
 
@@ -1888,32 +1929,15 @@ class GridEngine:
                 # Check for session boundary cancellation (IBKR OVERNIGHT -> premarket cutoff)
                 if self._is_session_boundary() and result.status == 'cancelled':
                     if action in ('SELL', 'TRIM_SELL') and is_unexpected_sell_drop:
-                        # Verify snapshot supports ownership
-                        snap = self.broker.get_verified_symbol_snapshot(TICKER)
-                        if snap and snap.position_qty is not None and snap.position_qty > 0:
-                            logger.info(f"Session boundary SELL cancel detected for order {order_id} (row {row_index}). Position > 0. Preserving ownership.")
-                            self.order_manager.mark_cancelled(order_id)
-                            # Do not halt
-                            is_unexpected_sell_drop = False
-
-                            # Preserve ownership by stripping WORKING_SELL but keeping the rest
-                            if self.grid_state and row_index in self.grid_state.rows:
-                                current_status = self.grid_state.rows[row_index].status
-                                new_status = _remove_status_part(current_status, 'WORKING_SELL:')
-                            else:
-                                new_status = "OWNED:0"
-                            self._update_row_status_in_memory(row_index, new_status)
-
-                            if action == 'TRIM_SELL':
-                                self._bridge_state = 'BRIDGE_HALTED'
-
-                            asyncio.create_task(self._sync_to_sheet())
-                            return
-                        else:
-                            logger.warning(f"Session boundary SELL cancel for {order_id}, but snapshot position unavailable/0. Halting.")
+                        logger.info(f"Session boundary SELL cancel detected for order {order_id} (row {row_index}). Scheduling async verification.")
+                        # Do not halt synchronously. Delegate to async helper.
+                        is_unexpected_sell_drop = False
+                        asyncio.create_task(self._handle_session_boundary_cancel_async(
+                            order_id, row_index, action, result, is_short_reject, short_reject_halt
+                        ))
+                        return
                     elif action in ('BUY', 'BRIDGE_BUY'):
                         logger.info(f"Session boundary {action} cancel detected for order {order_id} (row {row_index}). Clearing tracking.")
-                        self.order_manager.mark_cancelled(order_id)
 
                         # Set to IDLE or remove WORKING_BUY/BRIDGE_BUY
                         if self.grid_state and row_index in self.grid_state.rows:
@@ -1923,9 +1947,6 @@ class GridEngine:
                                 self._bridge_state = 'IDLE'
                             else:
                                 new_status = _remove_status_part(current_status, 'WORKING_BUY:')
-                                # If it's just 'OWNED:0' left from _remove_status_part but wasn't owned before,
-                                # we should actually revert to IDLE, but _remove_status_part enforces OWNED:0 if empty.
-                                # A normal row that is WORKING_BUY shouldn't have OWNED.
                                 if new_status == "OWNED:0" and "OWNED" not in current_status:
                                     new_status = "IDLE"
                         else:
@@ -1934,7 +1955,6 @@ class GridEngine:
                                 self._bridge_state = 'IDLE'
 
                         self._update_row_status_in_memory(row_index, new_status)
-
                         asyncio.create_task(self._sync_to_sheet())
                         return
 
@@ -1942,7 +1962,6 @@ class GridEngine:
                 if action in ('SELL', 'TRIM_SELL') and result.status == 'cancelled' and cancel_intent is not None:
                     # Valid bot-initiated cancel, do not halt
                     logger.info(f"Order {order_id} cancelled intentionally by bot (Reason: {cancel_intent.get('reason')}). Preserving ownership for row {row_index}.")
-                    self.order_manager.mark_cancelled(order_id)
                     owned_id = "0"
                     if self.grid_state and row_index in self.grid_state.rows:
                         status = self.grid_state.rows[row_index].status

@@ -13,7 +13,7 @@ TICKER = "TQQQ"
 @pytest.fixture
 def mock_broker():
     broker = MagicMock()
-    broker.get_verified_symbol_snapshot = MagicMock()
+    broker.get_verified_symbol_snapshot = AsyncMock()
     return broker
 
 @pytest.fixture
@@ -61,7 +61,11 @@ async def test_boundary_sell_cancel_preserves_owned(engine):
         res = OrderResult(order_id="abc", status="cancelled", filled_qty=0)
         engine._handle_order_update(res)
 
+        # Allow async task to run
+        await asyncio.sleep(0)
+
         # Assertions
+        # order_manager.mark_cancelled is called inside _async_order_callback/handle_order_update
         engine.order_manager.mark_cancelled.assert_called_with("abc")
         # Status should preserve OWNED:123 but remove WORKING_SELL
         assert engine.grid_state.rows[1].status == "OWNED:123"
@@ -97,6 +101,9 @@ async def test_outside_boundary_sell_cancel_halts(engine):
         res = OrderResult(order_id="abc", status="cancelled", filled_qty=0)
         engine._handle_order_update(res)
 
+        # Allow async tasks to run
+        await asyncio.sleep(0)
+
         # Halt should be scheduled
         engine._safe_async_halt.assert_called_once()
         args, kwargs = engine._safe_async_halt.call_args
@@ -117,6 +124,7 @@ async def test_boundary_sell_cancel_ambiguous_snapshot_halts(engine):
         res = OrderResult(order_id="abc", status="cancelled", filled_qty=0)
         engine._handle_order_update(res)
 
+        await asyncio.sleep(0)
         # Halt should be scheduled because snapshot couldn't be verified
         engine._safe_async_halt.assert_called_once()
         args, kwargs = engine._safe_async_halt.call_args
@@ -137,6 +145,9 @@ async def test_boundary_sell_cancel_zero_position_halts(engine):
 
         res = OrderResult(order_id="abc", status="cancelled", filled_qty=0)
         engine._handle_order_update(res)
+
+        # Allow async tasks to run
+        await asyncio.sleep(0)
 
         # Halt should be scheduled
         engine._safe_async_halt.assert_called_once()
