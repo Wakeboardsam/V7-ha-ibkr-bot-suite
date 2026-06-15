@@ -82,6 +82,7 @@ class GridEngine:
         self._last_grid_regeneration = datetime.min.replace(tzinfo=tz)
         self._is_weekend_gap = False
         self._maintenance_cancel_done = False
+        self._snapshot_error_logged = False
 
         # Bridge Anchor states
         self._bridge_state: str = 'IDLE' # Can be 'IDLE', 'ARMED', 'ANCHOR_RECALC_PENDING', 'TRIM_PENDING', 'BRIDGE_HALTED'
@@ -373,32 +374,88 @@ class GridEngine:
     async def _log_health_periodic(self):
         while not self._shutdown_event.is_set():
             try:
-                open_orders = await self.broker.get_open_orders()
-                portfolio_item = await self.broker.get_portfolio_item(TICKER)
+                # Use canonical account-scoped snapshot
+                snapshot = await self.broker.get_verified_symbol_snapshot(TICKER)
 
-                # Best-effort: do not fail the entire health log if NLV retrieval fails
-                net_liq = None
-                try:
-                    net_liq = await self.broker.get_net_liquidation_value()
-                except Exception as e:
-                    logger.warning(f"Failed to fetch net liquidation value: {e}")
+                if snapshot.snapshot_status in ("PARTIAL", "UNAVAILABLE"):
+                    if not self._snapshot_error_logged:
+                        error_details = (
+                            f"Account: {snapshot.account_id_masked}. "
+                            f"Status: {snapshot.snapshot_status}. "
+                            f"Error: {snapshot.snapshot_error}. "
+                            "Health tab withholding values. "
+                            f"Bot state: {'HALTED' if self._halted_reconciliation else 'RUNNING'}."
+                        )
+                        await self.sheet.log_error(
+                            severity="ERROR",
+                            code="POSITION_SNAPSHOT_UNAVAILABLE",
+                            symbol=TICKER,
+                            row="Health",
+                            action="Health Check",
+                            bot_status="HALTED_RECONCILIATION" if self._halted_reconciliation else "Running",
+                            details=error_details
+                        )
+                        self._snapshot_error_logged = True
+                elif snapshot.snapshot_status == "OK":
+                    if self._snapshot_error_logged:
+                        # Recovered
+                        self._snapshot_error_logged = False
 
                 if self._halted_reconciliation:
                     run_status = "HALTED_RECONCILIATION"
                 else:
                     run_status = "Running (Mode=DRY_RUN)" if self.config.dry_run else "Running"
 
+                # Calculate Tracker Expected Orders directly from OrderManager tracking Map
+                tracker_expected_ids = set(self.order_manager.get_tracked_order_ids())
+                tracker_expected_count = len(tracker_expected_ids)
+
+                broker_open_ids = set(str(o.get('order_id')) for o in snapshot.active_broker_orders)
+                broker_open_count = len(broker_open_ids)
+
+                unmatched_broker = list(broker_open_ids - tracker_expected_ids)
+                missing_broker = list(tracker_expected_ids - broker_open_ids)
+
+                # Check for Match Status. We do a basic ID match here since active reconciliation does the deep matching.
+                if len(unmatched_broker) == 0 and len(missing_broker) == 0:
+                    order_match_status = "MATCH"
+                elif len(unmatched_broker) > 0 and len(missing_broker) == 0:
+                    order_match_status = "MISMATCH"
+                elif len(missing_broker) > 0 and len(unmatched_broker) == 0:
+                    order_match_status = "PARTIAL"
+                else:
+                    order_match_status = "MISMATCH"
+
+                # Update Last fill time explicitly as requested
+                if self.last_fill_time:
+                    last_fill_str = self.last_fill_time.strftime("%Y-%m-%d %H:%M:%S")
+                elif snapshot.position_qty is not None and snapshot.position_qty > 0:
+                    last_fill_str = "Broker position exists; no bot buy fill found"
+                else:
+                    last_fill_str = "No bot fill found"
+
                 health_data = {
                     "last_price": self.last_price,
-                    "open_orders_count": len(open_orders),
-                    "last_fill_time": self.last_fill_time.strftime("%Y-%m-%d %H:%M:%S") if self.last_fill_time else "Never",
+                    "open_orders_count": snapshot.open_orders_count,
+                    "last_fill_time": last_fill_str,
                     "status": run_status,
-                    "position": portfolio_item.get('position') if portfolio_item else 0,
-                    "market_price": portfolio_item.get('marketPrice') if portfolio_item else 0,
-                    "market_value": portfolio_item.get('marketValue') if portfolio_item else 0,
-                    "avg_cost": portfolio_item.get('averageCost') if portfolio_item else 0,
-                    "net_liquidation_value": net_liq
+                    "position": snapshot.position_qty if snapshot.position_qty is not None else "",
+                    "market_price": snapshot.market_price if snapshot.market_price is not None else "",
+                    "market_value": snapshot.market_value if snapshot.market_value is not None else "",
+                    "avg_cost": snapshot.avg_cost if snapshot.avg_cost is not None else "",
+                    "net_liquidation_value": snapshot.net_liquidation if snapshot.net_liquidation is not None else "",
+                    "configured_account": snapshot.account_id_masked,
+                    "snapshot_status": snapshot.snapshot_status,
+                    "snapshot_error": snapshot.snapshot_error,
+                    "broker_open_orders": broker_open_count,
+                    "tracker_expected_orders": tracker_expected_count,
+                    "order_match_status": order_match_status,
+                    "working_buy_qty": snapshot.working_buy_qty,
+                    "working_sell_qty": snapshot.working_sell_qty,
+                    "unmatched_broker_orders": ",".join(unmatched_broker) if unmatched_broker else "",
+                    "missing_broker_orders": ",".join(missing_broker) if missing_broker else ""
                 }
+
                 success = await self.sheet.log_health(health_data)
                 if success:
                     logger.info("Health status logged to Google Sheets")
