@@ -10,6 +10,24 @@ class PositionSnapshot:
 
 
 @dataclass
+class SymbolSnapshot:
+    symbol: str
+    account_id_masked: str
+    position_qty: Optional[int]
+    market_price: Optional[float]
+    market_value: Optional[float]
+    avg_cost: Optional[float]
+    net_liquidation: Optional[float]
+    cash: Optional[float]
+    open_orders_count: int
+    working_buy_qty: int
+    working_sell_qty: int
+    active_broker_orders: list[dict]
+    snapshot_status: str  # "OK" | "PARTIAL" | "UNAVAILABLE" | "ACCOUNT_SCOPE_MISSING"
+    snapshot_error: str
+
+
+@dataclass
 class OrderResult:
     order_id: str
     status: str          # 'submitted' | 'filled' | 'cancelled' | 'error' | 'dry_run_blocked'
@@ -97,3 +115,6 @@ class BrokerBase(ABC):
 
     @abstractmethod
     async def get_portfolio_item(self, ticker: str) -> Optional[dict]: ...
+
+    @abstractmethod
+    async def get_verified_symbol_snapshot(self, symbol: str) -> SymbolSnapshot: ...

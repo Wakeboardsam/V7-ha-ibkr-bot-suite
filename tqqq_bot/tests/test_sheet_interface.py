@@ -179,7 +179,10 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         # Optional: present headers so any header checks don't try to expand
         mock_worksheet.row_values.return_value = [
             "TIMESTAMP", "LAST_PRICE", "OPEN_ORDERS_COUNT", "LAST_FILL_TIME", "STATUS",
-            "POSITION", "MARKET_PRICE", "MARKET_VALUE", "AVG_COST", "NET_LIQUIDATION_VALUE"
+            "POSITION", "MARKET_PRICE", "MARKET_VALUE", "AVG_COST", "NET_LIQUIDATION_VALUE",
+            "CONFIGURED_ACCOUNT", "SNAPSHOT_STATUS", "SNAPSHOT_ERROR", "BROKER_OPEN_ORDERS",
+            "TRACKER_EXPECTED_ORDERS", "ORDER_MATCH_STATUS", "WORKING_BUY_QTY", "WORKING_SELL_QTY",
+            "UNMATCHED_BROKER_ORDERS", "MISSING_BROKER_ORDERS"
         ]
         self.mock_sheet.worksheet.return_value = mock_worksheet
 
@@ -199,5 +202,5 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
 
         args = mock_worksheet.append_row.call_args[0][0]
-        self.assertEqual(len(args), 10)
-        self.assertEqual(args[-1], 12345.67)
+        self.assertEqual(len(args), 20)
+        self.assertEqual(args[9], 12345.67)

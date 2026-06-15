@@ -184,7 +184,6 @@ class SheetInterface:
     async def log_health(self, health_data: dict) -> bool:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # TIMESTAMP, LAST_PRICE, OPEN_ORDERS_COUNT, LAST_FILL_TIME, STATUS, POSITION, MARKET_PRICE, MARKET_VALUE, AVG_COST, NET_LIQUIDATION_VALUE
         row = [
             timestamp,
             health_data.get("last_price"),
@@ -195,7 +194,17 @@ class SheetInterface:
             health_data.get("market_price"),
             health_data.get("market_value"),
             health_data.get("avg_cost"),
-            health_data.get("net_liquidation_value")
+            health_data.get("net_liquidation_value"),
+            health_data.get("configured_account"),
+            health_data.get("snapshot_status"),
+            health_data.get("snapshot_error"),
+            health_data.get("broker_open_orders"),
+            health_data.get("tracker_expected_orders"),
+            health_data.get("order_match_status"),
+            health_data.get("working_buy_qty"),
+            health_data.get("working_sell_qty"),
+            health_data.get("unmatched_broker_orders"),
+            health_data.get("missing_broker_orders")
         ]
 
         try:

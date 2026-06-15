@@ -6,7 +6,7 @@ import os
 import signal
 from ib_insync import IB, Stock, Order, Trade, LimitOrder
 
-from brokers.base import BrokerBase, OrderResult, PositionSnapshot
+from brokers.base import BrokerBase, OrderResult, PositionSnapshot, SymbolSnapshot
 from brokers.ibkr.connection import async_connect
 from brokers.ibkr.order_builder import build_bracket_order
 from utils.log_sanitizer import mask_account_id, mask_account_ids_in_text
@@ -707,6 +707,135 @@ class IBKRAdapter(BrokerBase):
                     'averageCost': item.averageCost
                 }
         return None
+
+    async def get_verified_symbol_snapshot(self, symbol: str) -> SymbolSnapshot:
+        if not self.account_id:
+            return SymbolSnapshot(
+                symbol=symbol,
+                account_id_masked="",
+                position_qty=None,
+                market_price=None,
+                market_value=None,
+                avg_cost=None,
+                net_liquidation=None,
+                cash=None,
+                open_orders_count=0,
+                working_buy_qty=0,
+                working_sell_qty=0,
+                active_broker_orders=[],
+                snapshot_status="ACCOUNT_SCOPE_MISSING",
+                snapshot_error="Account ID is missing or unconfigured"
+            )
+
+        account_masked = self._mask_account(self.account_id)
+        if not self._broker_state_ready:
+            return SymbolSnapshot(
+                symbol=symbol,
+                account_id_masked=account_masked,
+                position_qty=None,
+                market_price=None,
+                market_value=None,
+                avg_cost=None,
+                net_liquidation=None,
+                cash=None,
+                open_orders_count=0,
+                working_buy_qty=0,
+                working_sell_qty=0,
+                active_broker_orders=[],
+                snapshot_status="UNAVAILABLE",
+                snapshot_error="Broker connection state is not ready or valid"
+            )
+
+        try:
+            # Check positions directly to explicitly confirm a true 0
+            pos_snapshot = await self.get_position_snapshot()
+            if not pos_snapshot.is_ready:
+                return SymbolSnapshot(
+                    symbol=symbol,
+                    account_id_masked=account_masked,
+                    position_qty=None,
+                    market_price=None,
+                    market_value=None,
+                    avg_cost=None,
+                    net_liquidation=None,
+                    cash=None,
+                    open_orders_count=0,
+                    working_buy_qty=0,
+                    working_sell_qty=0,
+                    active_broker_orders=[],
+                    snapshot_status="UNAVAILABLE",
+                    snapshot_error="Position snapshot is not ready"
+                )
+
+            position_qty = pos_snapshot.positions.get(symbol, 0)
+
+            # Gather other necessary data
+            portfolio_item = await self.get_portfolio_item(symbol)
+            all_open_orders = await self.get_open_orders()
+
+            # Use best-effort for net liquidation and cash so we don't fail the snapshot if they fail
+            net_liq = None
+            cash = None
+            try:
+                net_liq = await self.get_net_liquidation_value()
+            except Exception as e:
+                logger.warning(f"Failed to fetch net liquidation value for snapshot: {e}")
+
+            try:
+                cash = await self.get_wallet_balance()
+            except Exception as e:
+                logger.warning(f"Failed to fetch cash for snapshot: {e}")
+
+            # Open orders are already filtered by account ID in get_open_orders
+            active_broker_orders = [o for o in all_open_orders if o.get('ticker') == symbol]
+
+            working_buy_qty = sum(o.get('qty', 0) for o in active_broker_orders if o.get('action') == 'BUY')
+            working_sell_qty = sum(o.get('qty', 0) for o in active_broker_orders if o.get('action') == 'SELL')
+
+            market_price = None
+            market_value = None
+            avg_cost = None
+
+            if portfolio_item is not None:
+                market_price = portfolio_item['marketPrice']
+                market_value = portfolio_item['marketValue']
+                avg_cost = portfolio_item['averageCost']
+
+            return SymbolSnapshot(
+                symbol=symbol,
+                account_id_masked=account_masked,
+                position_qty=position_qty,
+                market_price=market_price,
+                market_value=market_value,
+                avg_cost=avg_cost,
+                net_liquidation=net_liq,
+                cash=cash,
+                open_orders_count=len(active_broker_orders),
+                working_buy_qty=working_buy_qty,
+                working_sell_qty=working_sell_qty,
+                active_broker_orders=active_broker_orders,
+                snapshot_status="OK",
+                snapshot_error=""
+            )
+
+        except Exception as e:
+            logger.error(f"Error fetching position snapshot for {symbol}: {e}")
+            return SymbolSnapshot(
+                symbol=symbol,
+                account_id_masked=account_masked,
+                position_qty=None,
+                market_price=None,
+                market_value=None,
+                avg_cost=None,
+                net_liquidation=None,
+                cash=None,
+                open_orders_count=0,
+                working_buy_qty=0,
+                working_sell_qty=0,
+                active_broker_orders=[],
+                snapshot_status="PARTIAL",
+                snapshot_error=f"Exception during snapshot fetch: {str(e)}"
+            )
 
     def _on_exec_details(self, trade: Trade, fill):
         """
