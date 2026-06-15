@@ -250,3 +250,48 @@ class TestHealthSnapshot(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
         self.mock_sheet.log_error.assert_not_called() # Deduplicated
+
+    async def test_health_snapshot_mismatch_qty(self):
+        # Even if order ID is tracked, if qty doesn't match grid state, it's a mismatch
+        snapshot = SymbolSnapshot(
+            symbol="TQQQ",
+            account_id_masked="DU1***456",
+            position_qty=50,
+            market_price=10.0,
+            market_value=500.0,
+            avg_cost=9.5,
+            net_liquidation=1000.0,
+            cash=500.0,
+            open_orders_count=1,
+            working_buy_qty=20, # Broker has 20
+            working_sell_qty=0,
+            active_broker_orders=[{"order_id": "1", "action": "BUY", "qty": 20, "ticker": "TQQQ"}],
+            snapshot_status="OK",
+            snapshot_error=""
+        )
+        self.mock_broker.get_verified_symbol_snapshot.return_value = snapshot
+
+        self.engine.order_manager.get_tracked_order_ids = MagicMock(return_value=["1"])
+        self.engine.order_manager.get_row_and_action = MagicMock(return_value=(8, "BUY"))
+
+        # Grid expects 10 shares
+        from engine.grid_state import GridState, GridRow
+        self.engine.grid_state = GridState(rows={
+            8: GridRow(row_index=8, status="WORKING_BUY:1", shares=10, buy_price=100.0, sell_price=102.0, has_y=False)
+        })
+
+        import asyncio
+        self.engine._shutdown_event.clear()
+        task = asyncio.create_task(self.engine._log_health_periodic())
+        await asyncio.sleep(0.01) # Yield to event loop to let it run one cycle
+        self.engine._shutdown_event.set()
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        health_data = self.mock_sheet.log_health.call_args[0][0]
+        self.assertEqual(health_data["order_match_status"], "MISMATCH")
+        self.assertEqual(health_data["unmatched_broker_orders"], "1")

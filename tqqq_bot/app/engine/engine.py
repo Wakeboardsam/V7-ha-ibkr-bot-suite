@@ -421,6 +421,18 @@ class GridEngine:
                 for o in snapshot.active_broker_orders:
                     oid = str(o.get('order_id'))
                     if oid in tracker_expected_ids:
+                        # Ensure it fully matches the expected state
+                        row_index, expected_action = self.order_manager.get_row_and_action(oid)
+                        if expected_action and expected_action != o.get('action'):
+                            unmatched_broker.add(oid)
+                            continue
+
+                        # If tracked, we can also check against grid_state for qty mismatches
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            expected_qty = self.grid_state.rows[row_index].shares
+                            if abs(expected_qty - o.get('qty', 0)) > 0.01:
+                                unmatched_broker.add(oid)
+                                continue
                         continue
 
                     # Not in active tracking, check if it matches an untracked sheet state order STRICTLY

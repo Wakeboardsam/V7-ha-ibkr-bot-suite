@@ -747,7 +747,29 @@ class IBKRAdapter(BrokerBase):
             )
 
         try:
-            # Gather all necessary data
+            # Check positions directly to explicitly confirm a true 0
+            pos_snapshot = await self.get_position_snapshot()
+            if not pos_snapshot.is_ready:
+                return SymbolSnapshot(
+                    symbol=symbol,
+                    account_id_masked=account_masked,
+                    position_qty=None,
+                    market_price=None,
+                    market_value=None,
+                    avg_cost=None,
+                    net_liquidation=None,
+                    cash=None,
+                    open_orders_count=0,
+                    working_buy_qty=0,
+                    working_sell_qty=0,
+                    active_broker_orders=[],
+                    snapshot_status="UNAVAILABLE",
+                    snapshot_error="Position snapshot is not ready"
+                )
+
+            position_qty = pos_snapshot.positions.get(symbol, 0)
+
+            # Gather other necessary data
             portfolio_item = await self.get_portfolio_item(symbol)
             all_open_orders = await self.get_open_orders()
 
@@ -770,17 +792,14 @@ class IBKRAdapter(BrokerBase):
             working_buy_qty = sum(o.get('qty', 0) for o in active_broker_orders if o.get('action') == 'BUY')
             working_sell_qty = sum(o.get('qty', 0) for o in active_broker_orders if o.get('action') == 'SELL')
 
+            market_price = None
+            market_value = None
+            avg_cost = None
+
             if portfolio_item is not None:
-                position_qty = int(portfolio_item['position'])
                 market_price = portfolio_item['marketPrice']
                 market_value = portfolio_item['marketValue']
                 avg_cost = portfolio_item['averageCost']
-            else:
-                # If portfolio fetch succeeds but symbol is missing, we consider position 0
-                position_qty = 0
-                market_price = None
-                market_value = None
-                avg_cost = None
 
             return SymbolSnapshot(
                 symbol=symbol,
