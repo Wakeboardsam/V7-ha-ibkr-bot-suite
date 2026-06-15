@@ -681,6 +681,21 @@ class IBKRAdapter(BrokerBase):
             positions[pos.contract.symbol] = int(pos.position)
         return positions
 
+    async def get_position_details(self) -> list[dict]:
+        """Returns full position objects as dicts for detailed inspection."""
+        details = []
+        for pos in self.ib.positions():
+            if self.account_id:
+                pos_account = getattr(pos, "account", None)
+                if pos_account != self.account_id:
+                    continue
+            details.append({
+                'symbol': pos.contract.symbol,
+                'position': int(pos.position),
+                'avgCost': getattr(pos, 'avgCost', None)
+            })
+        return details
+
     async def get_position_snapshot(self) -> PositionSnapshot:
         if not self._broker_state_ready:
             return PositionSnapshot(is_ready=False, positions={})
@@ -796,10 +811,23 @@ class IBKRAdapter(BrokerBase):
             market_value = None
             avg_cost = None
 
+            snapshot_status = "OK"
+            snapshot_error = ""
+
             if portfolio_item is not None:
                 market_price = portfolio_item['marketPrice']
                 market_value = portfolio_item['marketValue']
                 avg_cost = portfolio_item['averageCost']
+            else:
+                # Fallback to positions if portfolio item is unavailable
+                pos_details = await self.get_position_details()
+                for p in pos_details:
+                    if p['symbol'] == symbol:
+                        avg_cost = p.get('avgCost')
+                        break
+
+                if position_qty > 0:
+                    snapshot_error = "Position exists but broker portfolio item unavailable; broker market fields withheld."
 
             return SymbolSnapshot(
                 symbol=symbol,
@@ -814,8 +842,8 @@ class IBKRAdapter(BrokerBase):
                 working_buy_qty=working_buy_qty,
                 working_sell_qty=working_sell_qty,
                 active_broker_orders=active_broker_orders,
-                snapshot_status="OK",
-                snapshot_error=""
+                snapshot_status=snapshot_status,
+                snapshot_error=snapshot_error
             )
 
         except Exception as e:

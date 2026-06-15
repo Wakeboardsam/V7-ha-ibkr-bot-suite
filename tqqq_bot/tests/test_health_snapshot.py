@@ -295,3 +295,46 @@ class TestHealthSnapshot(unittest.IsolatedAsyncioTestCase):
         health_data = self.mock_sheet.log_health.call_args[0][0]
         self.assertEqual(health_data["order_match_status"], "MISMATCH")
         self.assertEqual(health_data["unmatched_broker_orders"], "1")
+
+    async def test_health_snapshot_portfolio_missing_position_fallback(self):
+        # Verify that if broker_market_price/value are empty, they are passed as empty strings/None
+        # and avgCost is fetched.
+        snapshot = SymbolSnapshot(
+            symbol="TQQQ",
+            account_id_masked="DU1***456",
+            position_qty=50,
+            market_price=None,
+            market_value=None,
+            avg_cost=15.0,
+            net_liquidation=1000.0,
+            cash=1000.0,
+            open_orders_count=0,
+            working_buy_qty=0,
+            working_sell_qty=0,
+            active_broker_orders=[],
+            snapshot_status="OK",
+            snapshot_error="Position exists but broker portfolio item unavailable; broker market fields withheld."
+        )
+        self.mock_broker.get_verified_symbol_snapshot.return_value = snapshot
+        self.engine.order_manager.get_tracked_order_ids = MagicMock(return_value=[])
+
+        import asyncio
+        self.engine._shutdown_event.clear()
+        task = asyncio.create_task(self.engine._log_health_periodic())
+        await asyncio.sleep(0.01) # Yield to event loop to let it run one cycle
+        self.engine._shutdown_event.set()
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        self.mock_sheet.log_health.assert_called_once()
+        health_data = self.mock_sheet.log_health.call_args[0][0]
+        self.assertEqual(health_data["position"], 50)
+        self.assertEqual(health_data["broker_market_price"], "")
+        self.assertEqual(health_data["broker_market_value"], "")
+        self.assertEqual(health_data["broker_avg_cost"], 15.0)
+        self.assertEqual(health_data["snapshot_status"], "OK")
+        self.assertEqual(health_data["snapshot_error"], "Position exists but broker portfolio item unavailable; broker market fields withheld.")
