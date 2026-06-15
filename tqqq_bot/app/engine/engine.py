@@ -3,6 +3,15 @@ import logging
 import signal
 from datetime import datetime, time, timedelta
 import zoneinfo
+
+SESSION_BOUNDARY_TZ = zoneinfo.ZoneInfo("America/New_York")
+SESSION_BOUNDARY_START = time(3, 45)
+SESSION_BOUNDARY_END = time(4, 5)
+
+def _is_time_in_session_boundary(now_et: datetime) -> bool:
+    """Helper to check if a specific datetime falls within the session boundary window."""
+    local_time = now_et.astimezone(SESSION_BOUNDARY_TZ).time()
+    return SESSION_BOUNDARY_START <= local_time <= SESSION_BOUNDARY_END
 from typing import Optional, List
 
 from brokers.base import BrokerBase, OrderResult, SymbolSnapshot
@@ -62,6 +71,10 @@ def _remove_status_part(status: str, prefix: str) -> str:
     return '|'.join(kept)
 
 class GridEngine:
+
+    def _is_session_boundary(self) -> bool:
+        """Checks if the current time falls within the 03:45-04:05 ET session boundary."""
+        return _is_time_in_session_boundary(datetime.now(SESSION_BOUNDARY_TZ))
 
     def __init__(self, broker: BrokerBase, sheet: SheetInterface, config: AppConfig):
         self.broker = broker
@@ -1871,6 +1884,59 @@ class GridEngine:
                             # Let's halt on ALL of them except if we can definitively say it was bot-initiated.
                             # Since we don't have a flag right now, and the prompt says "If uncertain, halt with ERROR_RECONCILE_REQUIRED."
                             is_unexpected_sell_drop = True
+
+                # Check for session boundary cancellation (IBKR OVERNIGHT -> premarket cutoff)
+                if self._is_session_boundary() and result.status == 'cancelled':
+                    if action in ('SELL', 'TRIM_SELL') and is_unexpected_sell_drop:
+                        # Verify snapshot supports ownership
+                        snap = self.broker.get_verified_symbol_snapshot(TICKER)
+                        if snap and snap.position_qty is not None and snap.position_qty > 0:
+                            logger.info(f"Session boundary SELL cancel detected for order {order_id} (row {row_index}). Position > 0. Preserving ownership.")
+                            self.order_manager.mark_cancelled(order_id)
+                            # Do not halt
+                            is_unexpected_sell_drop = False
+
+                            # Preserve ownership by stripping WORKING_SELL but keeping the rest
+                            if self.grid_state and row_index in self.grid_state.rows:
+                                current_status = self.grid_state.rows[row_index].status
+                                new_status = _remove_status_part(current_status, 'WORKING_SELL:')
+                            else:
+                                new_status = "OWNED:0"
+                            self._update_row_status_in_memory(row_index, new_status)
+
+                            if action == 'TRIM_SELL':
+                                self._bridge_state = 'BRIDGE_HALTED'
+
+                            asyncio.create_task(self._sync_to_sheet())
+                            return
+                        else:
+                            logger.warning(f"Session boundary SELL cancel for {order_id}, but snapshot position unavailable/0. Halting.")
+                    elif action in ('BUY', 'BRIDGE_BUY'):
+                        logger.info(f"Session boundary {action} cancel detected for order {order_id} (row {row_index}). Clearing tracking.")
+                        self.order_manager.mark_cancelled(order_id)
+
+                        # Set to IDLE or remove WORKING_BUY/BRIDGE_BUY
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            current_status = self.grid_state.rows[row_index].status
+                            if action == 'BRIDGE_BUY':
+                                new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
+                                self._bridge_state = 'IDLE'
+                            else:
+                                new_status = _remove_status_part(current_status, 'WORKING_BUY:')
+                                # If it's just 'OWNED:0' left from _remove_status_part but wasn't owned before,
+                                # we should actually revert to IDLE, but _remove_status_part enforces OWNED:0 if empty.
+                                # A normal row that is WORKING_BUY shouldn't have OWNED.
+                                if new_status == "OWNED:0" and "OWNED" not in current_status:
+                                    new_status = "IDLE"
+                        else:
+                            new_status = "IDLE"
+                            if action == 'BRIDGE_BUY':
+                                self._bridge_state = 'IDLE'
+
+                        self._update_row_status_in_memory(row_index, new_status)
+
+                        asyncio.create_task(self._sync_to_sheet())
+                        return
 
                 # Apply bot-initiated cancel exception
                 if action in ('SELL', 'TRIM_SELL') and result.status == 'cancelled' and cancel_intent is not None:

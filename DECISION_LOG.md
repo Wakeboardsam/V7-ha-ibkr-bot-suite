@@ -73,3 +73,10 @@ Decision:
 - `ibkr_gateway` folder is kept intact as optional/experimental shared-Gateway mode.
 - Trading strategy code/behavior remains identical to v6 logic.
 - We did not introduce `supervisord` since the `run.sh` background/exec pattern provides sufficient, minimal process management.
+## 2026-06-15 — Implement session-boundary cancellation exception
+
+Outcome:
+Added logic to gracefully handle IBKR overnight order cancellations that typically happen around 03:50 ET.
+
+Decision:
+If a cancellation occurs between 03:45 ET and 04:05 ET, the bot checks the current position snapshot. If the position snapshot successfully confirms > 0 position, the engine preserves the `OWNED` status of the row and removes the stale `WORKING_SELL` tracking instead of halting. For BUY and BRIDGE_BUY tracking, the working status is gracefully cleared. If the position snapshot is not > 0 or fails, the engine correctly fails closed and halts. The timezone boundary checks enforce strictly `America/New_York` to avoid any DST or execution server timezone issues.
