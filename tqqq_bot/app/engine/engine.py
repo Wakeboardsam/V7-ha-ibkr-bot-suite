@@ -5,7 +5,7 @@ from datetime import datetime, time, timedelta
 import zoneinfo
 from typing import Optional, List
 
-from brokers.base import BrokerBase, OrderResult
+from brokers.base import BrokerBase, OrderResult, SymbolSnapshot
 from config.schema import AppConfig
 from engine.grid_state import GridState, GridRow
 from engine.order_manager import OrderManager
@@ -371,6 +371,81 @@ class GridEngine:
                 await self._cancel_order_with_intent(oid, reason)
                 logger.info(f"Requested cancellation for order: {oid}")
 
+    def _compare_health_orders(self, snapshot: SymbolSnapshot) -> dict:
+        tracker_expected_ids = set(self.order_manager.get_tracked_order_ids())
+        tracker_expected_count = len(tracker_expected_ids)
+
+        broker_open_ids = set(str(o.get('order_id')) for o in snapshot.active_broker_orders)
+        broker_open_count = len(broker_open_ids)
+
+        unmatched_broker = set()
+        missing_broker = set()
+
+        for o in snapshot.active_broker_orders:
+            oid = str(o.get('order_id'))
+            if oid in tracker_expected_ids:
+                row_index, expected_action = self.order_manager.get_row_and_action(oid)
+                if expected_action and expected_action != o.get('action'):
+                    unmatched_broker.add(oid)
+                    continue
+
+                if self.grid_state and row_index in self.grid_state.rows:
+                    expected_qty = self.grid_state.rows[row_index].shares
+                    if abs(expected_qty - o.get('qty', 0)) > 0.01:
+                        unmatched_broker.add(oid)
+                        continue
+                continue
+
+            sheet_matched = False
+            if self.grid_state:
+                for row in self.grid_state.rows.values():
+                    status_parts = row.status.split('|')
+                    for part in status_parts:
+                        if ':' in part:
+                            prefix, parsed_oid = part.split(':', 1)
+                            if parsed_oid == oid:
+                                expected_action = ""
+                                expected_qty = 0
+                                if prefix == "WORKING_BUY":
+                                    expected_action = "BUY"
+                                    expected_qty = row.shares
+                                    if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
+                                        sheet_matched = True
+                                elif prefix == "WORKING_SELL":
+                                    expected_action = "SELL"
+                                    expected_qty = row.shares
+                                    if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.sell_price - o.get('limit_price', 0)) < 0.01:
+                                        sheet_matched = True
+                                elif prefix == "BRIDGE_BUY":
+                                    expected_action = "BUY"
+                                    expected_qty = row.shares
+                                    if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and o.get('order_type') == "STP LMT":
+                                        if abs(row.sell_price - o.get('aux_price', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
+                                            sheet_matched = True
+            if not sheet_matched:
+                unmatched_broker.add(oid)
+
+        for tracker_id in tracker_expected_ids:
+            if tracker_id not in broker_open_ids:
+                missing_broker.add(tracker_id)
+
+        if len(unmatched_broker) == 0 and len(missing_broker) == 0:
+            order_match_status = "MATCH"
+        elif len(unmatched_broker) > 0 and len(missing_broker) == 0:
+            order_match_status = "MISMATCH"
+        elif len(missing_broker) > 0 and len(unmatched_broker) == 0:
+            order_match_status = "PARTIAL"
+        else:
+            order_match_status = "MISMATCH"
+
+        return {
+            "tracker_expected_count": tracker_expected_count,
+            "broker_open_count": broker_open_count,
+            "order_match_status": order_match_status,
+            "unmatched_broker": ",".join(list(unmatched_broker)) if unmatched_broker else "",
+            "missing_broker": ",".join(list(missing_broker)) if missing_broker else ""
+        }
+
     async def _log_health_periodic(self):
         while not self._shutdown_event.is_set():
             try:
@@ -406,81 +481,9 @@ class GridEngine:
                 else:
                     run_status = "Running (Mode=DRY_RUN)" if self.config.dry_run else "Running"
 
+
                 # Calculate Tracker Expected Orders
-                tracker_expected_ids = set(self.order_manager.get_tracked_order_ids())
-                tracker_expected_count = len(tracker_expected_ids)
-
-                broker_open_ids = set(str(o.get('order_id')) for o in snapshot.active_broker_orders)
-                broker_open_count = len(broker_open_ids)
-
-                unmatched_broker = set()
-                missing_broker = set()
-
-                # We replicate PR14 reconciliation strictness for Health matching
-                # Check broker against tracker
-                for o in snapshot.active_broker_orders:
-                    oid = str(o.get('order_id'))
-                    if oid in tracker_expected_ids:
-                        # Ensure it fully matches the expected state
-                        row_index, expected_action = self.order_manager.get_row_and_action(oid)
-                        if expected_action and expected_action != o.get('action'):
-                            unmatched_broker.add(oid)
-                            continue
-
-                        # If tracked, we can also check against grid_state for qty mismatches
-                        if self.grid_state and row_index in self.grid_state.rows:
-                            expected_qty = self.grid_state.rows[row_index].shares
-                            if abs(expected_qty - o.get('qty', 0)) > 0.01:
-                                unmatched_broker.add(oid)
-                                continue
-                        continue
-
-                    # Not in active tracking, check if it matches an untracked sheet state order STRICTLY
-                    sheet_matched = False
-                    if self.grid_state:
-                        for row in self.grid_state.rows.values():
-                            status_parts = row.status.split('|')
-                            for part in status_parts:
-                                if ':' in part:
-                                    prefix, parsed_oid = part.split(':', 1)
-                                    if parsed_oid == oid:
-                                        # Match found
-                                        expected_action = ""
-                                        expected_qty = 0
-                                        if prefix == "WORKING_BUY":
-                                            expected_action = "BUY"
-                                            expected_qty = row.shares
-                                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
-                                                sheet_matched = True
-                                        elif prefix == "WORKING_SELL":
-                                            expected_action = "SELL"
-                                            expected_qty = row.shares
-                                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.sell_price - o.get('limit_price', 0)) < 0.01:
-                                                sheet_matched = True
-                                        elif prefix == "BRIDGE_BUY":
-                                            # Bridge matches
-                                            expected_action = "BUY"
-                                            expected_qty = row.shares
-                                            if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and o.get('order_type') == "STP LMT":
-                                                if abs(row.sell_price - o.get('aux_price', 0)) < 0.01 and abs(row.buy_price - o.get('limit_price', 0)) < 0.01:
-                                                    sheet_matched = True
-                    if not sheet_matched:
-                        unmatched_broker.add(oid)
-
-                # Find missing expected orders
-                for tracker_id in tracker_expected_ids:
-                    if tracker_id not in broker_open_ids:
-                        missing_broker.add(tracker_id)
-
-                # Check for Match Status.
-                if len(unmatched_broker) == 0 and len(missing_broker) == 0:
-                    order_match_status = "MATCH"
-                elif len(unmatched_broker) > 0 and len(missing_broker) == 0:
-                    order_match_status = "MISMATCH"
-                elif len(missing_broker) > 0 and len(unmatched_broker) == 0:
-                    order_match_status = "PARTIAL"
-                else:
-                    order_match_status = "MISMATCH"
+                match_results = self._compare_health_orders(snapshot)
 
                 # Update Last fill time explicitly as requested
                 if self.last_fill_time:
@@ -503,14 +506,15 @@ class GridEngine:
                     "configured_account": snapshot.account_id_masked,
                     "snapshot_status": snapshot.snapshot_status,
                     "snapshot_error": snapshot.snapshot_error,
-                    "broker_open_orders": broker_open_count,
-                    "tracker_expected_orders": tracker_expected_count,
-                    "order_match_status": order_match_status,
+                    "broker_open_orders": match_results["broker_open_count"],
+                    "tracker_expected_orders": match_results["tracker_expected_count"],
+                    "order_match_status": match_results["order_match_status"],
                     "working_buy_qty": snapshot.working_buy_qty,
                     "working_sell_qty": snapshot.working_sell_qty,
-                    "unmatched_broker_orders": ",".join(list(unmatched_broker)) if unmatched_broker else "",
-                    "missing_broker_orders": ",".join(list(missing_broker)) if missing_broker else ""
+                    "unmatched_broker_orders": match_results["unmatched_broker"],
+                    "missing_broker_orders": match_results["missing_broker"]
                 }
+
 
                 success = await self.sheet.log_health(health_data)
                 if success:
