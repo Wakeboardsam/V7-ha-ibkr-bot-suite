@@ -1,9 +1,10 @@
 import asyncio
 import logging
 from typing import Optional, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import os
 import signal
+import zoneinfo
 from ib_insync import IB, Stock, Order, Trade, LimitOrder
 
 from brokers.base import BrokerBase, OrderResult, PositionSnapshot, SymbolSnapshot
@@ -35,7 +36,7 @@ def classify_ibkr_error(error_code: int, error_string: str) -> tuple[str, int]:
         return "IBKR API/order error", logging.ERROR
 
 class IBKRAdapter(BrokerBase):
-    def __init__(self, host: str, port: int, client_id: int, paper: bool, account_id: Optional[str] = None, mask_account_ids_in_logs: bool = True, dry_run: bool = False):
+    def __init__(self, host: str, port: int, client_id: int, paper: bool, account_id: Optional[str] = None, mask_account_ids_in_logs: bool = True, dry_run: bool = False, maintenance_enabled: bool = False, maintenance_start_local: Optional[str] = None, maintenance_end_local: Optional[str] = None, timezone: str = "America/Denver", maintenance_reconnect_grace_minutes: int = 30):
         super().__init__(dry_run=dry_run)
         self.host = host
         self.port = port
@@ -52,11 +53,66 @@ class IBKRAdapter(BrokerBase):
         self._broker_state_ready = False
         self._connected_not_ready_since: Optional[datetime] = None
         self._degraded_reconnect_attempted: bool = False
+        self.maintenance_enabled = maintenance_enabled
+        self.maintenance_start_local = maintenance_start_local
+        self.maintenance_end_local = maintenance_end_local
+        self.timezone = timezone
+        self.maintenance_reconnect_grace_minutes = maintenance_reconnect_grace_minutes
+        self._maintenance_window_logged = False
 
         # Subscribe to order status and execution events
         self.ib.orderStatusEvent += self._on_order_status
         self.ib.execDetailsEvent += self._on_exec_details
         self.ib.errorEvent += self._on_error
+
+    def _parse_hhmm(self, value: str) -> time:
+        try:
+            h, m = map(int, value.split(":"))
+            return time(hour=h, minute=m)
+        except Exception as e:
+            logger.error(f"Failed to parse time '{value}': {e}")
+            return time(0, 0)
+
+    def _is_in_maintenance_reconnect_window(self) -> bool:
+        if not self.maintenance_enabled or not self.maintenance_start_local or not self.maintenance_end_local:
+            return False
+
+        try:
+            tz = zoneinfo.ZoneInfo(self.timezone)
+        except Exception as e:
+            logger.warning(f"Invalid timezone '{self.timezone}': {e}. Falling back to ignoring maintenance reconnect window.")
+            return False
+
+        try:
+            now_dt = datetime.now(tz)
+            now_time = now_dt.time()
+            start = self._parse_hhmm(self.maintenance_start_local)
+            end_base = self._parse_hhmm(self.maintenance_end_local)
+
+            # Use today as the base date to calculate full datetime ranges
+            start_dt = datetime.combine(now_dt.date(), start, tzinfo=tz)
+            end_dt = datetime.combine(now_dt.date(), end_base, tzinfo=tz)
+
+            if end_base < start:
+                # Window crosses midnight. We need to figure out which "shift" we're in.
+                if now_time >= start:
+                    # e.g., it is 23:50. The window ends tomorrow.
+                    end_dt = end_dt + timedelta(days=1)
+                else:
+                    # e.g., it is 00:10. The window started yesterday.
+                    start_dt = start_dt - timedelta(days=1)
+
+            # Add grace period to end
+            end_dt_with_grace = end_dt + timedelta(minutes=self.maintenance_reconnect_grace_minutes)
+
+            if not self._maintenance_window_logged:
+                logger.info(f"[Maintenance] Reconnect restart suppression window: {start_dt.strftime('%H:%M')}–{end_dt_with_grace.strftime('%H:%M')} {self.timezone}")
+                self._maintenance_window_logged = True
+
+            return start_dt <= now_dt <= end_dt_with_grace
+        except Exception as e:
+            logger.error(f"Error checking maintenance reconnect window: {e}")
+            return False
 
     def _mask_account(self, acct: str) -> str:
         return mask_account_id(acct, enabled=self.mask_account_ids_in_logs)
@@ -237,13 +293,17 @@ class IBKRAdapter(BrokerBase):
         # Stage 3: Check if we have been disconnected for > 15 minutes
         time_disconnected = datetime.now() - self._disconnect_time
         if time_disconnected > timedelta(minutes=15):
-            logger.critical("Watchdog: IBKR disconnected for > 15 minutes. Triggering full container restart via SIGTERM to PID 1.")
-            try:
-                # PID 1 is usually supervisord or the init process in Docker
-                os.kill(1, signal.SIGTERM)
-            except Exception as e:
-                logger.error(f"Failed to send SIGTERM to PID 1: {e}")
-            raise ConnectionError("Watchdog triggered container restart after 15 minutes of downtime.")
+            if self._is_in_maintenance_reconnect_window():
+                logger.warning("Gateway disconnected during configured maintenance/reconnect window. Trading paused; continuing reconnect attempts without container restart.")
+                raise ConnectionError("Watchdog failed to reconnect during this tick (maintenance window active).")
+            else:
+                logger.critical("Watchdog: IBKR disconnected for > 15 minutes. Triggering full container restart via SIGTERM to PID 1.")
+                try:
+                    # PID 1 is usually supervisord or the init process in Docker
+                    os.kill(1, signal.SIGTERM)
+                except Exception as e:
+                    logger.error(f"Failed to send SIGTERM to PID 1: {e}")
+                raise ConnectionError("Watchdog triggered container restart after 15 minutes of downtime.")
         else:
             logger.warning(f"Watchdog reconnect failed. Disconnected for {time_disconnected}. Will try again on next engine tick.")
             raise ConnectionError("Watchdog failed to reconnect during this tick.")

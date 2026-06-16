@@ -95,6 +95,16 @@ Keep:
 
 Strategy changes are out of scope unless they are directly required for account scoping, safe runtime separation, or Home Assistant packaging.
 
+## Gateway Auto-Restart and Maintenance Recovery
+
+The add-on uses IBC AutoRestartTime to handle IBKR’s nightly Gateway/TWS restart requirement. The default is 11:48 PM America/Denver, just before the user-observed 11:50 PM maintenance disruption.
+
+The bot already prepares for the maintenance window by cancelling orders. During Gateway downtime, trading is paused and no new orders should be placed. The bot should reconnect after Gateway returns and only resume after broker state is READY.
+
+ColdRestartTime is Sunday 06:00 PM America/Denver. Live accounts may still require IBKR Mobile 2FA after cold restart, host reboot, full add-on restart, or session expiration.
+
+VNC remains manual and should only be enabled for troubleshooting or manual 2FA approval.
+
 ## Required Account-Scoping Safety
 
 Each bot instance must only operate on its configured IBKR account.

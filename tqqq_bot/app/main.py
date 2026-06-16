@@ -71,7 +71,12 @@ async def main():
             paper=config.paper_trading,
             account_id=config.ibkr_account_id,
             mask_account_ids_in_logs=config.mask_account_ids_in_logs,
-            dry_run=config.dry_run
+            dry_run=config.dry_run,
+            maintenance_enabled=config.maintenance_enabled,
+            maintenance_start_local=config.maintenance_start_local,
+            maintenance_end_local=config.maintenance_end_local,
+            timezone=config.timezone,
+            maintenance_reconnect_grace_minutes=config.maintenance_reconnect_grace_minutes
         )
     elif config.active_broker == "schwab":
         broker = SchwabAdapter(dry_run=config.dry_run)
