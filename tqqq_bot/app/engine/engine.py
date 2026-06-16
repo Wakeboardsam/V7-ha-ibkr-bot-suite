@@ -1741,9 +1741,13 @@ class GridEngine:
 
     async def _handle_session_boundary_cancel_async(self, order_id: str, row_index: int, action: str, result: OrderResult, is_short_reject: bool, short_reject_halt: bool):
         logger.info(f"Verifying session boundary cancel for order {order_id} (row {row_index}) via snapshot...")
-        snap = await self.broker.get_verified_symbol_snapshot(TICKER)
+        try:
+            snap = await self.broker.get_verified_symbol_snapshot(TICKER)
+        except Exception as e:
+            logger.error(f"Snapshot verification raised exception for {order_id}: {e}")
+            snap = None
 
-        if snap and snap.position_qty is not None and snap.position_qty > 0:
+        if snap and getattr(snap, 'snapshot_status', None) == 'OK' and snap.position_qty is not None and snap.position_qty > 0:
             logger.info(f"Session boundary SELL cancel verified for order {order_id}. Position > 0. Preserving ownership.")
 
             # Preserve ownership by stripping WORKING_SELL but keeping the rest

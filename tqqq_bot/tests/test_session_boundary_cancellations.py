@@ -153,3 +153,44 @@ async def test_boundary_sell_cancel_zero_position_halts(engine):
         engine._safe_async_halt.assert_called_once()
         args, kwargs = engine._safe_async_halt.call_args
         assert kwargs["code"] == "SELL_CANCELLED_NO_FILL_HALT"
+
+
+@pytest.mark.asyncio
+async def test_boundary_sell_cancel_snapshot_raises(engine):
+    with patch("engine.engine.datetime") as mock_dt:
+        tz = zoneinfo.ZoneInfo("America/New_York")
+        # 03:50 ET
+        mock_dt.now.return_value = datetime(2023, 10, 10, 3, 50, tzinfo=tz)
+
+        engine.order_manager.mark_cancelled.return_value = (1, 'SELL')
+
+        # Snapshot raises
+        engine.broker.get_verified_symbol_snapshot.side_effect = Exception("API Error")
+
+        res = OrderResult(order_id="abc", status="cancelled", filled_qty=0)
+        engine._handle_order_update(res)
+
+        await asyncio.sleep(0)
+        # Halt should be scheduled
+        engine._safe_async_halt.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_boundary_sell_cancel_snapshot_partial(engine):
+    with patch("engine.engine.datetime") as mock_dt:
+        tz = zoneinfo.ZoneInfo("America/New_York")
+        # 03:50 ET
+        mock_dt.now.return_value = datetime(2023, 10, 10, 3, 50, tzinfo=tz)
+
+        engine.order_manager.mark_cancelled.return_value = (1, 'SELL')
+
+        # Snapshot is PARTIAL but > 0
+        snap = SymbolSnapshot(symbol=TICKER, position_qty=10, account_id_masked='test', market_price=10.0, market_value=100.0, avg_cost=10.0, net_liquidation=100.0, cash=100.0, open_orders_count=0, working_buy_qty=0, working_sell_qty=0, active_broker_orders=[], snapshot_status='PARTIAL', snapshot_error=None)
+        engine.broker.get_verified_symbol_snapshot.return_value = snap
+
+        res = OrderResult(order_id="abc", status="cancelled", filled_qty=0)
+        engine._handle_order_update(res)
+
+        await asyncio.sleep(0)
+        # Halt should be scheduled
+        engine._safe_async_halt.assert_called_once()
