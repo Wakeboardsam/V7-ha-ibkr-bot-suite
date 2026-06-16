@@ -33,6 +33,14 @@ if [ -f /data/options.json ]; then
     VNC_PORT=$(jq -r '.vnc_port // 5900' /data/options.json)
     GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=$(jq -r '.gateway_settings_sync_interval_seconds // 300' /data/options.json)
 
+    TIMEZONE=$(jq -r '.timezone // "America/Denver"' /data/options.json)
+    GATEWAY_AUTO_RESTART_ENABLED=$(jq -r '.gateway_auto_restart_enabled // true' /data/options.json)
+    GATEWAY_AUTO_RESTART_TIME=$(jq -r '.gateway_auto_restart_time // "11:48 PM"' /data/options.json)
+    GATEWAY_COLD_RESTART_ENABLED=$(jq -r '.gateway_cold_restart_enabled // true' /data/options.json)
+    GATEWAY_COLD_RESTART_TIME=$(jq -r '.gateway_cold_restart_time // "Sunday 06:00 PM"' /data/options.json)
+    GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=$(jq -r '.gateway_live_wait_timeout_seconds // 3600' /data/options.json)
+    GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=$(jq -r '.gateway_paper_wait_timeout_seconds // 300' /data/options.json)
+
     if [ "$MASK_LOGS" = "true" ]; then
         if [[ ${#IBKR_ACCOUNT_ID} -gt 6 ]]; then
             PREFIX="${IBKR_ACCOUNT_ID:0:3}"
@@ -59,6 +67,13 @@ else
     ENABLE_VNC="false"
     VNC_PORT=5900
     GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=300
+    TIMEZONE="America/Denver"
+    GATEWAY_AUTO_RESTART_ENABLED="true"
+    GATEWAY_AUTO_RESTART_TIME="11:48 PM"
+    GATEWAY_COLD_RESTART_ENABLED="true"
+    GATEWAY_COLD_RESTART_TIME="Sunday 06:00 PM"
+    GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=3600
+    GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=300
 fi
 
 if [ "$GATEWAY_HOST" != "127.0.0.1" ] && [ "$GATEWAY_HOST" != "localhost" ]; then
@@ -77,6 +92,25 @@ export JTS_SETTINGS_DIR
 export TWS_PATH="${ACTIVE_JTS_DIR}"
 export TWS_SETTINGS_PATH="${ACTIVE_JTS_DIR}"
 export IBC_INI="${IBC_CONFIG_FILE}"
+export TZ="${TIMEZONE}"
+
+if [ "$GATEWAY_AUTO_RESTART_ENABLED" = "true" ]; then
+    export AUTO_RESTART_TIME="${GATEWAY_AUTO_RESTART_TIME}"
+else
+    export AUTO_RESTART_TIME=""
+fi
+
+if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
+    export COLD_RESTART_TIME="${GATEWAY_COLD_RESTART_TIME}"
+else
+    export COLD_RESTART_TIME=""
+fi
+
+if [ "$TRADING_MODE" = "live" ]; then
+    WAIT_TIMEOUT="${GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS}"
+else
+    WAIT_TIMEOUT="${GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS}"
+fi
 
 READONLY_VAL="no"
 if [ "$READONLY_API" = "true" ]; then
@@ -90,6 +124,20 @@ echo "enable_vnc=${ENABLE_VNC}"
 echo "Gateway/JTS settings directory: ${JTS_SETTINGS_DIR}"
 echo "Gateway API access intended for localhost/127.0.0.1 only"
 echo "Bot configured to connect to Gateway at: ${GATEWAY_HOST}:${GATEWAY_PORT}"
+
+echo "[Gateway] Timezone: ${TIMEZONE}"
+if [ "$GATEWAY_AUTO_RESTART_ENABLED" = "true" ]; then
+    echo "[Gateway] IBC AutoRestartTime: ${GATEWAY_AUTO_RESTART_TIME}"
+else
+    echo "[Gateway] IBC AutoRestartTime: (Disabled)"
+fi
+if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
+    echo "[Gateway] IBC ColdRestartTime: ${GATEWAY_COLD_RESTART_TIME}"
+else
+    echo "[Gateway] IBC ColdRestartTime: (Disabled)"
+fi
+echo "[Gateway] Gateway wait timeout: ${WAIT_TIMEOUT} seconds"
+echo "[Gateway] VNC is manual only; enable_vnc controls whether VNC starts"
 
 echo "Creating persistent Gateway settings directories..."
 mkdir -p "${PERSIST_JTS_DIR}"
@@ -223,7 +271,7 @@ chmod 600 /data/ibgateway/config.ini
 IBC_PID=$!
 
 echo "Waiting for Gateway to initialize on port ${GATEWAY_PORT}..."
-python3 /app/wait_for_gateway.py --port "$GATEWAY_PORT" --timeout 300
+python3 /app/wait_for_gateway.py --port "$GATEWAY_PORT" --timeout "$WAIT_TIMEOUT"
 
 echo "Gateway port is ready; running initial persistent settings sync."
 sync_gateway_settings
