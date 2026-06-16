@@ -73,3 +73,24 @@ Decision:
 - `ibkr_gateway` folder is kept intact as optional/experimental shared-Gateway mode.
 - Trading strategy code/behavior remains identical to v6 logic.
 - We did not introduce `supervisord` since the `run.sh` background/exec pattern provides sufficient, minimal process management.
+## 2026-06-15 — Implement session-boundary cancellation exception
+
+Outcome:
+Added logic to gracefully handle IBKR overnight order cancellations that typically happen around 03:50 ET.
+
+Decision:
+If a cancellation occurs between 03:45 ET and 04:05 ET, the bot checks the current position snapshot. If the position snapshot successfully confirms > 0 position, the engine preserves the `OWNED` status of the row and removes the stale `WORKING_SELL` tracking instead of halting. For BUY and BRIDGE_BUY tracking, the working status is gracefully cleared. If the position snapshot is not > 0 or fails, the engine correctly fails closed and halts. The timezone boundary checks enforce strictly `America/New_York` to avoid any DST or execution server timezone issues.
+## 2026-06-15 — Update session-boundary cancellation to use async snapshot check
+
+Outcome:
+Moved the position snapshot query out of the sync `_handle_order_update` handler into an async helper `_handle_session_boundary_cancel_async`.
+
+Decision:
+The `get_verified_symbol_snapshot` function is inherently asynchronous. Checking the state in a sync handler blocks the loop or returns an un-awaited coroutine, resulting in incorrect halting behavior. We now delegate the verification to `create_task()` which awaits the state of the symbol position before enforcing an unexpected fail-closed halt or safely preserving `OWNED` row status. Tests have been fully updated to support the new async behavior. Duplicate `mark_cancelled` calls were also removed.
+## 2026-06-15 — Update session-boundary snapshot verification to fail closed strictly
+
+Outcome:
+Updated `_handle_session_boundary_cancel_async` to enforce strict validation against the snapshot struct returned by the broker.
+
+Decision:
+The code now wraps `await self.broker.get_verified_symbol_snapshot(TICKER)` in a try/except block. If an exception occurs, or if `snapshot_status` is not explicitly `"OK"` (e.g. `PARTIAL`, `UNAVAILABLE`), the engine safely defaults to a hard fail-closed halt (`SELL_CANCELLED_NO_FILL_HALT`). This ensures we never falsely assume safety upon encountering broker connectivity or data structure edge cases. Tests were added to verify exception and `PARTIAL` status scenarios.
