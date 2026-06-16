@@ -101,7 +101,7 @@ The add-on uses IBC AutoRestartTime to handle IBKR’s nightly Gateway/TWS resta
 
 The bot already prepares for the maintenance window by cancelling orders. During Gateway downtime, trading is paused and no new orders should be placed. The bot should reconnect after Gateway returns and only resume after broker state is READY.
 
-ColdRestartTime is Sunday 06:00 PM America/Denver. Live accounts may still require IBKR Mobile 2FA after cold restart, host reboot, full add-on restart, or session expiration.
+ColdRestartTime is 06:00 PM America/Denver on Sundays. IBC treats ColdRestartTime as the Sunday cold restart time. Live accounts may still require IBKR Mobile 2FA after cold restart, host reboot, full add-on restart, or session expiration.
 
 VNC remains manual and should only be enabled for troubleshooting or manual 2FA approval.
 

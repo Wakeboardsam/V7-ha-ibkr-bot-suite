@@ -37,7 +37,7 @@ if [ -f /data/options.json ]; then
     GATEWAY_AUTO_RESTART_ENABLED=$(jq -r '.gateway_auto_restart_enabled // true' /data/options.json)
     GATEWAY_AUTO_RESTART_TIME=$(jq -r '.gateway_auto_restart_time // "11:48 PM"' /data/options.json)
     GATEWAY_COLD_RESTART_ENABLED=$(jq -r '.gateway_cold_restart_enabled // true' /data/options.json)
-    GATEWAY_COLD_RESTART_TIME=$(jq -r '.gateway_cold_restart_time // "Sunday 06:00 PM"' /data/options.json)
+    GATEWAY_COLD_RESTART_TIME=$(jq -r '.gateway_cold_restart_time // "06:00 PM"' /data/options.json)
     GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=$(jq -r '.gateway_live_wait_timeout_seconds // 3600' /data/options.json)
     GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=$(jq -r '.gateway_paper_wait_timeout_seconds // 300' /data/options.json)
 
@@ -71,7 +71,7 @@ else
     GATEWAY_AUTO_RESTART_ENABLED="true"
     GATEWAY_AUTO_RESTART_TIME="11:48 PM"
     GATEWAY_COLD_RESTART_ENABLED="true"
-    GATEWAY_COLD_RESTART_TIME="Sunday 06:00 PM"
+    GATEWAY_COLD_RESTART_TIME="06:00 PM"
     GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=3600
     GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=300
 fi
@@ -101,7 +101,14 @@ else
 fi
 
 if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
-    export COLD_RESTART_TIME="${GATEWAY_COLD_RESTART_TIME}"
+    # Sanitize prefix if it exists
+    if [[ "$GATEWAY_COLD_RESTART_TIME" =~ ^[A-Za-z]+day\ (.*) ]]; then
+        SANITIZED_TIME="${BASH_REMATCH[1]}"
+        echo "[Gateway] Warning: gateway_cold_restart_time should be a time only. Stripping weekday prefix."
+        export COLD_RESTART_TIME="${SANITIZED_TIME}"
+    else
+        export COLD_RESTART_TIME="${GATEWAY_COLD_RESTART_TIME}"
+    fi
 else
     export COLD_RESTART_TIME=""
 fi
@@ -132,7 +139,7 @@ else
     echo "[Gateway] IBC AutoRestartTime: (Disabled)"
 fi
 if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
-    echo "[Gateway] IBC ColdRestartTime: ${GATEWAY_COLD_RESTART_TIME}"
+    echo "[Gateway] IBC ColdRestartTime: ${COLD_RESTART_TIME}"
 else
     echo "[Gateway] IBC ColdRestartTime: (Disabled)"
 fi
@@ -270,8 +277,29 @@ chmod 600 /data/ibgateway/config.ini
 /opt/ibc/gatewaystart.sh -inline < /dev/null &
 IBC_PID=$!
 
+tail_recent_ibc_logs_sanitized() {
+    echo "--- Recent IBC Logs ---"
+    # Find the most recent log file
+    local recent_log
+    recent_log=$(ls -t /root/ibc/logs/*.txt 2>/dev/null | head -n 1)
+    if [ -n "$recent_log" ]; then
+        # Tail the last 50 lines and sanitize
+        tail -n 50 "$recent_log" | \
+            sed -E 's/password=[^ ]+/password=****/' | \
+            sed -E 's/username=[^ ]+/username=****/' | \
+            sed -E 's/[DU][0-9]{5,}/****/'
+    else
+        echo "No IBC logs found in /root/ibc/logs/"
+    fi
+    echo "-----------------------"
+}
+
 echo "Waiting for Gateway to initialize on port ${GATEWAY_PORT}..."
-python3 /app/wait_for_gateway.py --port "$GATEWAY_PORT" --timeout "$WAIT_TIMEOUT"
+if ! python3 /app/wait_for_gateway.py --port "$GATEWAY_PORT" --timeout "$WAIT_TIMEOUT"; then
+    echo "[Gateway] Gateway API did not become ready before timeout. Recent IBC diagnostics:"
+    tail_recent_ibc_logs_sanitized
+    exit 1
+fi
 
 echo "Gateway port is ready; running initial persistent settings sync."
 sync_gateway_settings

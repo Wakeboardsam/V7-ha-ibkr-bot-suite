@@ -1,5 +1,5 @@
 name: V7_tqqq_bot
-version: 0.1.17
+version: 0.1.18
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
@@ -33,7 +33,7 @@ options:
   gateway_auto_restart_enabled: true
   gateway_auto_restart_time: '11:48 PM'
   gateway_cold_restart_enabled: true
-  gateway_cold_restart_time: 'Sunday 06:00 PM'
+  gateway_cold_restart_time: '06:00 PM'
   gateway_live_wait_timeout_seconds: 3600
   gateway_paper_wait_timeout_seconds: 300
   mask_account_ids_in_logs: true
