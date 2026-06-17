@@ -278,7 +278,7 @@ async def test_immediate_generic_trim_sell_error_halt(engine, mock_broker, mock_
 
     with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock):
         # mock broker.get_open_orders to return empty so it doesn't fail pre-sell guard math for trim
-        mock_broker.get_open_orders.return_value = []
+        mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
         engine.config.bridge_max_auto_trim_shares = 20 # increase max trim otherwise it halts before place_limit_order
 
         # Since _tick() calls fetch_grid(), we need to mock it properly here again
@@ -423,3 +423,210 @@ async def test_bridge_guard(engine, mock_broker, mock_sheet):
     call_args = mock_sheet.append_error.call_args[1]
     assert call_args['code'] == "BRIDGE_POSITION_MISMATCH_HALT"
     assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:BRIDGE_POSITION_MISMATCH_HALT"
+
+@pytest.mark.asyncio
+async def test_live_false_halt_case_partial_fill(engine, mock_broker, mock_sheet):
+    """
+    Live false-halt case:
+    raw required = 714 (348 owned + 101 + 94 + 88 + 83 working sells)
+    broker position = 666
+    order partially filled 48 of 83
+    broker remaining_qty = 35
+    adjusted required = 666
+    expected: no halt
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, sell_price=10.0, buy_price=9.0, shares=348),
+        8: GridRow(row_index=8, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101),
+        9: GridRow(row_index=9, status="WORKING_SELL:102", has_y=True, sell_price=10.0, buy_price=9.0, shares=94),
+        10: GridRow(row_index=10, status="WORKING_SELL:103", has_y=True, sell_price=10.0, buy_price=9.0, shares=88),
+        11: GridRow(row_index=11, status="WORKING_SELL:477", has_y=True, sell_price=10.0, buy_price=9.0, shares=83)
+    })
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 101, 'filled_qty': 0},
+        {'order_id': '102', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 94, 'limit_price': 10.0, 'remaining_qty': 94, 'filled_qty': 0},
+        {'order_id': '103', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 88, 'limit_price': 10.0, 'remaining_qty': 88, 'filled_qty': 0},
+        {'order_id': '477', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 83, 'limit_price': 10.0, 'remaining_qty': 35, 'filled_qty': 48}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=666)
+    assert engine._halted_reconciliation is False
+
+
+@pytest.mark.asyncio
+async def test_live_false_halt_case_broker_too_low(engine, mock_broker, mock_sheet):
+    """
+    Broker position too low:
+    same setup but broker position = 665
+    expected: halt/manual reconcile
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, sell_price=10.0, buy_price=9.0, shares=348),
+        8: GridRow(row_index=8, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101),
+        9: GridRow(row_index=9, status="WORKING_SELL:102", has_y=True, sell_price=10.0, buy_price=9.0, shares=94),
+        10: GridRow(row_index=10, status="WORKING_SELL:103", has_y=True, sell_price=10.0, buy_price=9.0, shares=88),
+        11: GridRow(row_index=11, status="WORKING_SELL:477", has_y=True, sell_price=10.0, buy_price=9.0, shares=83)
+    })
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 101, 'filled_qty': 0},
+        {'order_id': '102', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 94, 'limit_price': 10.0, 'remaining_qty': 94, 'filled_qty': 0},
+        {'order_id': '103', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 88, 'limit_price': 10.0, 'remaining_qty': 88, 'filled_qty': 0},
+        {'order_id': '477', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 83, 'limit_price': 10.0, 'remaining_qty': 35, 'filled_qty': 48}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=665)
+    assert engine._halted_reconciliation is True
+    call_args = engine._last_reconciliation_halt
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+
+
+@pytest.mark.asyncio
+async def test_missing_open_order_halts(engine, mock_broker, mock_sheet):
+    """
+    Missing open order:
+    sheet has "WORKING_SELL:<order_id>"
+    broker open orders do not include that order
+    expected: halt/manual reconcile, no partial-fill pass
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+    engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
+
+    # Missing order 101
+    open_orders = []
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=100)
+    assert engine._halted_reconciliation is True
+    call_args = engine._last_reconciliation_halt
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+
+
+@pytest.mark.asyncio
+async def test_invalid_remaining_quantity_halts(engine, mock_broker, mock_sheet):
+    """
+    Invalid remaining quantity:
+    remaining_qty > row.shares
+    expected: halt/manual reconcile
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+    engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 102, 'filled_qty': 0}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=100)
+    assert engine._halted_reconciliation is True
+    call_args = engine._last_reconciliation_halt
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+
+
+@pytest.mark.asyncio
+async def test_multiple_partially_filled_working_sells(engine, mock_broker, mock_sheet):
+    """
+    Multiple partially filled working sells:
+    adjustments aggregate correctly
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=100),
+        8: GridRow(row_index=8, status="WORKING_SELL:102", has_y=True, sell_price=10.0, buy_price=9.0, shares=100)
+    })
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 100, 'limit_price': 10.0, 'remaining_qty': 90, 'filled_qty': 10},
+        {'order_id': '102', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 100, 'limit_price': 10.0, 'remaining_qty': 80, 'filled_qty': 20}
+    ]
+
+    # 200 raw - (10 + 20) = 170 adjusted required
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=170)
+    assert engine._halted_reconciliation is False
+
+import pytest
+import asyncio
+from unittest.mock import MagicMock, patch, AsyncMock
+from app.engine.engine import GridEngine, _calculate_partial_fill_adjusted_required_shares
+from app.engine.grid_state import GridState, GridRow
+from app.config.schema import AppConfig
+from app.brokers.base import OrderResult
+
+
+
+
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_working_sell_missing_and_shares_match(engine, mock_broker, mock_sheet):
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+
+
+    open_orders = [] # missing
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    assert engine._halted_reconciliation is True
+
+@pytest.mark.asyncio
+async def test_remaining_qty_none_and_shares_match(engine, mock_broker, mock_sheet):
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': None, 'filled_qty': 0}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    assert engine._halted_reconciliation is True
+
+@pytest.mark.asyncio
+async def test_remaining_qty_greater_and_shares_match(engine, mock_broker, mock_sheet):
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 102, 'filled_qty': 0}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    assert engine._halted_reconciliation is True
+
+@pytest.mark.asyncio
+async def test_runtime_missing_open_order_halts(engine, mock_broker, mock_sheet):
+    """
+    Runtime _tick missing open order:
+    sheet has "WORKING_SELL:<order_id>"
+    broker open orders do not include that order
+    broker_shares differs by exactly that row's shares
+    expected: halt/manual reconcile and MUST NOT update the row to IDLE (no auto-reconciliation)
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+    engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
+
+    # Missing order 101
+    mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    mock_sheet.fetch_grid.return_value = engine.grid_state
+
+    # We call _tick instead of _check_reconciliation_and_halt
+    # We need to make sure distal_y_row returns a valid row
+    from unittest.mock import patch
+    with patch('app.engine.grid_state.GridState.distal_y_row', return_value=7):
+        await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    # Verify no row status update happened to IDLE
+    mock_sheet.update_row_status.assert_not_called()

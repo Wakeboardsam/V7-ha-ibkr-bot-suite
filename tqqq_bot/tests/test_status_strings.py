@@ -131,7 +131,7 @@ async def test_cancel_outside_window_working_sell(mock_broker, mock_sheet, confi
     })
     mock_sheet.fetch_grid.return_value = grid_state
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
-    mock_broker.get_open_orders.return_value = [{'order_id': 'SELL-456', 'action': 'SELL'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'SELL-456', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10, 'limit_price': 105.0, 'remaining_qty': 10, 'filled_qty': 0}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
     # distal_y = 15, window [12, 18]. Row 7 is outside.
@@ -150,7 +150,7 @@ async def test_owned_fallback_enforcement(mock_broker, mock_sheet, config):
     })
     mock_sheet.fetch_grid.return_value = grid_state
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
-    mock_broker.get_open_orders.return_value = [{'order_id': 'SELL-456', 'action': 'SELL'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'SELL-456', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10, 'limit_price': 105.0, 'remaining_qty': 10, 'filled_qty': 0}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
     # distal_y = 15, window [12, 18]. Row 7 is outside.
@@ -170,7 +170,7 @@ async def test_retrack_parsing(mock_broker, mock_sheet, config):
     })
     mock_sheet.fetch_grid.return_value = grid_state
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
-    mock_broker.get_open_orders.return_value = [{'order_id': 'SELL-123', 'action': 'SELL'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'SELL-123', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10, 'limit_price': 105.0, 'remaining_qty': 10, 'filled_qty': 0}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
     with patch.object(GridState, 'distal_y_row', 7):

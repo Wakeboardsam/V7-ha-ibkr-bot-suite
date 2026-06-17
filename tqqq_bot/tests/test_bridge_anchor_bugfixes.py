@@ -103,7 +103,7 @@ async def test_stale_session_cleanup(mock_broker, mock_sheet, config):
 
     # Mock broker to return it with stale session data
     mock_broker.get_open_orders.return_value = [
-        {'order_id': '7', 'action': 'SELL', 'exchange': 'OVERNIGHT', 'tif': 'DAY'}
+        {'order_id': '7', 'action': 'SELL', 'exchange': 'OVERNIGHT', 'tif': 'DAY', 'ticker': 'TQQQ', 'qty': 50, 'limit_price': 105.0, 'remaining_qty': 50, 'filled_qty': 0}
     ]
 
     from unittest.mock import patch

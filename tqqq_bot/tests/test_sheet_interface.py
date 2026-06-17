@@ -189,6 +189,32 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         from sheets.schema import ERRORS_HEADERS
         self.assertEqual(header_args, ERRORS_HEADERS)
 
+    async def test_log_error_structured(self):
+        mock_worksheet = MagicMock()
+        mock_worksheet.get_values.return_value = [["Header"]]  # Not empty
+        self.mock_sheet.worksheet.return_value = mock_worksheet
+
+        result = await self.interface.log_error(
+            severity="CRITICAL",
+            code="POSITION_SNAPSHOT_UNAVAILABLE",
+            symbol="TQQQ",
+            row="Health",
+            action="Health Check",
+            bot_status="HALTED_RECONCILIATION",
+            details="snapshot failed",
+        )
+
+        self.assertTrue(result)
+        mock_worksheet.append_row.assert_called_once()
+        args = mock_worksheet.append_row.call_args[0][0]
+        self.assertEqual(args[1], "CRITICAL")
+        self.assertEqual(args[2], "POSITION_SNAPSHOT_UNAVAILABLE")
+        self.assertEqual(args[3], "TQQQ")
+        self.assertEqual(args[4], "Health")
+        self.assertEqual(args[5], "Health Check")
+        self.assertEqual(args[6], "HALTED_RECONCILIATION")
+        self.assertEqual(args[7], "snapshot failed")
+
     async def test_log_error_missing_worksheet(self):
         self.mock_sheet.worksheet.side_effect = gspread.exceptions.WorksheetNotFound
 
