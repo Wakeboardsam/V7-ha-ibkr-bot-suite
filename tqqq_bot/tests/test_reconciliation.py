@@ -423,3 +423,125 @@ async def test_bridge_guard(engine, mock_broker, mock_sheet):
     call_args = mock_sheet.append_error.call_args[1]
     assert call_args['code'] == "BRIDGE_POSITION_MISMATCH_HALT"
     assert engine.grid_state.rows[7].status == "ERROR_RECONCILE_REQUIRED:BRIDGE_POSITION_MISMATCH_HALT"
+
+@pytest.mark.asyncio
+async def test_live_false_halt_case_partial_fill(engine, mock_broker, mock_sheet):
+    """
+    Live false-halt case:
+    raw required = 714 (348 owned + 101 + 94 + 88 + 83 working sells)
+    broker position = 666
+    order partially filled 48 of 83
+    broker remaining_qty = 35
+    adjusted required = 666
+    expected: no halt
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, sell_price=10.0, buy_price=9.0, shares=348),
+        8: GridRow(row_index=8, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101),
+        9: GridRow(row_index=9, status="WORKING_SELL:102", has_y=True, sell_price=10.0, buy_price=9.0, shares=94),
+        10: GridRow(row_index=10, status="WORKING_SELL:103", has_y=True, sell_price=10.0, buy_price=9.0, shares=88),
+        11: GridRow(row_index=11, status="WORKING_SELL:477", has_y=True, sell_price=10.0, buy_price=9.0, shares=83)
+    })
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 101, 'filled_qty': 0},
+        {'order_id': '102', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 94, 'limit_price': 10.0, 'remaining_qty': 94, 'filled_qty': 0},
+        {'order_id': '103', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 88, 'limit_price': 10.0, 'remaining_qty': 88, 'filled_qty': 0},
+        {'order_id': '477', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 83, 'limit_price': 10.0, 'remaining_qty': 35, 'filled_qty': 48}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=666)
+    assert engine._halted_reconciliation is False
+
+
+@pytest.mark.asyncio
+async def test_live_false_halt_case_broker_too_low(engine, mock_broker, mock_sheet):
+    """
+    Broker position too low:
+    same setup but broker position = 665
+    expected: halt/manual reconcile
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, sell_price=10.0, buy_price=9.0, shares=348),
+        8: GridRow(row_index=8, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101),
+        9: GridRow(row_index=9, status="WORKING_SELL:102", has_y=True, sell_price=10.0, buy_price=9.0, shares=94),
+        10: GridRow(row_index=10, status="WORKING_SELL:103", has_y=True, sell_price=10.0, buy_price=9.0, shares=88),
+        11: GridRow(row_index=11, status="WORKING_SELL:477", has_y=True, sell_price=10.0, buy_price=9.0, shares=83)
+    })
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 101, 'filled_qty': 0},
+        {'order_id': '102', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 94, 'limit_price': 10.0, 'remaining_qty': 94, 'filled_qty': 0},
+        {'order_id': '103', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 88, 'limit_price': 10.0, 'remaining_qty': 88, 'filled_qty': 0},
+        {'order_id': '477', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 83, 'limit_price': 10.0, 'remaining_qty': 35, 'filled_qty': 48}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=665)
+    assert engine._halted_reconciliation is True
+    call_args = engine._last_reconciliation_halt
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+
+
+@pytest.mark.asyncio
+async def test_missing_open_order_halts(engine, mock_broker, mock_sheet):
+    """
+    Missing open order:
+    sheet has "WORKING_SELL:<order_id>"
+    broker open orders do not include that order
+    expected: halt/manual reconcile, no partial-fill pass
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+    engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
+
+    # Missing order 101
+    open_orders = []
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=100)
+    assert engine._halted_reconciliation is True
+    call_args = engine._last_reconciliation_halt
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+
+
+@pytest.mark.asyncio
+async def test_invalid_remaining_quantity_halts(engine, mock_broker, mock_sheet):
+    """
+    Invalid remaining quantity:
+    remaining_qty > row.shares
+    expected: halt/manual reconcile
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+    engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 102, 'filled_qty': 0}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=100)
+    assert engine._halted_reconciliation is True
+    call_args = engine._last_reconciliation_halt
+    assert call_args['code'] == "SELL_POSITION_MISMATCH_HALT"
+
+
+@pytest.mark.asyncio
+async def test_multiple_partially_filled_working_sells(engine, mock_broker, mock_sheet):
+    """
+    Multiple partially filled working sells:
+    adjustments aggregate correctly
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=100),
+        8: GridRow(row_index=8, status="WORKING_SELL:102", has_y=True, sell_price=10.0, buy_price=9.0, shares=100)
+    })
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 100, 'limit_price': 10.0, 'remaining_qty': 90, 'filled_qty': 10},
+        {'order_id': '102', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 100, 'limit_price': 10.0, 'remaining_qty': 80, 'filled_qty': 20}
+    ]
+
+    # 200 raw - (10 + 20) = 170 adjusted required
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=170)
+    assert engine._halted_reconciliation is False

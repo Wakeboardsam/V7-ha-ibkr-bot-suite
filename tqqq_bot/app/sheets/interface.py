@@ -167,18 +167,30 @@ class SheetInterface:
             logger.error(f"Failed to append error to sheet: {e}")
             return False
 
-    async def log_error(self, error_msg: str) -> bool:
-        logger.error(f"BOT ERROR: {error_msg}")
+    async def log_error(
+        self,
+        error_msg: str | None = None,
+        *,
+        severity: str = "ERROR",
+        code: str = "ERROR",
+        symbol: str = "",
+        row: str = "",
+        action: str = "",
+        bot_status: str = "",
+        details: str | None = None,
+    ) -> bool:
+        error_details = details if details is not None else error_msg
+        logger.error(f"BOT ERROR: {error_details}")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return await self.append_error(
             timestamp=timestamp,
-            severity="ERROR",
-            code="ERROR",
-            symbol="",
-            row="",
-            action="",
-            bot_status="",
-            details=error_msg
+            severity=severity,
+            code=code,
+            symbol=symbol,
+            row=row,
+            action=action,
+            bot_status=bot_status,
+            details=error_details or "",
         )
 
     async def log_health(self, health_data: dict) -> bool:

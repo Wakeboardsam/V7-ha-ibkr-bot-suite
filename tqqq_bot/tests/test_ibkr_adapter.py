@@ -210,6 +210,8 @@ async def test_strict_account_scoping_reads(mock_ib):
     class MockOrderStatus:
         def __init__(self):
             self.status = "Submitted"
+            self.filled = 0
+            self.remaining = 10
 
     class MockOrder:
         def __init__(self, acc):
