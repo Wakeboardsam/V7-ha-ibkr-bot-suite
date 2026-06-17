@@ -278,7 +278,7 @@ async def test_immediate_generic_trim_sell_error_halt(engine, mock_broker, mock_
 
     with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock):
         # mock broker.get_open_orders to return empty so it doesn't fail pre-sell guard math for trim
-        mock_broker.get_open_orders.return_value = []
+        mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
         engine.config.bridge_max_auto_trim_shares = 20 # increase max trim otherwise it halts before place_limit_order
 
         # Since _tick() calls fetch_grid(), we need to mock it properly here again
@@ -601,3 +601,32 @@ async def test_remaining_qty_greater_and_shares_match(engine, mock_broker, mock_
 
     await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
     assert engine._halted_reconciliation is True
+
+@pytest.mark.asyncio
+async def test_runtime_missing_open_order_halts(engine, mock_broker, mock_sheet):
+    """
+    Runtime _tick missing open order:
+    sheet has "WORKING_SELL:<order_id>"
+    broker open orders do not include that order
+    broker_shares differs by exactly that row's shares
+    expected: halt/manual reconcile and MUST NOT update the row to IDLE (no auto-reconciliation)
+    """
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+    engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
+
+    # Missing order 101
+    mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    mock_sheet.fetch_grid.return_value = engine.grid_state
+
+    # We call _tick instead of _check_reconciliation_and_halt
+    # We need to make sure distal_y_row returns a valid row
+    from unittest.mock import patch
+    with patch('app.engine.grid_state.GridState.distal_y_row', return_value=7):
+        await engine._tick()
+
+    assert engine._halted_reconciliation is True
+    # Verify no row status update happened to IDLE
+    mock_sheet.update_row_status.assert_not_called()

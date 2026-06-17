@@ -1287,18 +1287,22 @@ class GridEngine:
             has_invalid_unreconciled_sell
         ) = _calculate_partial_fill_adjusted_required_shares(self.grid_state.rows, open_orders, self.config.ibkr_account_id)
 
+        if has_invalid_unreconciled_sell:
+            msg = f"CIRCUIT BREAKER: Missing or invalid unreconciled WORKING_SELL order detected. Broker: {broker_shares}, Sheet: {sheet_shares} (Raw expected: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}, Open sell remaining: {open_sell_remaining_shares}). Immediate manual reconciliation required."
+            logger.critical(msg)
+            try:
+                await self.sheet.log_error(msg)
+            except Exception as e:
+                logger.error(f"Failed to log missing/invalid WORKING_SELL discrepancy to sheet: {e}")
+            self._halted_reconciliation = True
+            return
+
         sheet_shares_adjusted = sheet_shares - total_partial_fill_adjustment
 
-        # If there's an invalid unreconciled sell, we force a mismatch halt condition
-        # by ensuring it evaluates as a mismatch, falling back to raw sheet shares.
-        effective_sheet_shares_for_mismatch = sheet_shares if has_invalid_unreconciled_sell else sheet_shares_adjusted
+        effective_sheet_shares_for_mismatch = sheet_shares_adjusted
 
-        if has_invalid_unreconciled_sell or broker_shares != effective_sheet_shares_for_mismatch:
-            # Force mismatch delta to handle the halt properly if invalid unreconciled sell but shares matched raw
-            if has_invalid_unreconciled_sell and broker_shares == sheet_shares:
-                delta = 1 # Fake delta to trigger the mismatch logic below
-            else:
-                delta = broker_shares - effective_sheet_shares_for_mismatch
+        if broker_shares != effective_sheet_shares_for_mismatch:
+            delta = broker_shares - effective_sheet_shares_for_mismatch
 
             # Bridge exception: Allow mismatch during bridge recalcs
             bridge_mismatch_allowed = False
@@ -1360,18 +1364,13 @@ class GridEngine:
                         return
 
                 msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch} (Raw: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}). Mode: {self.config.share_mismatch_mode}"
-                if has_invalid_unreconciled_sell:
-                    msg = "CIRCUIT BREAKER: Missing or invalid unreconciled WORKING_SELL order detected. " + msg
-
                 try:
                     await self.sheet.log_error(msg)
                 except Exception as e:
                     logger.error(f"Failed to log discrepancy to sheet: {e}")
 
-                if self.config.share_mismatch_mode == "halt" or has_invalid_unreconciled_sell:
+                if self.config.share_mismatch_mode == "halt":
                     logger.critical(msg)
-                    if has_invalid_unreconciled_sell:
-                        self._halted_reconciliation = True
                     return
                 else:
                     logger.warning(msg)
