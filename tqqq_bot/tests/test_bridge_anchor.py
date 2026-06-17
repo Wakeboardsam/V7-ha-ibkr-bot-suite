@@ -69,7 +69,7 @@ async def test_bridge_anchor_arms_correctly(mock_exchange, mock_broker, mock_she
     engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
 
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 50, 'limit_price': 105.0, 'remaining_qty': 50, 'filled_qty': 0}]
     await engine._tick()
 
     # Check stop limit order was placed
@@ -171,10 +171,11 @@ async def test_bridge_anchor_cleanup(mock_broker, mock_sheet, config):
 
     # Scenario: Row 7 is no longer ONLY owned row (row 8 was acquired)
     mock_sheet.fetch_grid.return_value = setup_grid_state([
-        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7'},
-        {'row_index': 8, 'status': 'OWNED:123'}
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7', 'shares': 10, 'sell_price': 105.0},
+        {'row_index': 8, 'status': 'OWNED:123', 'shares': 10, 'buy_price': 100.0}
     ])
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 20})
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 10, 'limit_price': 105.0, 'remaining_qty': 10, 'filled_qty': 0}]
 
     await engine._tick()
 
@@ -211,7 +212,7 @@ async def test_bridge_retrack_orders(mock_broker, mock_sheet, config):
         {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7|BRIDGE_BUY:ORD-BRIDGE', 'shares': 50, 'sell_price': 105.0}
     ])
 
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 50, 'limit_price': 105.0, 'remaining_qty': 50, 'filled_qty': 0}]
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
 
     await engine._tick()
@@ -317,7 +318,7 @@ async def test_bridge_anchor_failed_cancel_halts(mock_broker, mock_sheet, config
     # To pass the new strict matcher, intent must map exactly.
     mock_broker.get_open_orders.return_value = [
         {'order_id': 'ORD-BRIDGE', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'qty': 10, 'limit_price': 105.0, 'aux_price': 105.0},
-        {'order_id': 'ORD-SELL-7', 'ticker': 'TQQQ', 'action': 'SELL', 'qty': 10, 'limit_price': 105.0}
+        {'order_id': 'ORD-SELL-7', 'ticker': 'TQQQ', 'action': 'SELL', 'qty': 10, 'limit_price': 105.0, 'remaining_qty': 10, 'filled_qty': 0}
     ] # Order still active!
 
     await engine._tick()
@@ -379,7 +380,7 @@ async def test_bridge_anchor_delayed_sell_fill_ignored(mock_broker, mock_sheet, 
     engine.order_manager.track(7, OrderResult(order_id="ORD-BRIDGE", status="submitted"), 'BRIDGE_BUY')
 
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 50, 'limit_price': 105.0, 'remaining_qty': 50, 'filled_qty': 0}]
 
     await engine._tick()
 
@@ -454,7 +455,7 @@ async def test_bridge_anchor_skipped_during_overnight(mock_exchange, mock_broker
     # Explicitly track the SELL order to satisfy condition 4
     engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
 
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 50, 'limit_price': 105.0, 'remaining_qty': 50, 'filled_qty': 0}]
 
     # Explicitly mock so condition 3 in engine.py passes
     # (there are multiple checks, one in early tick, one in bridge eval)
@@ -482,7 +483,7 @@ async def test_bridge_anchor_arms_during_smart(mock_exchange, mock_broker, mock_
     # Explicitly track the SELL order to satisfy condition 4
     engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
 
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 50, 'limit_price': 105.0, 'remaining_qty': 50, 'filled_qty': 0}]
 
     # Explicitly mock so condition 3 in engine.py passes
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})

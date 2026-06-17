@@ -545,3 +545,59 @@ async def test_multiple_partially_filled_working_sells(engine, mock_broker, mock
     # 200 raw - (10 + 20) = 170 adjusted required
     await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=170)
     assert engine._halted_reconciliation is False
+
+import pytest
+import asyncio
+from unittest.mock import MagicMock, patch, AsyncMock
+from app.engine.engine import GridEngine, _calculate_partial_fill_adjusted_required_shares
+from app.engine.grid_state import GridState, GridRow
+from app.config.schema import AppConfig
+from app.brokers.base import OrderResult
+
+
+
+
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_working_sell_missing_and_shares_match(engine, mock_broker, mock_sheet):
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+
+
+    open_orders = [] # missing
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    assert engine._halted_reconciliation is True
+
+@pytest.mark.asyncio
+async def test_remaining_qty_none_and_shares_match(engine, mock_broker, mock_sheet):
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': None, 'filled_qty': 0}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    assert engine._halted_reconciliation is True
+
+@pytest.mark.asyncio
+async def test_remaining_qty_greater_and_shares_match(engine, mock_broker, mock_sheet):
+    engine.grid_state = GridState(rows={
+        7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
+    })
+
+
+    open_orders = [
+        {'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 101, 'limit_price': 10.0, 'remaining_qty': 102, 'filled_qty': 0}
+    ]
+
+    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    assert engine._halted_reconciliation is True

@@ -902,17 +902,21 @@ class GridEngine:
             has_invalid_unreconciled_sell
         ) = _calculate_partial_fill_adjusted_required_shares(self.grid_state.rows, open_orders, self.config.ibkr_account_id)
 
-        # Does the broker have enough shares to support ALL claimed rows?
-        # If there's an invalid unreconciled sell, we do not tolerate the adjustment
-        effective_required = tracker_required_shares_raw if has_invalid_unreconciled_sell else tracker_required_shares_adjusted
+        # If there's an invalid unreconciled sell, we must halt immediately.
+        # We also halt if broker shares are insufficient to support the claimed rows.
+        if has_invalid_unreconciled_sell or broker_shares < tracker_required_shares_adjusted:
+            effective_required = tracker_required_shares_raw if has_invalid_unreconciled_sell else tracker_required_shares_adjusted
+            details = f"Startup reconciliation halt. Tracker claims {effective_required} {TICKER} shares are required by owned/working rows (Raw: {tracker_required_shares_raw}, Partial-fill adj: {total_partial_fill_adjustment}, Open sell remaining: {open_sell_remaining_shares}), but broker truth for the configured account showed {broker_shares} {TICKER} shares. A SELL would exceed the account's long position. No order was sent. Bot halted. Reconcile Tracker rows with actual broker holdings before restarting."
 
-        if broker_shares < effective_required:
+            if has_invalid_unreconciled_sell:
+                details = f"Startup reconciliation halt. Missing or invalid unreconciled WORKING_SELL order detected. Manual reconciliation required. " + details
+
             await self._halt_for_reconciliation_error(
                 code="SELL_POSITION_MISMATCH_HALT",
                 symbol=TICKER,
                 row="AGGREGATE",
                 action="NO ACTION (HALT)",
-                details=f"Startup reconciliation halt. Tracker claims {effective_required} {TICKER} shares are required by owned/working rows (Raw: {tracker_required_shares_raw}, Partial-fill adj: {total_partial_fill_adjustment}, Open sell remaining: {open_sell_remaining_shares}), but broker truth for the configured account showed {broker_shares} {TICKER} shares. A SELL would exceed the account's long position. No order was sent. Bot halted. Reconcile Tracker rows with actual broker holdings before restarting.",
+                details=details,
                 severity="CRITICAL",
                 open_orders_count=len(open_orders),
                 broker_shares=broker_shares
@@ -1285,11 +1289,16 @@ class GridEngine:
 
         sheet_shares_adjusted = sheet_shares - total_partial_fill_adjustment
 
-        # If there's an invalid unreconciled sell, fall back to the strict raw check
+        # If there's an invalid unreconciled sell, we force a mismatch halt condition
+        # by ensuring it evaluates as a mismatch, falling back to raw sheet shares.
         effective_sheet_shares_for_mismatch = sheet_shares if has_invalid_unreconciled_sell else sheet_shares_adjusted
 
-        if broker_shares != effective_sheet_shares_for_mismatch:
-            delta = broker_shares - effective_sheet_shares_for_mismatch
+        if has_invalid_unreconciled_sell or broker_shares != effective_sheet_shares_for_mismatch:
+            # Force mismatch delta to handle the halt properly if invalid unreconciled sell but shares matched raw
+            if has_invalid_unreconciled_sell and broker_shares == sheet_shares:
+                delta = 1 # Fake delta to trigger the mismatch logic below
+            else:
+                delta = broker_shares - effective_sheet_shares_for_mismatch
 
             # Bridge exception: Allow mismatch during bridge recalcs
             bridge_mismatch_allowed = False
@@ -1351,13 +1360,18 @@ class GridEngine:
                         return
 
                 msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch} (Raw: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}). Mode: {self.config.share_mismatch_mode}"
+                if has_invalid_unreconciled_sell:
+                    msg = "CIRCUIT BREAKER: Missing or invalid unreconciled WORKING_SELL order detected. " + msg
+
                 try:
                     await self.sheet.log_error(msg)
                 except Exception as e:
                     logger.error(f"Failed to log discrepancy to sheet: {e}")
 
-                if self.config.share_mismatch_mode == "halt":
+                if self.config.share_mismatch_mode == "halt" or has_invalid_unreconciled_sell:
                     logger.critical(msg)
+                    if has_invalid_unreconciled_sell:
+                        self._halted_reconciliation = True
                     return
                 else:
                     logger.warning(msg)

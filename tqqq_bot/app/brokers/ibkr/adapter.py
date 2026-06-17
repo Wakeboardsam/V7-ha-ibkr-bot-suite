@@ -729,7 +729,7 @@ class IBKRAdapter(BrokerBase):
                     'tif': trade.order.tif,
                     'exchange': trade.contract.exchange,
                     'filled_qty': float(trade.orderStatus.filled) if trade.orderStatus.filled is not None else 0.0,
-                    'remaining_qty': float(trade.orderStatus.remaining) if trade.orderStatus.remaining is not None else 0.0
+                    'remaining_qty': float(trade.orderStatus.remaining) if trade.orderStatus.remaining is not None else None
                 })
         return orders
 
