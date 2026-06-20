@@ -1,6 +1,16 @@
 from typing import Optional
 from pydantic import BaseModel, Field
 
+class NotificationSettings(BaseModel):
+    enabled: bool = Field(default=False)
+    provider: str = Field(default="home_assistant_webhook")
+    webhook_url: str = Field(default="")
+    timeout_seconds: float = Field(default=3.0)
+    dedupe_window_seconds: int = Field(default=300)
+    notify_on_fills: bool = Field(default=True)
+    notify_on_errors: bool = Field(default=True)
+    notify_on_halts: bool = Field(default=True)
+    notify_on_order_submit: bool = Field(default=False)
 
 class AppConfig(BaseModel):
     active_broker: str = Field(default="ibkr")
@@ -31,3 +41,4 @@ class AppConfig(BaseModel):
     enable_bridge_anchor: bool = Field(default=True)
     bridge_max_auto_trim_shares: int = Field(default=5)
     timezone: str = Field(default="America/Denver")
+    notifications: NotificationSettings = Field(default_factory=NotificationSettings)

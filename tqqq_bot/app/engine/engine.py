@@ -21,6 +21,8 @@ from typing import Tuple, Optional, Any, Callable, Dict, List
 from engine.order_manager import OrderManager
 from engine.spread_guard import SpreadGuard
 from sheets.interface import SheetInterface
+from notifications.home_assistant import HomeAssistantNotifier
+from utils.log_sanitizer import mask_account_ids_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -150,13 +152,15 @@ class GridEngine:
         """Checks if the current time falls within the 03:45-04:05 ET session boundary."""
         return _is_time_in_session_boundary(datetime.now(SESSION_BOUNDARY_TZ))
 
-    def __init__(self, broker: BrokerBase, sheet: SheetInterface, config: AppConfig):
+    def __init__(self, broker: BrokerBase, sheet: SheetInterface, config: AppConfig, notifier: Optional[HomeAssistantNotifier] = None):
         self.broker = broker
         self.sheet = sheet
         self.config = config
+        self.notifier = notifier
         self.order_manager = OrderManager()
         self.spread_guard = SpreadGuard(config.max_spread_pct)
         self.grid_state: Optional[GridState] = None
+        self._notified_fill_order_ids = set()
         self._last_grid_refresh = datetime.min
         self._last_reconciliation = datetime.min
         self.last_price = 0.0
@@ -236,6 +240,28 @@ class GridEngine:
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         self._last_reconciliation_halt = payload
+
+        if self.config.notifications.enabled and self.config.notifications.notify_on_halts and self.notifier:
+            # We must mask details, but payload details are often already somewhat masked if
+            # _halt_for_reconciliation_error builds them string by string, however let's be safe:
+            sanitized_details = mask_account_ids_in_text(details)
+            self.notifier.send(
+                title="TQQQ Bot HALTED",
+                message=f"Reconciliation halt: {code}. Manual review required.",
+                severity="critical",
+                event_type="HALT_RECONCILIATION",
+                tag="tqqq_bot_critical",
+                group="trading_bot_errors",
+                extra={
+                    "code": code,
+                    "symbol": symbol,
+                    "row": row,
+                    "action": action,
+                    "details": sanitized_details,
+                    "open_orders_count": payload["open_orders_count"],
+                    "broker_shares": payload["broker_shares"]
+                }
+            )
 
         await self._attempt_halt_notifications(payload)
 
@@ -1896,6 +1922,35 @@ class GridEngine:
         if result.status == 'filled':
             self.last_fill_time = datetime.now()
             row_index, action = self.order_manager.mark_filled(order_id)
+
+            if order_id not in self._notified_fill_order_ids:
+                if self.config.notifications.enabled and self.config.notifications.notify_on_fills and self.notifier:
+                    # Determine BUY or SELL based on action
+                    if action in ("BUY", "BRIDGE_BUY"):
+                        action_type = "BUY"
+                    else:
+                        action_type = "SELL"
+
+                    event_type = f"FILL_{action_type}"
+                    title = f"{TICKER} {action_type} filled"
+
+                    self.notifier.send(
+                        title=title,
+                        message=f"{action_type} order filled for {TICKER}.",
+                        severity="info",
+                        event_type=event_type,
+                        tag=f"tqqq_fill_{order_id}",
+                        group="trading_bot_fills",
+                        extra={
+                            "symbol": TICKER,
+                            "side": action_type,
+                            "qty": result.filled_qty,
+                            "price": result.filled_price,
+                            "order_id": str(order_id),
+                            "row": row_index
+                        }
+                    )
+                self._notified_fill_order_ids.add(order_id)
 
             if row_index is not None:
                 # Bridge fill exception
