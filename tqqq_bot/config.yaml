@@ -93,7 +93,7 @@ schema:
   notifications:
     enabled: bool
     provider: str
-    webhook_url: str
+    webhook_url: password
     timeout_seconds: float
     dedupe_window_seconds: int
     notify_on_fills: bool
