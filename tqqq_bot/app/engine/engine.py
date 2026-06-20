@@ -1925,31 +1925,41 @@ class GridEngine:
 
             if order_id not in self._notified_fill_order_ids:
                 if self.config.notifications.enabled and self.config.notifications.notify_on_fills and self.notifier:
-                    # Determine BUY or SELL based on action
-                    if action in ("BUY", "BRIDGE_BUY"):
-                        action_type = "BUY"
+                    if row_index is not None and action in ("BUY", "SELL", "BRIDGE_BUY", "TRIM_SELL"):
+                        filled_qty = result.filled_qty
+                        if filled_qty is None or filled_qty > 0:
+                            # Determine BUY or SELL based on action
+                            if action in ("BUY", "BRIDGE_BUY"):
+                                action_type = "BUY"
+                            else:
+                                action_type = "SELL"
+
+                            event_type = f"FILL_{action_type}"
+                            title = f"{TICKER} {action_type} filled"
+
+                            # Run notifier send in a background thread so slow webhook response doesn't block the async loop
+                            asyncio.create_task(
+                                asyncio.to_thread(
+                                    self.notifier.send,
+                                    title=title,
+                                    message=f"{action_type} order filled for {TICKER}.",
+                                    severity="info",
+                                    event_type=event_type,
+                                    tag=f"tqqq_fill_{order_id}",
+                                    group="trading_bot_fills",
+                                    extra={
+                                        "symbol": TICKER,
+                                        "side": action_type,
+                                        "qty": result.filled_qty,
+                                        "price": result.filled_price,
+                                        "order_id": str(order_id),
+                                        "row": row_index
+                                    }
+                                )
+                            )
                     else:
-                        action_type = "SELL"
+                        logger.info(f"Skipping fill notification for unknown/untracked order {order_id}")
 
-                    event_type = f"FILL_{action_type}"
-                    title = f"{TICKER} {action_type} filled"
-
-                    self.notifier.send(
-                        title=title,
-                        message=f"{action_type} order filled for {TICKER}.",
-                        severity="info",
-                        event_type=event_type,
-                        tag=f"tqqq_fill_{order_id}",
-                        group="trading_bot_fills",
-                        extra={
-                            "symbol": TICKER,
-                            "side": action_type,
-                            "qty": result.filled_qty,
-                            "price": result.filled_price,
-                            "order_id": str(order_id),
-                            "row": row_index
-                        }
-                    )
                 self._notified_fill_order_ids.add(order_id)
 
             if row_index is not None:

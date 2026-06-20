@@ -97,18 +97,21 @@ async def test_engine_sends_notification_on_fill():
 
     result = OrderResult(order_id="TEST_OID", status="filled", filled_qty=10, filled_price=5.0)
 
-    with patch('app.engine.engine.asyncio.create_task') as mock_create_task:
+    with patch('app.engine.engine.asyncio.create_task') as mock_create_task, \
+         patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
         engine._handle_order_update(result)
 
-    # Notifier send should be called
-    assert notifier.send.call_count == 1
+    # Check that to_thread was called to run notifier.send
+    assert mock_to_thread.call_count == 1
 
-    # Called with right tag
-    kwargs = notifier.send.call_args.kwargs
+    # Check arguments
+    args, kwargs = mock_to_thread.call_args
+    assert args[0] == notifier.send
     assert kwargs['tag'] == 'tqqq_fill_TEST_OID'
     assert kwargs['event_type'] == 'FILL_BUY'
 
     # Ensure second call with same order_id deduplicates locally in engine
-    with patch('app.engine.engine.asyncio.create_task') as mock_create_task:
+    with patch('app.engine.engine.asyncio.create_task') as mock_create_task, \
+         patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
         engine._handle_order_update(result)
-    assert notifier.send.call_count == 1 # Still 1
+    assert mock_to_thread.call_count == 0 # Deduplicated
