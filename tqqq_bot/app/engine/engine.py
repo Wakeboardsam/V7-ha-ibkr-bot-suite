@@ -170,6 +170,7 @@ class GridEngine:
         self._is_weekend_gap = False
         self._maintenance_cancel_done = False
         self._snapshot_error_logged = False
+        self._recent_session_cancels: dict[str, datetime] = {}
 
         # Bridge Anchor states
         self._bridge_state: str = 'IDLE' # Can be 'IDLE', 'ARMED', 'ANCHOR_RECALC_PENDING', 'TRIM_PENDING', 'BRIDGE_HALTED'
@@ -923,6 +924,107 @@ class GridEngine:
             )
             return
 
+    async def _run_pre_sell_guard(self, requested_qty: int, row_index: int, action: str, open_orders: List[dict], broker_shares: int) -> bool:
+        """
+        Hard Pre-SELL Guard: Ensures we have enough available shares to sell.
+        Incorporates debounce logic for recent session-boundary cancellations.
+        Returns True if the order placement can proceed, False if we should skip this cycle or halt.
+        """
+        now = datetime.now()
+        recent_cancellations = {oid: ts for oid, ts in self._recent_session_cancels.items() if (now - ts).total_seconds() <= 10}
+        self._recent_session_cancels = recent_cancellations # clean up old
+
+        if recent_cancellations:
+            logger.info("Recent session boundary cancellation detected. Forcing fresh open orders fetch for pre-SELL guard.")
+            open_orders = await self.broker.get_open_orders()
+            # If the fresh fetch is broken, we skip the cycle
+            if open_orders is None:
+                logger.warning("Fresh open orders fetch returned None. Skipping pre-SELL guard cycle.")
+                return False
+
+            # If any of the recent cancelled orders still show up with a non-terminal status, wait
+            terminal_statuses = {'Cancelled', 'ApiCancelled', 'Filled', 'Inactive', 'Rejected'}
+            for oid in recent_cancellations:
+                for o in open_orders:
+                    if str(o.get('order_id')) == oid:
+                        status = o.get('status', 'unknown')
+                        # PendingCancel is tricky. If we got our cancel callback, it shouldn't really be working.
+                        # But if remaining_qty > 0 and status is PendingCancel, it might still fill.
+                        if status not in terminal_statuses:
+                            logger.warning(f"Debounce: Recently cancelled order {oid} still shows active status '{status}'. Skipping SELL placement cycle.")
+                            return False
+
+        # Calculate active broker sell orders
+        terminal_statuses = {'Cancelled', 'ApiCancelled', 'Filled', 'Inactive', 'Rejected'}
+
+        active_broker_sell_qty = 0
+        active_sell_order_ids = []
+        excluded_sell_order_ids = []
+
+        broker_order_ids = {str(o['order_id']) for o in open_orders}
+
+        for o in open_orders:
+            if o.get('action') == 'SELL' and o.get('ticker') == TICKER:
+                status = o.get('status')
+                oid = str(o.get('order_id'))
+                # Handle active vs terminal
+                is_active = status not in terminal_statuses
+
+                if status == 'PendingCancel':
+                    rem_qty = o.get('remaining_qty')
+                    if rem_qty is None or rem_qty == 0:
+                        is_active = False
+
+                if is_active:
+                    rem_qty = o.get('remaining_qty')
+                    tot_qty = o.get('qty', 0)
+                    qty_to_use = rem_qty if rem_qty is not None else tot_qty
+                    active_broker_sell_qty += qty_to_use
+                    active_sell_order_ids.append(f"{oid} ({qty_to_use}sh, {status})")
+                else:
+                    excluded_sell_order_ids.append(f"{oid} ({status})")
+
+        bot_pending_sell_qty = 0
+        for o_id in self.order_manager.get_tracked_order_ids():
+            _, o_action = self.order_manager.get_row_and_action(o_id)
+            if o_action in ('SELL', 'TRIM_SELL'):
+                if o_id not in broker_order_ids:
+                    o_row_idx, _ = self.order_manager.get_row_and_action(o_id)
+                    if o_row_idx in self.grid_state.rows:
+                        bot_pending_sell_qty += self.grid_state.rows[o_row_idx].shares
+
+        available_to_sell = broker_shares - active_broker_sell_qty - bot_pending_sell_qty
+
+        logger.info(f"Pre-SELL Guard Diagnostic (Row {row_index}, {action}):\n"
+                    f"  broker_long_qty:         {broker_shares}\n"
+                    f"  broker_working_sell_qty: {active_broker_sell_qty}\n"
+                    f"  bot_pending_sell_qty:    {bot_pending_sell_qty}\n"
+                    f"  available_to_sell:       {available_to_sell}\n"
+                    f"  requested_sell_qty:      {requested_qty}\n"
+                    f"  active broker sells:     {active_sell_order_ids}\n"
+                    f"  excluded broker sells:   {excluded_sell_order_ids}")
+
+        if available_to_sell < requested_qty:
+            self._update_row_status_in_memory(row_index, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
+            if action == 'TRIM_SELL':
+                self._bridge_state = 'BRIDGE_HALTED'
+
+            # Since this is an async method called within the tick/bridge flow,
+            # we invoke the halt and return False to stop placement.
+            await self._halt_for_reconciliation_error(
+                code="SELL_POSITION_MISMATCH_HALT",
+                symbol=TICKER,
+                row=row_index,
+                action=action,
+                details=f"Hard pre-SELL guard triggered. Requested {action} for {requested_qty} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {active_broker_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
+                severity="CRITICAL",
+                open_orders_count=len(open_orders),
+                broker_shares=broker_shares
+            )
+            return False
+
+        return True
+
     async def _evaluate_bridge_anchor(self):
         """
         Evaluates conditions for the Bridge Anchor feature.
@@ -1424,34 +1526,8 @@ class GridEngine:
                                     logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=SELL row=7 qty={excess} limit={trim_limit_price} reason=Bridge Anchor trim")
                                 else:
                                     # --- Hard Pre-SELL Guard for TRIM_SELL ---
-                                    broker_working_sell_qty = sum(
-                                        o.get('qty', 0) for o in open_orders
-                                        if o.get('action') == 'SELL' and o.get('ticker') == TICKER
-                                    )
-                                    bot_pending_sell_qty = 0
-                                    for o_id in self.order_manager.get_tracked_order_ids():
-                                        _, o_action = self.order_manager.get_row_and_action(o_id)
-                                        if o_action in ('SELL', 'TRIM_SELL'):
-                                            if o_id not in broker_order_ids:
-                                                o_row_idx, _ = self.order_manager.get_row_and_action(o_id)
-                                                if o_row_idx in self.grid_state.rows:
-                                                    bot_pending_sell_qty += self.grid_state.rows[o_row_idx].shares
-
-                                    available_to_sell = broker_shares - broker_working_sell_qty - bot_pending_sell_qty
-
-                                    if available_to_sell < excess:
-                                        self._update_row_status_in_memory(7, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
-                                        self._bridge_state = 'BRIDGE_HALTED'
-                                        await self._halt_for_reconciliation_error(
-                                            code="SELL_POSITION_MISMATCH_HALT",
-                                            symbol=TICKER,
-                                            row=7,
-                                            action="TRIM_SELL",
-                                            details=f"Hard pre-SELL guard triggered. Requested TRIM_SELL for {excess} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {broker_working_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
-                                            severity="CRITICAL",
-                                            open_orders_count=len(open_orders),
-                                            broker_shares=broker_shares
-                                        )
+                                    can_place = await self._run_pre_sell_guard(excess, 7, "TRIM_SELL", open_orders, broker_shares)
+                                    if not can_place:
                                         return
                                     # --- End Hard Pre-SELL Guard ---
 
@@ -1622,37 +1698,8 @@ class GridEngine:
                                     logger.info(f"DRY RUN BLOCKED ORDER PLACE: action=SELL row={row.row_index} qty={row.shares} limit={row.sell_price} reason=missing sell for owned row")
                                 else:
                                     # --- Hard Pre-SELL Guard ---
-                                    broker_working_sell_qty = sum(
-                                        o.get('qty', 0) for o in open_orders
-                                        if o.get('action') == 'SELL' and o.get('ticker') == TICKER
-                                    )
-                                    # Calculate bot pending sell qty (tracked but not in open orders)
-                                    bot_pending_sell_qty = 0
-                                    for o_id in self.order_manager.get_tracked_order_ids():
-                                        _, o_action = self.order_manager.get_row_and_action(o_id)
-                                        if o_action in ('SELL', 'TRIM_SELL'):
-                                            if o_id not in broker_order_ids:
-                                                # Assuming each row only has one active sell at a time, we could look up the qty.
-                                                # To be safe, we can look up the row and its shares.
-                                                o_row_idx, _ = self.order_manager.get_row_and_action(o_id)
-                                                if o_row_idx in self.grid_state.rows:
-                                                    bot_pending_sell_qty += self.grid_state.rows[o_row_idx].shares
-
-                                    available_to_sell = broker_shares - broker_working_sell_qty - bot_pending_sell_qty
-
-                                    if available_to_sell < row.shares:
-                                        # Set row state to ERROR_RECONCILE_REQUIRED
-                                        self._update_row_status_in_memory(row.row_index, "ERROR_RECONCILE_REQUIRED:SELL_POSITION_MISMATCH_HALT")
-                                        await self._halt_for_reconciliation_error(
-                                            code="SELL_POSITION_MISMATCH_HALT",
-                                            symbol=TICKER,
-                                            row=row.row_index,
-                                            action="SELL",
-                                            details=f"Hard pre-SELL guard triggered. Requested SELL for {row.shares} shares, but available_to_sell is {available_to_sell} (broker_long_qty: {broker_shares}, broker_working_sell_qty: {broker_working_sell_qty}, bot_pending_sell_qty: {bot_pending_sell_qty}). Halting to prevent short sale.",
-                                            severity="CRITICAL",
-                                            open_orders_count=len(open_orders),
-                                            broker_shares=broker_shares
-                                        )
+                                    can_place = await self._run_pre_sell_guard(row.shares, row.row_index, "SELL", open_orders, broker_shares)
+                                    if not can_place:
                                         return
                                     # --- End Hard Pre-SELL Guard ---
 
@@ -1848,6 +1895,9 @@ class GridEngine:
 
         if snap and getattr(snap, 'snapshot_status', None) == 'OK' and snap.position_qty is not None and snap.position_qty > 0:
             logger.info(f"Session boundary SELL cancel verified for order {order_id}. Position > 0. Preserving ownership.")
+
+            # Record cancellation to trigger debounce in pre-SELL guard
+            self._recent_session_cancels[str(order_id)] = datetime.now()
 
             # Preserve ownership by stripping WORKING_SELL but keeping the rest
             if self.grid_state and row_index in self.grid_state.rows:
