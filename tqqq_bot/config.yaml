@@ -43,6 +43,16 @@ options:
   readonly_api: false
   enable_vnc: false
   vnc_port: 5900
+  notifications:
+    enabled: false
+    provider: home_assistant_webhook
+    webhook_url: ""
+    timeout_seconds: 3.0
+    dedupe_window_seconds: 300
+    notify_on_fills: true
+    notify_on_errors: true
+    notify_on_halts: true
+    notify_on_order_submit: false
 schema:
   active_broker: list(ibkr)
   paper_trading: bool
@@ -80,5 +90,15 @@ schema:
   dry_run: bool
   enable_vnc: bool
   vnc_port: port
+  notifications:
+    enabled: bool
+    provider: str
+    webhook_url: password
+    timeout_seconds: float
+    dedupe_window_seconds: int
+    notify_on_fills: bool
+    notify_on_errors: bool
+    notify_on_halts: bool
+    notify_on_order_submit: bool
 ports:
   5900/tcp: null

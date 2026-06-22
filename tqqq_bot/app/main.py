@@ -6,6 +6,7 @@ from brokers.ibkr.adapter import IBKRAdapter
 from brokers.schwab.adapter import SchwabAdapter
 from engine.engine import GridEngine
 from sheets.interface import SheetInterface
+from notifications.home_assistant import HomeAssistantNotifier, NotificationConfig
 from utils.log_sanitizer import AccountMaskingFilter, mask_account_ids_in_text
 
 # Configure logging
@@ -85,7 +86,17 @@ async def main():
         sys.exit(1)
 
     sheet = SheetInterface(config)
-    engine = GridEngine(broker, sheet, config)
+
+    # Initialize Notifications
+    notifier_config = NotificationConfig(
+        enabled=config.notifications.enabled,
+        webhook_url=config.notifications.webhook_url,
+        timeout_seconds=config.notifications.timeout_seconds,
+        dedupe_window_seconds=config.notifications.dedupe_window_seconds,
+    )
+    notifier = HomeAssistantNotifier(notifier_config)
+
+    engine = GridEngine(broker, sheet, config, notifier=notifier)
 
     mode = "paper" if config.paper_trading else "live"
     logger.info(f"Bot initialized with {config.active_broker} in {mode} mode")
