@@ -930,33 +930,38 @@ class GridEngine:
         Incorporates debounce logic for recent session-boundary cancellations.
         Returns True if the order placement can proceed, False if we should skip this cycle or halt.
         """
+        ACTIVE_STATUSES = {'Submitted', 'PreSubmitted', 'PendingSubmit', 'ApiPending', 'PendingCancel'}
+        TERMINAL_STATUSES = {'Cancelled', 'ApiCancelled', 'Filled', 'Inactive', 'Rejected'}
+
         now = datetime.now()
         recent_cancellations = {oid: ts for oid, ts in self._recent_session_cancels.items() if (now - ts).total_seconds() <= 10}
         self._recent_session_cancels = recent_cancellations # clean up old
 
         if recent_cancellations:
             logger.info("Recent session boundary cancellation detected. Forcing fresh open orders fetch for pre-SELL guard.")
-            open_orders = await self.broker.get_open_orders()
+            try:
+                open_orders = await self.broker.get_open_orders()
+            except Exception as e:
+                logger.warning(f"Fresh open orders fetch raised an exception: {e}. Skipping pre-SELL guard cycle.")
+                return False
+
             # If the fresh fetch is broken, we skip the cycle
             if open_orders is None:
                 logger.warning("Fresh open orders fetch returned None. Skipping pre-SELL guard cycle.")
                 return False
 
             # If any of the recent cancelled orders still show up with a non-terminal status, wait
-            terminal_statuses = {'Cancelled', 'ApiCancelled', 'Filled', 'Inactive', 'Rejected'}
             for oid in recent_cancellations:
                 for o in open_orders:
                     if str(o.get('order_id')) == oid:
                         status = o.get('status', 'unknown')
                         # PendingCancel is tricky. If we got our cancel callback, it shouldn't really be working.
-                        # But if remaining_qty > 0 and status is PendingCancel, it might still fill.
-                        if status not in terminal_statuses:
+                        # But strictly, if IBKR hasn't transitioned it, it might still execute.
+                        if status not in TERMINAL_STATUSES:
                             logger.warning(f"Debounce: Recently cancelled order {oid} still shows active status '{status}'. Skipping SELL placement cycle.")
                             return False
 
         # Calculate active broker sell orders
-        terminal_statuses = {'Cancelled', 'ApiCancelled', 'Filled', 'Inactive', 'Rejected'}
-
         active_broker_sell_qty = 0
         active_sell_order_ids = []
         excluded_sell_order_ids = []
@@ -967,8 +972,14 @@ class GridEngine:
             if o.get('action') == 'SELL' and o.get('ticker') == TICKER:
                 status = o.get('status')
                 oid = str(o.get('order_id'))
+
+                # Verify order status
+                if status not in ACTIVE_STATUSES and status not in TERMINAL_STATUSES:
+                    logger.warning(f"Unknown broker order status '{status}' for order {oid}. Skipping cycle.")
+                    return False
+
                 # Handle active vs terminal
-                is_active = status not in terminal_statuses
+                is_active = status in ACTIVE_STATUSES
 
                 if status == 'PendingCancel':
                     rem_qty = o.get('remaining_qty')

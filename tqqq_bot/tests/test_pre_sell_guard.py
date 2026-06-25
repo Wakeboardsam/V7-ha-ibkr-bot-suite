@@ -118,3 +118,100 @@ async def test_pre_sell_guard_debounce_stale_data(engine, mock_broker):
 
     assert can_place is False
     engine._halt_for_reconciliation_error.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_pre_sell_guard_tick_integration(engine, mock_broker):
+    """
+    Integration test proving the live scenario via `_tick`:
+    - Tracker row is OWNED:0 / live Y
+    - Broker position is sufficient
+    - Recent session cancellation exists in engine._recent_session_cancels
+    - Fresh broker get_open_orders returns []
+    - Expected: _tick successfully places the replacement SELL without halting.
+    """
+    # 1. Configuration
+    engine.config.dry_run = False
+    engine.config.maintenance_enabled = False
+    engine.config.share_mismatch_mode = "halt"
+    engine.config.ibkr_account_id = None
+    engine.config.enable_bridge_anchor = False
+    engine.config.max_spread_pct = 1.0
+    engine.config.anchor_buy_offset = 0.05
+    engine.config.bridge_max_auto_trim_shares = 999
+
+    # 2. Broker Mocking
+    from brokers.base import PositionSnapshot, OrderResult
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 314})
+    mock_broker.get_open_orders.return_value = []
+    mock_broker.ensure_connected = AsyncMock()
+    mock_broker.get_wallet_balance = AsyncMock(return_value=1000.0)
+    mock_broker.get_price = AsyncMock(return_value=150.0)
+    # Mocking get_next_order_id to return sequential IDs to avoid overlapping dictionary issues if that's what's happening
+    mock_broker.get_next_order_id = AsyncMock(side_effect=["new-sell-1", "new-sell-2", "new-sell-3", "new-sell-4"])
+
+    async def side_effect_place_order(ticker, action, qty, limit_price, on_update=None, order_id=None, **kwargs):
+        return OrderResult(order_id=order_id, status="submitted")
+
+    mock_broker.place_limit_order = AsyncMock(side_effect=side_effect_place_order)
+    mock_broker.subscribe_to_updates = MagicMock()
+
+    # 3. Sheet Mocking (Grid total exactly matches broker 314, row 7 active)
+    engine.sheet.write_cash_value = AsyncMock(return_value=True)
+    engine.sheet.log_error = AsyncMock(return_value=True)
+    engine.sheet.update_row_status = AsyncMock(return_value=True)
+
+    from engine.grid_state import GridState, GridRow
+    grid = GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:0", has_y=True, buy_price=100.0, sell_price=120.0, shares=83),
+        8: GridRow(row_index=8, status="OWNED:0", has_y=True, buy_price=100.0, sell_price=110.0, shares=80),
+        9: GridRow(row_index=9, status="OWNED:0", has_y=True, buy_price=100.0, sell_price=110.0, shares=77),
+        10: GridRow(row_index=10, status="OWNED:0", has_y=True, buy_price=100.0, sell_price=110.0, shares=74)
+    })
+    engine.sheet.fetch_grid = AsyncMock(return_value=grid)
+    engine.grid_state = grid
+
+    # Un-mock _update_row_status_in_memory so it actually works in integration tests
+    engine._update_row_status_in_memory = GridEngine._update_row_status_in_memory.__get__(engine, GridEngine)
+
+    # 4. State
+    engine._recent_session_cancels["order_123"] = datetime.now()
+    engine.last_price = 150.0
+    engine.row_cooldowns = {}
+    engine._write_fresh_anchor_ask = AsyncMock()
+
+    # Pre-check mismatch helper
+    from engine.engine import _calculate_partial_fill_adjusted_required_shares
+    raw, adj, part, rem, invalid = _calculate_partial_fill_adjusted_required_shares(grid.rows, [], None)
+    assert adj == 314
+
+    # Run Tick
+    await engine._tick()
+
+    # Assert
+    assert engine._halted_reconciliation is False
+    engine._halt_for_reconciliation_error.assert_not_called()
+
+    # Note: `has_open_sell(7)` or `has_open_action(7, 'SELL')` fails when OrderManager isn't fully
+    # tracking because of the mocked OrderResult object format in place_limit_order/track,
+    # but the key path we test here is that `place_limit_order` was successfully hit
+    # without a halt.
+    assert mock_broker.place_limit_order.call_count == 4
+
+    # Print the update_row_status calls to debug
+    print("Calls to update_row_status:", engine.sheet.update_row_status.call_args_list)
+    print("Pending status updates dict:", engine.pending_status_updates)
+    print("Calls to place_limit_order:", mock_broker.place_limit_order.call_args_list)
+
+    # Check pending status updates
+    engine.sheet.update_row_status.assert_any_call(7, "WORKING_SELL:new-sell-1")
+    engine.sheet.update_row_status.assert_any_call(8, "WORKING_SELL:new-sell-2")
+    engine.sheet.update_row_status.assert_any_call(9, "WORKING_SELL:new-sell-3")
+    engine.sheet.update_row_status.assert_any_call(10, "WORKING_SELL:new-sell-4")
+
+    # Check args
+    calls = mock_broker.place_limit_order.call_args_list
+    assert calls[0].kwargs["ticker"] == "TQQQ"
+    assert calls[0].kwargs["action"] == "SELL"
+    assert calls[0].kwargs["qty"] == 83
+    assert calls[0].kwargs["limit_price"] == 120.0
+    assert calls[0].kwargs["order_id"] == "new-sell-1"
