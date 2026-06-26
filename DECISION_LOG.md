@@ -94,10 +94,3 @@ Updated `_handle_session_boundary_cancel_async` to enforce strict validation aga
 
 Decision:
 The code now wraps `await self.broker.get_verified_symbol_snapshot(TICKER)` in a try/except block. If an exception occurs, or if `snapshot_status` is not explicitly `"OK"` (e.g. `PARTIAL`, `UNAVAILABLE`), the engine safely defaults to a hard fail-closed halt (`SELL_CANCELLED_NO_FILL_HALT`). This ensures we never falsely assume safety upon encountering broker connectivity or data structure edge cases. Tests were added to verify exception and `PARTIAL` status scenarios.
-## 2026-06-25 — Fix state-overwrite bug and debounce pre-SELL guards
-
-Outcome:
-Identified and fixed a bug where the `_tick` loop evaluated missing orders, successfully placed them, but then overwrote their state back to `OWNED` during the same loop iteration's cleanup phase. Also refined the pre-SELL guard to correctly debounce using only explicit `ACTIVE_STATUSES` to verify missing positions.
-
-Decision:
-Added a loop `continue` immediately after updating memory to `WORKING_SELL` and `WORKING_BUY` to jump to the next row and skip the cleanup logic for that tick. Hardened the trailing `_tick` update status fallback block with validations to ensure it never overwrites active or pending working statuses. Unknown broker states are filtered strictly by `ACTIVE_STATUSES`, treating them conservatively to avoid short sale mismatches.
