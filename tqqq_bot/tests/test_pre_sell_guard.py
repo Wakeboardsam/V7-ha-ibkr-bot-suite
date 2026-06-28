@@ -212,3 +212,45 @@ async def test_pre_sell_guard_tick_integration(engine, mock_broker):
     assert calls[0].kwargs["qty"] == 83
     assert calls[0].kwargs["limit_price"] == 120.0
     assert calls[0].kwargs["order_id"] == "new-sell-1"
+
+@pytest.mark.asyncio
+async def test_pre_sell_guard_debounce_exception(engine, mock_broker):
+    """
+    Scenario:
+    - Recent cancellation was recorded.
+    - Fresh fetch raises an Exception.
+    - Expected: skip cycle (return False) but do not halt or crash.
+    """
+    broker_shares = 314
+    requested_qty = 83
+    row_index = 7
+
+    engine._recent_session_cancels["stale_order"] = datetime.now()
+
+    mock_broker.get_open_orders.side_effect = Exception("API disconnected")
+
+    can_place = await engine._run_pre_sell_guard(requested_qty, row_index, "SELL", [], broker_shares)
+
+    assert can_place is False
+    engine._halt_for_reconciliation_error.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_pre_sell_guard_unknown_status(engine, mock_broker):
+    """
+    Scenario:
+    - Broker returns an unknown status (neither ACTIVE nor TERMINAL).
+    - Expected: skip cycle (return False) but do not halt or crash.
+    """
+    broker_shares = 314
+    requested_qty = 83
+    row_index = 7
+
+    open_orders = [
+        {'order_id': 'weird_status', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 83, 'status': 'UnknownApiState123'},
+    ]
+    mock_broker.get_open_orders.return_value = open_orders
+
+    can_place = await engine._run_pre_sell_guard(requested_qty, row_index, "SELL", open_orders, broker_shares)
+
+    assert can_place is False
+    engine._halt_for_reconciliation_error.assert_not_called()

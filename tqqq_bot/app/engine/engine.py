@@ -1840,12 +1840,16 @@ class GridEngine:
                                     continue
                                 if str(self.pending_status_updates.get(row.row_index, "")).startswith("WORKING_SELL:"):
                                     continue
+                                if str(row.status).startswith(("WORKING_SELL", "WORKING_BUY", "ERROR_RECONCILE_REQUIRED")):
+                                    continue
 
                                 new_status = f"OWNED:{owned_id if owned_id else 0}"
                                 if row.status != new_status:
                                     self._update_row_status_in_memory(row.row_index, new_status)
                             else:
                                 if str(self.pending_status_updates.get(row.row_index, "")).startswith("WORKING_BUY:"):
+                                    continue
+                                if str(row.status).startswith(("WORKING_SELL", "WORKING_BUY", "ERROR_RECONCILE_REQUIRED")):
                                     continue
 
                                 if row.status != "IDLE":
