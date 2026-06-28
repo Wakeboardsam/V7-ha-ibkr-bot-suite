@@ -1725,8 +1725,10 @@ class GridEngine:
                                     )
                                     if result.status == 'filled':
                                         self._update_row_status_in_memory(row.row_index, "IDLE")
+                                        continue
                                     elif result.status == 'submitted':
                                         self._update_row_status_in_memory(row.row_index, f"WORKING_SELL:{result.order_id}")
+                                        continue
                                     elif result.status == 'error':
                                         # Hard SELL error safety guard
                                         is_short_reject = False
@@ -1806,8 +1808,10 @@ class GridEngine:
                                     )
                                     if result.status == 'filled':
                                         self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
+                                        continue
                                     elif result.status == 'submitted':
                                         self._update_row_status_in_memory(row.row_index, f"WORKING_BUY:{result.order_id}")
+                                        continue
                                     elif result.status == 'error':
                                         self.order_manager.mark_cancelled(result.order_id)
                                         self.row_cooldowns[row.row_index] = datetime.now() + timedelta(minutes=5)
@@ -1830,10 +1834,20 @@ class GridEngine:
                         # Update status
                         if not self.config.dry_run:
                             if row.has_y:
+                                if self.order_manager.has_open_action(row.row_index, "SELL"):
+                                    continue
+                                if self.order_manager.has_open_action(row.row_index, "TRIM_SELL"):
+                                    continue
+                                if str(self.pending_status_updates.get(row.row_index, "")).startswith("WORKING_SELL:"):
+                                    continue
+
                                 new_status = f"OWNED:{owned_id if owned_id else 0}"
                                 if row.status != new_status:
                                     self._update_row_status_in_memory(row.row_index, new_status)
                             else:
+                                if str(self.pending_status_updates.get(row.row_index, "")).startswith("WORKING_BUY:"):
+                                    continue
+
                                 if row.status != "IDLE":
                                     self._update_row_status_in_memory(row.row_index, "IDLE")
                 except Exception as row_error:

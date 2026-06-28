@@ -191,16 +191,13 @@ async def test_pre_sell_guard_tick_integration(engine, mock_broker):
     assert engine._halted_reconciliation is False
     engine._halt_for_reconciliation_error.assert_not_called()
 
-    # Note: `has_open_sell(7)` or `has_open_action(7, 'SELL')` fails when OrderManager isn't fully
-    # tracking because of the mocked OrderResult object format in place_limit_order/track,
-    # but the key path we test here is that `place_limit_order` was successfully hit
-    # without a halt.
     assert mock_broker.place_limit_order.call_count == 4
 
-    # Print the update_row_status calls to debug
-    print("Calls to update_row_status:", engine.sheet.update_row_status.call_args_list)
-    print("Pending status updates dict:", engine.pending_status_updates)
-    print("Calls to place_limit_order:", mock_broker.place_limit_order.call_args_list)
+    # Ensure OrderManager tracked the new orders properly
+    assert engine.order_manager.has_open_sell(7)
+    assert engine.order_manager.has_open_sell(8)
+    assert engine.order_manager.has_open_sell(9)
+    assert engine.order_manager.has_open_sell(10)
 
     # Check pending status updates
     engine.sheet.update_row_status.assert_any_call(7, "WORKING_SELL:new-sell-1")

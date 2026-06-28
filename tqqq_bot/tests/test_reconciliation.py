@@ -20,6 +20,7 @@ def mock_config():
         ibkr_paper=True,
         poll_interval_seconds=1,
         dry_run=False,
+        maintenance_enabled=False,
     )
 
 @pytest.fixture
