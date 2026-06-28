@@ -20,6 +20,7 @@ def mock_config():
         ibkr_paper=True,
         poll_interval_seconds=1,
         dry_run=False,
+        maintenance_enabled=False,
     )
 
 @pytest.fixture
@@ -190,7 +191,7 @@ async def test_over_sell_guard(engine, mock_broker, mock_sheet):
     })
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 136})
     # Untracked external working sell of 100
-    mock_broker.get_open_orders.return_value = [{'order_id': '99', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 100}]
+    mock_broker.get_open_orders.return_value = [{'order_id': '99', 'action': 'SELL', 'ticker': 'TQQQ', 'qty': 100, 'status': 'Submitted', 'remaining_qty': 100}]
 
     with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock):
         await engine._tick()
@@ -278,7 +279,7 @@ async def test_immediate_generic_trim_sell_error_halt(engine, mock_broker, mock_
 
     with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock):
         # mock broker.get_open_orders to return empty so it doesn't fail pre-sell guard math for trim
-        mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
+        mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'status': 'Submitted', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
         engine.config.bridge_max_auto_trim_shares = 20 # increase max trim otherwise it halts before place_limit_order
 
         # Since _tick() calls fetch_grid(), we need to mock it properly here again
