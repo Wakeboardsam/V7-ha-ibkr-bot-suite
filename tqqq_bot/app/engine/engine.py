@@ -1890,12 +1890,6 @@ class GridEngine:
         self.last_broker_shares = broker_shares
 
     def _handle_execution(self, exec_data: dict):
-        configured_ticker = TICKER.upper()
-        execution_symbol = str(exec_data.get("symbol", "") or "").upper()
-
-        if execution_symbol != configured_ticker:
-            return
-
         exec_id = exec_data.get("exec_id")
         if not exec_id:
             logger.warning("Execution missing exec_id, cannot process.")
