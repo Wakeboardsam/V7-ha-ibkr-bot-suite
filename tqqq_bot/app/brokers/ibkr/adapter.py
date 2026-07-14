@@ -36,6 +36,18 @@ def classify_ibkr_error(error_code: int, error_string: str) -> tuple[str, int]:
         return "IBKR API/order error", logging.ERROR
 
 class IBKRAdapter(BrokerBase):
+    @staticmethod
+    def _is_stock_contract(contract) -> bool:
+        return str(getattr(contract, "secType", "") or "").upper() == "STK"
+
+    @staticmethod
+    def _is_target_stock_contract(contract, ticker: str) -> bool:
+        return (
+            IBKRAdapter._is_stock_contract(contract)
+            and str(getattr(contract, "symbol", "") or "").upper() == str(ticker or "").upper()
+            and str(getattr(contract, "currency", "") or "").upper() == "USD"
+        )
+
     def __init__(self, host: str, port: int, client_id: int, paper: bool, account_id: Optional[str] = None, mask_account_ids_in_logs: bool = True, dry_run: bool = False, maintenance_enabled: bool = False, maintenance_start_local: Optional[str] = None, maintenance_end_local: Optional[str] = None, timezone: str = "America/Denver", maintenance_reconnect_grace_minutes: int = 30):
         super().__init__(dry_run=dry_run)
         self.host = host
@@ -709,6 +721,9 @@ class IBKRAdapter(BrokerBase):
     async def get_open_orders(self) -> list[dict]:
         orders = []
         for trade in self.ib.trades():
+            if not self._is_stock_contract(trade.contract):
+                continue
+
             if self.account_id:
                 trade_account = getattr(trade.order, "account", None)
                 if trade_account != self.account_id:
@@ -736,6 +751,8 @@ class IBKRAdapter(BrokerBase):
     async def get_positions(self) -> dict[str, int]:
         positions = {}
         for pos in self.ib.positions():
+            if not self._is_stock_contract(pos.contract):
+                continue
             if self.account_id:
                 pos_account = getattr(pos, "account", None)
                 if pos_account != self.account_id:
@@ -747,6 +764,8 @@ class IBKRAdapter(BrokerBase):
         """Returns full position objects as dicts for detailed inspection."""
         details = []
         for pos in self.ib.positions():
+            if not self._is_stock_contract(pos.contract):
+                continue
             if self.account_id:
                 pos_account = getattr(pos, "account", None)
                 if pos_account != self.account_id:
@@ -776,7 +795,7 @@ class IBKRAdapter(BrokerBase):
                 if item_account != self.account_id:
                     continue
 
-            if item.contract.symbol == ticker:
+            if self._is_target_stock_contract(item.contract, ticker):
                 return {
                     'position': item.position,
                     'marketPrice': item.marketPrice,
@@ -931,6 +950,9 @@ class IBKRAdapter(BrokerBase):
         """
         Handles execution events from IBKR.
         """
+        if not self._is_stock_contract(trade.contract):
+            return
+
         try:
             execution = fill.execution
             if self.account_id:
@@ -969,6 +991,9 @@ class IBKRAdapter(BrokerBase):
             logger.error(f"Error processing execution details: {e}")
 
     def _on_order_status(self, trade: Trade):
+        if not self._is_stock_contract(trade.contract):
+            return
+
         status = trade.orderStatus.status
         order_id = str(trade.order.orderId)
 

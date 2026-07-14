@@ -52,7 +52,6 @@ async def test_place_bracket_order_rth_gtc(mock_ib):
 
         # Actually we should test the builder specifically for outsideRth and tif
         from brokers.ibkr.order_builder import build_bracket_order
-        # Mock the dynamic exchange and TIF so we know what they evaluate to
         with patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='OVERNIGHT'):
             with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='DAY'):
                 c, p, t = build_bracket_order(mock_ib, 'TQQQ', 'BUY', 10, 50.0, 55.0)
@@ -101,6 +100,7 @@ async def test_handle_order_update_callback(mock_ib):
     trade1 = MagicMock()
     trade1.order.orderId = 100
     trade1.contract.symbol = 'TQQQ'
+    trade1.contract.secType = 'STK'
     trade1.orderStatus.status = 'Filled'
     trade1.orderStatus.filled = 10
     trade1.orderStatus.avgFillPrice = 50.5
@@ -109,6 +109,7 @@ async def test_handle_order_update_callback(mock_ib):
     trade2 = MagicMock()
     trade2.order.orderId = 200
     trade2.contract.symbol = 'TQQQ'
+    trade2.contract.secType = 'STK'
     trade2.orderStatus.status = 'Filled'
     trade2.orderStatus.filled = 5
     trade2.orderStatus.avgFillPrice = 51.0
@@ -203,9 +204,10 @@ async def test_strict_account_scoping_reads(mock_ib):
     adapter.ib = mock_ib
 
     class MockContract:
-        def __init__(self, sym):
+        def __init__(self, sym, secType="STK"):
             self.symbol = sym
             self.exchange = "SMART"
+            self.secType = secType
 
     class MockOrderStatus:
         def __init__(self):
@@ -225,27 +227,28 @@ async def test_strict_account_scoping_reads(mock_ib):
             self.tif = "GTC"
 
     class MockTrade:
-        def __init__(self, acc, sym):
+        def __init__(self, acc, sym, secType="STK"):
             self.order = MockOrder(acc)
-            self.contract = MockContract(sym)
+            self.contract = MockContract(sym, secType=secType)
             self.orderStatus = MockOrderStatus()
         def isActive(self):
             return True
 
     class MockPosition:
-        def __init__(self, acc, sym, pos):
+        def __init__(self, acc, sym, pos, secType="STK"):
             self.account = acc
-            self.contract = MockContract(sym)
+            self.contract = MockContract(sym, secType=secType)
             self.position = pos
 
     class MockPortfolioItem:
-        def __init__(self, acc, sym):
+        def __init__(self, acc, sym, secType="STK"):
             self.account = acc
-            self.contract = MockContract(sym)
+            self.contract = MockContract(sym, secType=secType)
             self.position = 100
             self.marketPrice = 50.0
             self.marketValue = 5000.0
             self.averageCost = 45.0
+            self.contract.currency = "USD"
 
     trade_match = MockTrade("DU_TEST", "TQQQ")
     trade_mismatch = MockTrade("OTHER", "TQQQ")
@@ -286,10 +289,15 @@ async def test_strict_account_scoping_callbacks(mock_ib):
         def __init__(self, stat):
             self.status = stat
 
+    class MockContract:
+        def __init__(self, secType="STK"):
+            self.secType = secType
+
     class MockTrade:
-        def __init__(self, oid, acc, stat):
+        def __init__(self, oid, acc, stat, secType="STK"):
             self.order = MockOrder(oid, acc)
             self.orderStatus = MockOrderStatus(stat)
+            self.contract = MockContract(secType=secType)
 
     trade = MockTrade(123, "OTHER", "Filled")
 
@@ -702,3 +710,109 @@ def test_on_error_records_fatal():
 
     adapter._on_error(reqId=125, errorCode=201, errorString="Rejected", contract=None)
     assert 125 in adapter._last_error
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("positions_mock_data", [
+    [
+        {"account": "DU123", "symbol": "TQQQ", "secType": "STK", "currency": "USD", "position": 969},
+        {"account": "DU123", "symbol": "TQQQ", "secType": "OPT", "currency": "USD", "position": -5}
+    ],
+    [
+        {"account": "DU123", "symbol": "TQQQ", "secType": "OPT", "currency": "USD", "position": -5},
+        {"account": "DU123", "symbol": "TQQQ", "secType": "STK", "currency": "USD", "position": 969}
+    ]
+])
+async def test_tqqq_option_does_not_replace_stock_position(positions_mock_data):
+    adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True, account_id="DU123")
+    mock_ib = MagicMock()
+    adapter.ib = mock_ib
+    adapter._broker_state_ready = True
+
+    positions = []
+    for p_data in positions_mock_data:
+        pos = MagicMock()
+        pos.account = p_data["account"]
+        pos.contract = MagicMock()
+        pos.contract.symbol = p_data["symbol"]
+        pos.contract.secType = p_data["secType"]
+        pos.contract.currency = p_data["currency"]
+        pos.position = p_data["position"]
+        positions.append(pos)
+
+    mock_ib.positions.return_value = positions
+    mock_ib.portfolio.return_value = []
+    mock_ib.trades.return_value = []
+
+    adapter.get_net_liquidation_value = AsyncMock(return_value=None)
+    adapter.get_wallet_balance = AsyncMock(return_value=None)
+
+    snapshot = await adapter.get_verified_symbol_snapshot("TQQQ")
+    assert snapshot.position_qty == 969
+
+@pytest.mark.asyncio
+async def test_tqqq_option_only_position_returns_zero():
+    adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True, account_id="DU123")
+    mock_ib = MagicMock()
+    adapter.ib = mock_ib
+    adapter._broker_state_ready = True
+
+    pos = MagicMock()
+    pos.account = "DU123"
+    pos.contract = MagicMock()
+    pos.contract.symbol = "TQQQ"
+    pos.contract.secType = "OPT"
+    pos.contract.currency = "USD"
+    pos.position = -5
+
+    mock_ib.positions.return_value = [pos]
+    mock_ib.portfolio.return_value = []
+    mock_ib.trades.return_value = []
+
+    adapter.get_net_liquidation_value = AsyncMock(return_value=None)
+    adapter.get_wallet_balance = AsyncMock(return_value=None)
+
+    snapshot = await adapter.get_verified_symbol_snapshot("TQQQ")
+    assert snapshot.position_qty == 0
+
+@pytest.mark.asyncio
+async def test_option_orders_executions_ignored_stock_preserved():
+    adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True, account_id="DU123")
+    mock_ib = MagicMock()
+    adapter.ib = mock_ib
+
+    opt_trade = MagicMock()
+    opt_trade.contract.symbol = "TQQQ"
+    opt_trade.contract.secType = "OPT"
+    opt_trade.isActive.return_value = True
+    opt_trade.order.account = "DU123"
+
+    stk_trade = MagicMock()
+    stk_trade.contract.symbol = "TQQQ"
+    stk_trade.contract.secType = "STK"
+    stk_trade.isActive.return_value = True
+    stk_trade.order.orderId = 1
+    stk_trade.order.account = "DU123"
+
+    mock_ib.trades.return_value = [opt_trade, stk_trade]
+
+    open_orders = await adapter.get_open_orders()
+    assert len(open_orders) == 1
+    assert open_orders[0]['order_id'] == "1"
+
+    # Test executions
+    callback = MagicMock()
+    adapter.subscribe_to_executions(callback)
+
+    opt_fill = MagicMock()
+    opt_fill.execution.acctNumber = "DU123"
+
+    # This should be ignored
+    adapter._on_exec_details(opt_trade, opt_fill)
+    callback.assert_not_called()
+
+    stk_fill = MagicMock()
+    stk_fill.execution.acctNumber = "DU123"
+
+    # This should trigger callback
+    adapter._on_exec_details(stk_trade, stk_fill)
+    callback.assert_called_once()
