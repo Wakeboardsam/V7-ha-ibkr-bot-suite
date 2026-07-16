@@ -19,7 +19,7 @@ Known completed checkpoints:
 - Account-scoping safety logic has been added for the configured `ibkr_account_id`.
 - The v6 grid strategy behavior, Bridge Anchor behavior, TQQQ-only scope, and Google Sheets behavior are intended to remain preserved unless a later safety task explicitly requires a change.
 
-Do not rebuild the repository from scratch. Do not rename the repository. Do not create account 2/account 3 add-on copies yet.
+Do not rebuild the repository from scratch. Do not rename the repository.
 
 ## Stable Source Baseline
 
@@ -72,7 +72,7 @@ Incorrect Phase 1 model:
 One bot process -> multiple IBKR accounts -> multiple Google Sheets
 ```
 
-No account 2/account 3 folders should be created yet. The first goal is to make the initial bundled `tqqq_bot` path work safely in Home Assistant.
+Account 2 has been created as the `tqqq_bot_account_2` folder, copying the stable `tqqq_bot` baseline.
 
 ## Add-on Folders
 

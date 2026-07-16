@@ -1,0 +1,120 @@
+import sys
+import asyncio
+import logging
+from config.loader import load_config, validate_ibkr_settings
+from brokers.ibkr.adapter import IBKRAdapter
+from brokers.schwab.adapter import SchwabAdapter
+from engine.engine import GridEngine
+from sheets.interface import SheetInterface
+from notifications.home_assistant import HomeAssistantNotifier, NotificationConfig
+from utils.log_sanitizer import AccountMaskingFilter, mask_account_ids_in_text
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
+async def main():
+    try:
+        config = load_config()
+
+        # Apply global log masking filter
+        known_accounts = []
+        if config.ibkr_account_id:
+            known_accounts.append(config.ibkr_account_id)
+
+        masking_filter = AccountMaskingFilter(
+            known_account_ids=known_accounts,
+            enabled=config.mask_account_ids_in_logs
+        )
+        for handler in logging.getLogger().handlers:
+            handler.addFilter(masking_filter)
+
+        # Suppress noisy ib_insync logs
+        logging.getLogger('ib_insync').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.ib').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+        logging.getLogger('ib_insync.client').setLevel(logging.WARNING)
+
+    except Exception as e:
+        # Before config/filter is loaded, manually sanitize prints
+        safe_msg = mask_account_ids_in_text(f"Error loading config: {e}")
+        print(safe_msg, file=sys.stderr)
+        sys.exit(1)
+
+    # Perform IBKR port/mode validation
+    ibkr_warnings = validate_ibkr_settings(config)
+    for warning in ibkr_warnings:
+        logger.warning(warning)
+
+    if config.active_broker == "ibkr" and config.ibkr_host not in ("127.0.0.1", "localhost"):
+        logger.warning(
+            "Bundled tqqq_bot only supports local Gateway access. "
+            "Forcing ibkr_host to 127.0.0.1."
+        )
+        config.ibkr_host = "127.0.0.1"
+
+    if config.active_broker == "ibkr":
+        if not config.dry_run and not config.ibkr_account_id:
+            logger.critical(
+                "LIVE IBKR MODE REFUSED: ibkr_account_id is required when dry_run is false. "
+                "This gateway may see multiple accounts/orders, so unscoped live operation is unsafe."
+            )
+            sys.exit(1)
+
+        broker = IBKRAdapter(
+            host=config.ibkr_host,
+            port=config.ibkr_port,
+            client_id=config.ibkr_client_id,
+            paper=config.paper_trading,
+            account_id=config.ibkr_account_id,
+            mask_account_ids_in_logs=config.mask_account_ids_in_logs,
+            dry_run=config.dry_run,
+            maintenance_enabled=config.maintenance_enabled,
+            maintenance_start_local=config.maintenance_start_local,
+            maintenance_end_local=config.maintenance_end_local,
+            timezone=config.timezone,
+            maintenance_reconnect_grace_minutes=config.maintenance_reconnect_grace_minutes
+        )
+    elif config.active_broker == "schwab":
+        broker = SchwabAdapter(dry_run=config.dry_run)
+    else:
+        logger.error(f"Error: Unsupported broker '{config.active_broker}'")
+        sys.exit(1)
+
+    sheet = SheetInterface(config)
+
+    # Initialize Notifications
+    notifier_config = NotificationConfig(
+        enabled=config.notifications.enabled,
+        webhook_url=config.notifications.webhook_url,
+        timeout_seconds=config.notifications.timeout_seconds,
+        dedupe_window_seconds=config.notifications.dedupe_window_seconds,
+    )
+    notifier = HomeAssistantNotifier(notifier_config)
+
+    engine = GridEngine(broker, sheet, config, notifier=notifier)
+
+    mode = "paper" if config.paper_trading else "live"
+    logger.info(f"Bot initialized with {config.active_broker} in {mode} mode")
+
+    logger.info("")
+    logger.info("* TQQQ GRID BOT V6 OFFICIALLY STARTED!       *")
+    logger.info("")
+
+    if config.dry_run:
+        logger.info("DRY RUN MODE ENABLED — NO ORDERS WILL BE PLACED, CANCELLED, OR MODIFIED")
+
+    try:
+        await engine.run()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    asyncio.run(main())
