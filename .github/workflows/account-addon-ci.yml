@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   test-addons:
-    name: Run Tests
+    name: Compile and Syntax Check
     runs-on: ubuntu-latest
     strategy:
       matrix:

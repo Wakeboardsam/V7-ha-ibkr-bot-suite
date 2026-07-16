@@ -75,7 +75,7 @@ Only enable VNC for troubleshooting. Do not expose it to untrusted networks.
 
 ## Dry Run Mode
 
-The `dry_run` option (`false` by default) allows you to safely validate account-scoping, startup, Google Sheet state, Bridge Anchor decisions, and grid regeneration without risking real trades.
+The `dry_run` option (`true` by default for Account 2) allows you to safely validate account-scoping, startup, Google Sheet state, Bridge Anchor decisions, and grid regeneration without risking real trades.
 
 - `dry_run: false` is normal live behavior.
 - `dry_run: true` is safe validation mode.
@@ -172,7 +172,7 @@ Gateway/IBC-related fields may also be exposed as needed:
 ibkr_username: "placeholder_user"
 ibkr_password: "placeholder_password"
 trading_mode: "paper"
-readonly_api: false
+readonly_api: true
 ```
 
 Password fields should use Home Assistant password schema fields.
