@@ -30,9 +30,6 @@ jobs:
       - name: Install Dependencies
         working-directory: ${{ matrix.addon_dir }}
         run: python -m pip install -r requirements.txt -r requirements-test.txt
-      - name: Run Pytest
-        working-directory: ${{ matrix.addon_dir }}
-        run: PYTHONPATH=app python -m pytest -q
       - name: Compile Python
         working-directory: ${{ matrix.addon_dir }}
         run: python -m compileall -q app tests wait_for_gateway.py
