@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 import zoneinfo
 
-from brokers.base import OrderResult, SymbolSnapshot
+from brokers.base import OrderResult, SymbolSnapshot, PositionSnapshot
 from engine.grid_state import GridState, GridRow
 from engine.engine import GridEngine
 
@@ -317,3 +317,53 @@ async def test_boundary_sell_cancel_snapshot_exception_decrements_counter(engine
 
         # Original fail-closed behavior asserts halt
         engine._safe_async_halt.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_boundary_sell_cancel_unrelated_missing_sell_halts(engine, mock_broker, mock_sheet):
+    if not engine.grid_state:
+        engine.grid_state = GridState(rows={})
+
+    # Unrelated missing WORKING_SELL row
+    engine.grid_state.rows[8] = GridRow(row_index=8, status="WORKING_SELL:unrelated123", has_y=True, sell_price=105.0, buy_price=100.0, shares=10)
+    mock_sheet.fetch_grid.return_value = engine.grid_state
+
+    # The session boundary cancels should be empty, but we must enforce normal pre-SELL guards
+    engine._inflight_session_cancels = 0
+    engine._session_cancel_settlement_required = False
+
+    # Empty open orders -> the unrelated123 order is missing
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
+    mock_broker.get_open_orders.return_value = []
+
+    await engine._tick()
+
+    # Halt should be triggered for missing unrelated SELL order
+    assert engine._halted_reconciliation is True
+    # engine._safe_async_halt is not called directly in tick for reconciliation, _halt_for_reconciliation_error is.
+    # The assert _halted_reconciliation is True proves it halted.
+
+@pytest.mark.asyncio
+async def test_boundary_sell_cancel_insufficient_shares_halts(engine, mock_broker, mock_sheet):
+    if not engine.grid_state:
+        engine.grid_state = GridState(rows={})
+
+    # Valid owned state row, requires 100 shares
+    engine.grid_state.rows[8] = GridRow(row_index=8, status="OWNED:0", has_y=True, sell_price=105.0, buy_price=100.0, shares=100)
+    mock_sheet.fetch_grid.return_value = engine.grid_state
+
+    # Initial state requires settlement tick
+    engine._inflight_session_cancels = 0
+    engine._session_cancel_settlement_required = True
+
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+    mock_broker.get_open_orders.return_value = []
+
+    # First tick consumes settlement tick
+    await engine._tick()
+    assert engine._session_cancel_settlement_required is False
+    assert engine._halted_reconciliation is False
+
+    # Second tick runs normal logic and should halt due to insufficient shares (100 required, 50 available)
+    await engine._tick()
+    assert engine._halted_reconciliation is True

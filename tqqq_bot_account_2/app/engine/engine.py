@@ -1217,10 +1217,10 @@ class GridEngine:
         broker_order_ids = {str(o['order_id']) for o in open_orders}
 
         # Settlement gate for session boundary cancellations
-        if getattr(self, '_inflight_session_cancels', 0) > 0:
+        if self._inflight_session_cancels > 0:
             logger.info(f"Skipping reconciliation and tick evaluation: {self._inflight_session_cancels} session cancellation verifications in flight.")
             return
-        if getattr(self, '_session_cancel_settlement_required', False):
+        if self._session_cancel_settlement_required:
             logger.info("Skipping reconciliation and tick evaluation: one settlement tick required after session boundary verifications.")
             self._session_cancel_settlement_required = False
             return
