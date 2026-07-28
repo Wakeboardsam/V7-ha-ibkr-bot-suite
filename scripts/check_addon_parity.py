@@ -6,7 +6,7 @@ from pathlib import Path
 ADDON1 = "tqqq_bot"
 ADDON2 = "tqqq_bot_account_2"
 IGNORED_FILES = {"config.yaml", "README.md"}
-IGNORED_DIRS = {"__pycache__", ".pytest_cache"}
+IGNORED_DIRS = {"__pycache__", ".pytest_cache", "tests"}
 IGNORED_EXTS = {".pyc"}
 
 def get_all_files(directory):
