@@ -53,15 +53,20 @@ def is_gateway_logged_out(logs_dir=IBC_LOGS_DIR):
     if not latest_log:
         return False
     try:
-        with open(latest_log, 'r') as f:
-            lines = f.readlines()
-            # check the last 50 lines to see if LOGGED_OUT is still the recent state
-            for line in reversed(lines[-50:]):
-                if LOGGED_OUT_MSG in line:
-                    return True
-                # If we see a login success after a logged out message, it's no longer logged out.
-                # But for simplicity, we just look for the logged out message.
-                # (Ideally we'd track state strictly, but checking recent lines is a good proxy).
+        with open(latest_log, 'rb') as f:
+            f.seek(0, 2)
+            file_size = f.tell()
+            f.seek(max(0, file_size - 65536))
+
+            content = f.read().decode('utf-8', errors='replace')
+            lines = content.splitlines()
+
+            for line in reversed(lines):
+                if "LoginState is" in line:
+                    if "LOGGED_OUT" in line:
+                        return True
+                    else:
+                        return False
     except Exception:
         pass
     return False

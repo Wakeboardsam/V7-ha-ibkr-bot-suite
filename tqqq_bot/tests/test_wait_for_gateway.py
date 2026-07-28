@@ -185,3 +185,41 @@ def test_wait_for_port_timeout(mock_time, mock_socket, mock_sleep, capsys):
     assert result is False
     out, _ = capsys.readouterr()
     assert "Timeout: localhost:7497 not available after 300 seconds." in out
+
+def test_is_gateway_logged_out_recent_state(mock_glob, mock_getctime):
+    mock_glob.return_value = ["/root/ibc/logs/log1.txt"]
+    mock_getctime.return_value = 100
+
+    # Mocking open with binary read
+    log_content = b"Some log\nLoginState is LOGGED_IN\nSome more log\nLogin dialog WINDOW_OPENED: LoginState is LOGGED_OUT\n"
+
+    with patch('builtins.open', mock_open(read_data=log_content)) as m:
+        # We need to simulate the file size and seek
+        m.return_value.tell.return_value = len(log_content)
+        m.return_value.read.return_value = log_content
+
+        assert wait_for_gateway.is_gateway_logged_out() is True
+
+def test_is_gateway_logged_out_older_state_superceded(mock_glob, mock_getctime):
+    mock_glob.return_value = ["/root/ibc/logs/log1.txt"]
+    mock_getctime.return_value = 100
+
+    log_content = b"Some log\nLogin dialog WINDOW_OPENED: LoginState is LOGGED_OUT\nSome more log\nLoginState is LOGGED_IN\n"
+
+    with patch('builtins.open', mock_open(read_data=log_content)) as m:
+        m.return_value.tell.return_value = len(log_content)
+        m.return_value.read.return_value = log_content
+
+        assert wait_for_gateway.is_gateway_logged_out() is False
+
+def test_is_gateway_logged_out_no_state(mock_glob, mock_getctime):
+    mock_glob.return_value = ["/root/ibc/logs/log1.txt"]
+    mock_getctime.return_value = 100
+
+    log_content = b"Some log\nJust random logs\nNothing here\n"
+
+    with patch('builtins.open', mock_open(read_data=log_content)) as m:
+        m.return_value.tell.return_value = len(log_content)
+        m.return_value.read.return_value = log_content
+
+        assert wait_for_gateway.is_gateway_logged_out() is False
