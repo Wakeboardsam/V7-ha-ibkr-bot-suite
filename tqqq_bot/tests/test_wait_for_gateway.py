@@ -133,22 +133,22 @@ def test_notification_conditions(mock_notifier_class):
 
     with patch('tqqq_bot.wait_for_gateway.load_notification_config') as mock_load:
         # enabled=False
-        mock_load.return_value = (False, True, "http://localhost")
+        mock_load.return_value = (False, True, "http://localhost", 3.0, 300)
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_not_called()
 
         # notify_on_halts=False
-        mock_load.return_value = (True, False, "http://localhost")
+        mock_load.return_value = (True, False, "http://localhost", 3.0, 300)
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_not_called()
 
         # no webhook url
-        mock_load.return_value = (True, True, "")
+        mock_load.return_value = (True, True, "", 3.0, 300)
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_not_called()
 
         # Success condition
-        mock_load.return_value = (True, True, "http://localhost")
+        mock_load.return_value = (True, True, "http://localhost", 3.0, 300)
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_called_once()
 
@@ -161,13 +161,8 @@ def test_notification_delivery_fails(mock_notifier_class):
     mock_notifier_class.return_value = mock_notifier_instance
 
     with patch('tqqq_bot.wait_for_gateway.load_notification_config') as mock_load:
-        mock_load.return_value = (True, True, "http://localhost")
+        mock_load.return_value = (True, True, "http://localhost", 3.0, 300)
 
-        # Should catch or at least not crash if we handle it. But wait, send_auth_notification doesn't catch it.
-        # But wait! HomeAssistantNotifier itself catches network errors and logs them.
-        # Since we mock it, we just need to ensure the test passes when we call it.
-        # Actually wait, wait_for_port doesn't have a try-except for send_auth_notification.
-        # Let's ensure send_auth_notification handles its own exceptions or HomeAssistantNotifier handles it.
         try:
             wait_for_gateway.send_auth_notification(7497)
             # if it raises, the test will fail

@@ -9,11 +9,11 @@ import logging
 
 sys.path.insert(0, '/app')
 try:
-    from app.notifications.home_assistant import HomeAssistantNotifier, NotificationConfig
+    from notifications.home_assistant import HomeAssistantNotifier, NotificationConfig
 except ImportError:
     # Fallback for testing environment outside the container
     try:
-        from tqqq_bot.app.notifications.home_assistant import HomeAssistantNotifier, NotificationConfig
+        from app.notifications.home_assistant import HomeAssistantNotifier, NotificationConfig
     except ImportError:
         HomeAssistantNotifier = None
         NotificationConfig = None
@@ -32,7 +32,7 @@ IBKR GATEWAY LOGIN MAY BE REQUIRED
 Gateway API port {port} is still closed and IBC reports that
 IB Gateway is logged out.
 
-Open the primary tqqq_bot VNC interface and inspect the
+Open this add-on's VNC interface and inspect the
 Gateway login/error window. The Gateway session may have
 expired and manual password entry may be required.
 
@@ -74,49 +74,51 @@ def load_notification_config(options_path="/data/options.json"):
             enabled = notif_opts.get("enabled", False)
             notify_on_halts = notif_opts.get("notify_on_halts", False)
             webhook_url = notif_opts.get("webhook_url", "")
-            return enabled, notify_on_halts, webhook_url
+            timeout_seconds = notif_opts.get("timeout_seconds", 3.0)
+            dedupe_window_seconds = notif_opts.get("dedupe_window_seconds", 300)
+            return enabled, notify_on_halts, webhook_url, timeout_seconds, dedupe_window_seconds
     except Exception:
-        return False, False, ""
+        return False, False, "", 3.0, 300
 
 def send_auth_notification(port):
     if not HomeAssistantNotifier or not NotificationConfig:
-        return False
+        return
 
-    enabled, notify_on_halts, webhook_url = load_notification_config()
+    enabled, notify_on_halts, webhook_url, timeout_seconds, dedupe_window_seconds = load_notification_config()
 
     if not enabled or not notify_on_halts or not webhook_url:
-        return True # Not an error, just shouldn't send
+        return
 
     config = NotificationConfig(
         enabled=True,
         webhook_url=webhook_url,
-        dedupe_window_seconds=300
+        timeout_seconds=timeout_seconds,
+        dedupe_window_seconds=dedupe_window_seconds
     )
     notifier = HomeAssistantNotifier(config)
 
-    message = (f"The primary tqqq_bot Gateway remains logged out and API port "
-               f"{port} is still closed. Open the add-on VNC interface and inspect "
+    message = (f"This IBKR bot add-on Gateway remains logged out and API port "
+               f"{port} is still closed. Open this add-on's VNC interface and inspect "
                f"the IB Gateway login/error window. Manual password entry may "
                f"be required.\n\nThe trading bot has not started.")
 
+    # rely on HomeAssistantNotifier's own exception handling and deduplication
     try:
         notifier.send(
             title="IBKR Gateway login may be required",
             message=message,
             severity="critical",
             event_type="GATEWAY_AUTH_REQUIRED",
-            tag="tqqq_bot_gateway_auth_required",
+            tag=f"ibkr_gateway_auth_required_{port}",
             group="trading_bot"
         )
     except Exception as e:
         log.warning(f"Failed to send GATEWAY_AUTH_REQUIRED notification: {e}")
 
-
 def wait_for_port(port, host='localhost', timeout=300):
     start_time = time.time()
     last_print_time = 0
     logged_out_start = None
-    notification_sent = False
 
     while True:
         try:
@@ -140,17 +142,11 @@ def wait_for_port(port, host='localhost', timeout=300):
                 logged_out_duration = current_time - logged_out_start
                 if logged_out_duration >= AUTH_WAIT_THRESHOLD:
                     print(LOUD_WARNING.format(port=port))
-
-                    if not notification_sent:
-                        success = send_auth_notification(port)
-                        if success:
-                            notification_sent = True
-
+                    send_auth_notification(port)
                     # Reset timer so it warns again after 5 mins if still stuck
                     logged_out_start = current_time
             else:
                 logged_out_start = None
-                notification_sent = False
 
             if current_time - last_print_time >= PRINT_STATUS_INTERVAL:
                 print(f"Waiting for {host}:{port}...")
