@@ -97,10 +97,12 @@ def send_auth_notification(port):
     )
     notifier = HomeAssistantNotifier(config)
 
-    message = (f"This IBKR bot add-on Gateway remains logged out and API port "
-               f"{port} is still closed. Open this add-on's VNC interface and inspect "
-               f"the IB Gateway login/error window. Manual password entry may "
-               f"be required.\n\nThe trading bot has not started.")
+    message = (f"This IBKR bot add-on is not running because Gateway remains\n"
+               f"logged out and API port {port} is still closed.\n\n"
+               f"Open this add-on's VNC interface and inspect the IB Gateway\n"
+               f"login or error window. Manual authentication may be required.\n\n"
+               f"This alert will repeat every five minutes until the condition\n"
+               f"is resolved or the add-on is stopped.")
 
     # rely on HomeAssistantNotifier's own exception handling and deduplication
     try:
@@ -109,7 +111,7 @@ def send_auth_notification(port):
             message=message,
             severity="critical",
             event_type="GATEWAY_AUTH_REQUIRED",
-            tag=f"ibkr_gateway_auth_required_{port}",
+            tag=f"ibkr_gateway_auth_required_{port}_{int(time.time())}",
             group="trading_bot"
         )
     except Exception as e:
@@ -129,10 +131,6 @@ def wait_for_port(port, host='localhost', timeout=300):
             current_time = time.time()
             elapsed = current_time - start_time
 
-            if elapsed > timeout:
-                print(f"Timeout: {host}:{port} not available after {timeout} seconds.")
-                return False
-
             is_logged_out = is_gateway_logged_out()
 
             if is_logged_out:
@@ -147,6 +145,10 @@ def wait_for_port(port, host='localhost', timeout=300):
                     logged_out_start = current_time
             else:
                 logged_out_start = None
+
+            if elapsed > timeout:
+                print(f"Timeout: {host}:{port} not available after {timeout} seconds.")
+                return False
 
             if current_time - last_print_time >= PRINT_STATUS_INTERVAL:
                 print(f"Waiting for {host}:{port}...")

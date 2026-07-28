@@ -108,21 +108,20 @@ def test_persistent_logged_out(mock_is_logged_out, mock_time, mock_socket, mock_
     mock_time.side_effect = [
         100.0, # start
         101.0, # first check (logged_out_start = 101.0)
-        401.0, # 300s later (logged_out_duration = 300, triggers warning!)
-        402.0  # connection succeeds so we can exit the loop
+        401.0, # 300s later (logged_out_duration = 300, triggers warning!). elapsed = 301. Returns false right after!
     ]
 
     mock_socket.side_effect = [
         ConnectionRefusedError,
         ConnectionRefusedError,
-        MagicMock()
     ]
 
-    result = wait_for_gateway.wait_for_port(7497, timeout=600)
+    result = wait_for_gateway.wait_for_port(7497, timeout=300)
 
-    assert result is True
+    assert result is False
     out, _ = capsys.readouterr()
     assert "IBKR GATEWAY LOGIN MAY BE REQUIRED" in out
+    assert "Timeout: localhost:7497 not available after 300 seconds." in out
     mock_send_notification.assert_called_once_with(7497)
 
 @patch('tqqq_bot.wait_for_gateway.HomeAssistantNotifier')
