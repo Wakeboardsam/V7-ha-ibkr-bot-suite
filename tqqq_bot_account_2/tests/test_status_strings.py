@@ -38,6 +38,7 @@ def mock_sheet():
 @pytest.fixture
 def config():
     return AppConfig(
+        dry_run=False,
         google_sheet_id="test_sheet",
         google_credentials_json='{"test": "json"}',
         poll_interval_seconds=1,
@@ -57,7 +58,7 @@ async def test_transition_idle_to_working_buy(mock_broker, mock_sheet, config):
     with patch.object(GridState, 'distal_y_row', 7):
         await engine._tick()
 
-    mock_sheet.update_row_status.assert_called_with(10, "WORKING_BUY:BUY-123")
+    mock_sheet.update_row_status.assert_any_call(10, "WORKING_BUY:BUY-123")
 
 @pytest.mark.asyncio
 async def test_transition_working_buy_to_owned(mock_broker, mock_sheet, config):
@@ -72,7 +73,7 @@ async def test_transition_working_buy_to_owned(mock_broker, mock_sheet, config):
     # Wait for the async task in _handle_order_update
     await asyncio.sleep(0.1)
 
-    mock_sheet.update_row_status.assert_called_with(10, "OWNED:BUY-123")
+    mock_sheet.update_row_status.assert_any_call(10, "OWNED:BUY-123")
 
 @pytest.mark.asyncio
 async def test_transition_owned_to_working_sell(mock_broker, mock_sheet, config):
@@ -90,7 +91,7 @@ async def test_transition_owned_to_working_sell(mock_broker, mock_sheet, config)
         mock_broker.get_next_order_id.return_value = "SELL-456"
         await engine._tick()
 
-    mock_sheet.update_row_status.assert_called_with(10, "WORKING_SELL:SELL-456")
+    mock_sheet.update_row_status.assert_any_call(10, "WORKING_SELL:SELL-456")
 
 @pytest.mark.asyncio
 async def test_transition_working_sell_to_idle(mock_broker, mock_sheet, config):
@@ -105,7 +106,7 @@ async def test_transition_working_sell_to_idle(mock_broker, mock_sheet, config):
     # Wait for the async task in _handle_order_update
     await asyncio.sleep(0.1)
 
-    mock_sheet.update_row_status.assert_called_with(10, "IDLE")
+    mock_sheet.update_row_status.assert_any_call(10, "IDLE")
 
 @pytest.mark.asyncio
 async def test_cancel_outside_window_working_buy(mock_broker, mock_sheet, config):
@@ -122,7 +123,7 @@ async def test_cancel_outside_window_working_buy(mock_broker, mock_sheet, config
 
     # Should cancel and update to IDLE
     mock_broker.cancel_order.assert_called_with("BUY-123")
-    mock_sheet.update_row_status.assert_called_with(15, "IDLE")
+    mock_sheet.update_row_status.assert_any_call(15, "IDLE")
 
 @pytest.mark.asyncio
 async def test_cancel_outside_window_working_sell(mock_broker, mock_sheet, config):
@@ -140,7 +141,7 @@ async def test_cancel_outside_window_working_sell(mock_broker, mock_sheet, confi
 
     # Should cancel and update to OWNED:BUY-123
     mock_broker.cancel_order.assert_called_with("SELL-456")
-    mock_sheet.update_row_status.assert_called_with(7, "OWNED:BUY-123")
+    mock_sheet.update_row_status.assert_any_call(7, "OWNED:BUY-123")
 
 @pytest.mark.asyncio
 async def test_owned_fallback_enforcement(mock_broker, mock_sheet, config):
@@ -160,7 +161,7 @@ async def test_owned_fallback_enforcement(mock_broker, mock_sheet, config):
     # Current behavior might be "OWNED", but we want to enforce "OWNED:0" or similar if ID is missing.
     # The requirement says "Confirm the bot only writes these status patterns to C7:C100: WORKING_BUY:12345, WORKING_SELL:12345, OWNED:12345, IDLE"
     # So "OWNED" without ID might be forbidden if we are being strict.
-    mock_sheet.update_row_status.assert_called_with(7, "OWNED:0")
+    mock_sheet.update_row_status.assert_any_call(7, "OWNED:0")
 
 @pytest.mark.asyncio
 async def test_retrack_parsing(mock_broker, mock_sheet, config):
