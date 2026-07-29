@@ -44,7 +44,11 @@ RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.23.0/IBCLinux-3.
     && rm IBCLinux-3.23.0.zip
 
 COPY gateway/patch/GatewayDialogHandler.java /opt/ibc/patch/GatewayDialogHandler.java
-RUN javac -cp /opt/ibc/IBC.jar /opt/ibc/patch/GatewayDialogHandler.java -d /opt/ibc/patch/classes && jar uf /opt/ibc/IBC.jar -C /opt/ibc/patch/classes ibcalpha/ibc/GatewayDialogHandler.class && rm -rf /opt/ibc/patch
+RUN javac -cp /opt/ibc/IBC.jar /opt/ibc/patch/GatewayDialogHandler.java -d /opt/ibc/patch/classes \
+    && jar uf /opt/ibc/IBC.jar -C /opt/ibc/patch/classes ibcalpha/ibc/GatewayDialogHandler.class \
+    && javap -classpath /opt/ibc/IBC.jar -p -c ibcalpha.ibc.GatewayDialogHandler | grep -Fq "isExpiredTokenDialog" \
+    && javap -classpath /opt/ibc/IBC.jar -verbose ibcalpha.ibc.GatewayDialogHandler | grep -Fq "getWindowStructure" \
+    && rm -rf /opt/ibc/patch
 
 RUN sed -i 's/xterm.*-e //' /opt/ibc/gatewaystart.sh
 RUN ! grep -q "xterm" /opt/ibc/gatewaystart.sh
