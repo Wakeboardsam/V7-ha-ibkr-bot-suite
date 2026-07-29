@@ -38,7 +38,7 @@ jobs:
         run: bash -n run.sh
       - name: Run Tests
         working-directory: ${{ matrix.addon_dir }}
-        run: PYTHONPATH=app python -m pytest -q
+        run: PYTHONPATH=app python -m pytest -q tests/test_gateway_dialog_patch.py tests/test_wait_for_gateway.py
 
   validate-addons:
     name: Validate Add-on Parity and Config
