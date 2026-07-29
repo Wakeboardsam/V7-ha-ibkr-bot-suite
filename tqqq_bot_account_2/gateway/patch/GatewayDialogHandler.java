@@ -49,9 +49,9 @@ public class GatewayDialogHandler implements WindowHandler {
     public void handleWindow(Window window, int eventID) {
         if (isExpiredTokenDialog(window)) {
             Utils.logToConsole("GATEWAY_AUTH_TOKEN_EXPIRED");
-            if (SwingUtils.clickButton(window, "OK")) {
-                Utils.logToConsole("Expired-token dialog dismissed");
-                if (!tokenExpiredRetryAttempted) {
+            if (!tokenExpiredRetryAttempted) {
+                if (SwingUtils.clickButton(window, "OK")) {
+                    Utils.logToConsole("Expired-token dialog dismissed");
                     tokenExpiredRetryAttempted = true;
                     Utils.logToConsole("Retrying Gateway login with configured credentials");
 
@@ -72,11 +72,14 @@ public class GatewayDialogHandler implements WindowHandler {
                         });
                     }, 2, TimeUnit.SECONDS);
                 } else {
-                    Utils.logToConsole("Token expired retry already attempted for this process. Falling back to cold restart.");
-                    MyCachedThreadPool.getInstance().execute(new StopTask(null, true, "Cold restart after repeated Connection to server failed"));
+                    Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
                 }
             } else {
-                Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
+                Utils.logToConsole("Token expired retry already attempted for this process. Falling back to cold restart.");
+                MyCachedThreadPool.getInstance().execute(new StopTask(null, true, "Cold restart after repeated Connection to server failed"));
+                if (!SwingUtils.clickButton(window, "OK")) {
+                    Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
+                }
             }
             return;
         }
