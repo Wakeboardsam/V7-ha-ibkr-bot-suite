@@ -28,6 +28,13 @@ public class GatewayDialogHandler implements WindowHandler {
 
     private static boolean tokenExpiredRetryAttempted = false;
 
+    private boolean isExpiredTokenDialog(Window window) {
+        if (!(window instanceof JDialog)) return false;
+        return SwingUtils.getWindowStructure(window)
+            .toLowerCase(java.util.Locale.ROOT)
+            .contains("security tokens associated with your login credentials have expired");
+    }
+
     @Override
     public boolean filterEvent(Window window, int eventId) {
         switch (eventId) {
@@ -40,45 +47,53 @@ public class GatewayDialogHandler implements WindowHandler {
 
     @Override
     public void handleWindow(Window window, int eventID) {
+        if (isExpiredTokenDialog(window)) {
+            Utils.logToConsole("GATEWAY_AUTH_TOKEN_EXPIRED");
+            if (!tokenExpiredRetryAttempted) {
+                if (SwingUtils.clickButton(window, "OK")) {
+                    Utils.logToConsole("Expired-token dialog dismissed");
+                    tokenExpiredRetryAttempted = true;
+                    Utils.logToConsole("Retrying Gateway login with configured credentials");
+
+                    // Schedule the retry slightly in the future to allow the dialog to close completely
+                    MyScheduledExecutorService.getInstance().schedule(() -> {
+                        GuiDeferredExecutor.instance().execute(() -> {
+                            LoginManager.loginManager().setLoginState(LoginManager.LoginState.LOGGED_OUT);
+                            JFrame loginFrame = LoginManager.loginManager().getLoginFrame();
+                            if (loginFrame != null) {
+                                if (LoginManager.loginManager().getLoginHandler() != null) {
+                                    LoginManager.loginManager().getLoginHandler().initiateLogin(loginFrame);
+                                } else {
+                                    Utils.logError("Cannot retry login: login handler not found.");
+                                }
+                            } else {
+                                Utils.logError("Cannot retry login: login frame not found.");
+                            }
+                        });
+                    }, 2, TimeUnit.SECONDS);
+                } else {
+                    Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
+                }
+            } else {
+                Utils.logToConsole("Token expired retry already attempted for this process. Falling back to cold restart.");
+                MyCachedThreadPool.getInstance().execute(new StopTask(null, true, "Cold restart after repeated Connection to server failed"));
+                if (!SwingUtils.clickButton(window, "OK")) {
+                    Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
+                }
+            }
+            return;
+        }
+
         String text = SwingUtils.getLabelTexts(window);
         // since this is a generic dialog, we always log the text
         Utils.logToConsole(text);
         if (text.startsWith("Connection to server failed")) {
-            if (text.contains("security tokens associated with your login credentials have expired")) {
-                Utils.logToConsole("GATEWAY_AUTH_TOKEN_EXPIRED");
-                if (!SwingUtils.clickButton(window, "OK")) {
-                    Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
-                } else {
-                    Utils.logToConsole("Expired-token dialog dismissed");
-                    if (!tokenExpiredRetryAttempted) {
-                        tokenExpiredRetryAttempted = true;
-                        Utils.logToConsole("Retrying Gateway login with configured credentials");
+            Utils.logToConsole("Cold restart in progress");
+            // stop tidily and do a cold restart
+            MyCachedThreadPool.getInstance().execute(new StopTask(null, true, "Cold restart after Connection to server failed"));
 
-                        // Schedule the retry slightly in the future to allow the dialog to close completely
-                        MyScheduledExecutorService.getInstance().schedule(() -> {
-                            GuiDeferredExecutor.instance().execute(() -> {
-                                LoginManager.loginManager().setLoginState(LoginManager.LoginState.LOGGED_OUT);
-                                JFrame loginFrame = LoginManager.loginManager().getLoginFrame();
-                                if (loginFrame != null) {
-                                    LoginManager.loginManager().getLoginHandler().initiateLogin(loginFrame);
-                                } else {
-                                    Utils.logError("Cannot retry login: login frame not found.");
-                                }
-                            });
-                        }, 2, TimeUnit.SECONDS);
-                    } else {
-                        Utils.logToConsole("Token expired retry already attempted for this process. Falling back to cold restart.");
-                        MyCachedThreadPool.getInstance().execute(new StopTask(null, true, "Cold restart after repeated Connection to server failed"));
-                    }
-                }
-            } else {
-                Utils.logToConsole("Cold restart in progress");
-                // stop tidily and do a cold restart
-                MyCachedThreadPool.getInstance().execute(new StopTask(null, true, "Cold restart after Connection to server failed"));
-
-                if (! SwingUtils.clickButton(window, "OK")) {
-                    Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
-                }
+            if (! SwingUtils.clickButton(window, "OK")) {
+                Utils.logError("could not dismiss Login Error dialog because we could not find the OK button");
             }
         } else {
             // for other instances of this dialog, just leave it on display for the user to handle. For example,
@@ -88,6 +103,10 @@ public class GatewayDialogHandler implements WindowHandler {
 
     @Override
     public boolean recogniseWindow(Window window) {
+        if (isExpiredTokenDialog(window)) {
+            return true;
+        }
+
         if (! (window instanceof JDialog)) return false;
 
         return (SwingUtils.titleContains(window, "Gateway"));

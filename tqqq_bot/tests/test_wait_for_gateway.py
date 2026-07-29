@@ -5,36 +5,36 @@ import socket
 import sys
 
 # Insert app path so notifications module can be found if needed
-import os; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, '/app')
 
 # Import our script directly since it's an executable python script
 # We can import it by manipulating sys.path or using importlib, but since it's
 # in the tqqq_bot directory, we can import it like a normal module.
-import wait_for_gateway
+from tqqq_bot import wait_for_gateway
 
 @pytest.fixture
 def mock_time():
-    with patch('wait_for_gateway.time.time') as mock:
+    with patch('tqqq_bot.wait_for_gateway.time.time') as mock:
         yield mock
 
 @pytest.fixture
 def mock_sleep():
-    with patch('wait_for_gateway.time.sleep') as mock:
+    with patch('tqqq_bot.wait_for_gateway.time.sleep') as mock:
         yield mock
 
 @pytest.fixture
 def mock_socket():
-    with patch('wait_for_gateway.socket.create_connection') as mock:
+    with patch('tqqq_bot.wait_for_gateway.socket.create_connection') as mock:
         yield mock
 
 @pytest.fixture
 def mock_glob():
-    with patch('wait_for_gateway.glob.glob') as mock:
+    with patch('tqqq_bot.wait_for_gateway.glob.glob') as mock:
         yield mock
 
 @pytest.fixture
 def mock_getctime():
-    with patch('wait_for_gateway.os.path.getctime') as mock:
+    with patch('tqqq_bot.wait_for_gateway.os.path.getctime') as mock:
         yield mock
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def mock_open_file():
 
 @pytest.fixture
 def mock_send_notification():
-    with patch('wait_for_gateway.send_auth_notification') as mock:
+    with patch('tqqq_bot.wait_for_gateway.send_auth_notification') as mock:
         yield mock
 
 def test_wait_for_port_success(mock_time, mock_socket, mock_sleep, capsys):
@@ -59,7 +59,7 @@ def test_wait_for_port_success(mock_time, mock_socket, mock_sleep, capsys):
     assert "Connection to localhost:7497 succeeded." in out
     assert "IBKR GATEWAY LOGIN MAY BE REQUIRED" not in out
 
-@patch('wait_for_gateway.is_gateway_logged_out')
+@patch('tqqq_bot.wait_for_gateway.is_gateway_logged_out')
 def test_transient_logged_out(mock_is_logged_out, mock_time, mock_socket, mock_sleep, capsys, mock_send_notification):
     """2. A temporary "LOGGED_OUT" entry lasting less than five minutes does not trigger the warning."""
     # First it's logged out, then it's not, then connection succeeds
@@ -95,7 +95,7 @@ def test_transient_logged_out(mock_is_logged_out, mock_time, mock_socket, mock_s
     assert "IBKR GATEWAY LOGIN MAY BE REQUIRED" not in out
     mock_send_notification.assert_not_called()
 
-@patch('wait_for_gateway.is_gateway_logged_out')
+@patch('tqqq_bot.wait_for_gateway.is_gateway_logged_out')
 def test_persistent_logged_out(mock_is_logged_out, mock_time, mock_socket, mock_sleep, capsys, mock_send_notification):
     """3. The port remains closed with "LOGGED_OUT" for five minutes: loud warning + notification."""
     mock_is_logged_out.return_value = True
@@ -124,13 +124,13 @@ def test_persistent_logged_out(mock_is_logged_out, mock_time, mock_socket, mock_
     assert "Timeout: localhost:7497 not available after 300 seconds." in out
     mock_send_notification.assert_called_once_with(7497)
 
-@patch('wait_for_gateway.HomeAssistantNotifier')
+@patch('tqqq_bot.wait_for_gateway.HomeAssistantNotifier')
 def test_notification_conditions(mock_notifier_class):
     """4. Notifications disabled or "notify_on_halts" false."""
     mock_notifier_instance = MagicMock()
     mock_notifier_class.return_value = mock_notifier_instance
 
-    with patch('wait_for_gateway.load_notification_config') as mock_load:
+    with patch('tqqq_bot.wait_for_gateway.load_notification_config') as mock_load:
         # enabled=False
         mock_load.return_value = (False, True, "http://localhost", 3.0, 300)
         wait_for_gateway.send_auth_notification(7497)
@@ -151,7 +151,7 @@ def test_notification_conditions(mock_notifier_class):
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_called_once()
 
-@patch('wait_for_gateway.HomeAssistantNotifier')
+@patch('tqqq_bot.wait_for_gateway.HomeAssistantNotifier')
 def test_notification_delivery_fails(mock_notifier_class):
     """5. Notification delivery fails: continue safely."""
     mock_notifier_instance = MagicMock()
@@ -159,7 +159,7 @@ def test_notification_delivery_fails(mock_notifier_class):
     mock_notifier_instance.send.side_effect = Exception("Network Error")
     mock_notifier_class.return_value = mock_notifier_instance
 
-    with patch('wait_for_gateway.load_notification_config') as mock_load:
+    with patch('tqqq_bot.wait_for_gateway.load_notification_config') as mock_load:
         mock_load.return_value = (True, True, "http://localhost", 3.0, 300)
 
         try:
