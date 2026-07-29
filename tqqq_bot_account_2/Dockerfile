@@ -4,7 +4,7 @@ LABEL io.hass.version="0.1.8" io.hass.type="app" io.hass.arch="amd64"
 
 # Install system dependencies (merged from ibkr_gateway and bot)
 RUN apt-get update && apt-get install -y \
-    default-jre \
+    default-jdk \
     wget \
     unzip \
     jq \

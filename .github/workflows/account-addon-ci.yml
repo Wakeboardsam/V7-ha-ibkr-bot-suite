@@ -36,6 +36,9 @@ jobs:
       - name: Check run.sh syntax
         working-directory: ${{ matrix.addon_dir }}
         run: bash -n run.sh
+      - name: Run Tests
+        working-directory: ${{ matrix.addon_dir }}
+        run: PYTHONPATH=app python -m pytest -q
 
   validate-addons:
     name: Validate Add-on Parity and Config
