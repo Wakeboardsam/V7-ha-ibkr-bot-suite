@@ -23,7 +23,7 @@ def engine(mock_broker):
     eng._update_row_status_in_memory = MagicMock()
     return eng
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_successful_placement(engine, mock_broker):
     """
     Scenario 1:
@@ -49,7 +49,7 @@ async def test_pre_sell_guard_successful_placement(engine, mock_broker):
     assert can_place is True
     engine._halt_for_reconciliation_error.assert_not_called()
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_partial_active_sells(engine, mock_broker):
     """
     Scenario 2:
@@ -72,7 +72,7 @@ async def test_pre_sell_guard_partial_active_sells(engine, mock_broker):
     assert can_place is True
     engine._halt_for_reconciliation_error.assert_not_called()
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_halt_on_oversell(engine, mock_broker):
     """
     Scenario 3:
@@ -95,7 +95,7 @@ async def test_pre_sell_guard_halt_on_oversell(engine, mock_broker):
     engine._halt_for_reconciliation_error.assert_called_once()
     assert engine._halt_for_reconciliation_error.call_args[1]['code'] == 'SELL_POSITION_MISMATCH_HALT'
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_debounce_stale_data(engine, mock_broker):
     """
     Scenario:
@@ -119,7 +119,7 @@ async def test_pre_sell_guard_debounce_stale_data(engine, mock_broker):
     assert can_place is False
     engine._halt_for_reconciliation_error.assert_not_called()
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_tick_integration(engine, mock_broker):
     """
     Integration test proving the live scenario via `_tick`:
@@ -181,7 +181,7 @@ async def test_pre_sell_guard_tick_integration(engine, mock_broker):
 
     # Pre-check mismatch helper
     from engine.engine import _calculate_partial_fill_adjusted_required_shares
-    raw, adj, part, rem, invalid = _calculate_partial_fill_adjusted_required_shares(grid.rows, [], None)
+    raw, adj, part, rem, invalid, missing = _calculate_partial_fill_adjusted_required_shares(grid.rows, [], None)
     assert adj == 314
 
     # Run Tick
@@ -213,7 +213,7 @@ async def test_pre_sell_guard_tick_integration(engine, mock_broker):
     assert calls[0].kwargs["limit_price"] == 120.0
     assert calls[0].kwargs["order_id"] == "new-sell-1"
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_debounce_exception(engine, mock_broker):
     """
     Scenario:
@@ -234,7 +234,7 @@ async def test_pre_sell_guard_debounce_exception(engine, mock_broker):
     assert can_place is False
     engine._halt_for_reconciliation_error.assert_not_called()
 
-@pytest.mark.asyncio
+
 async def test_pre_sell_guard_unknown_status(engine, mock_broker):
     """
     Scenario:
