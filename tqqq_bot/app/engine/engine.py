@@ -824,14 +824,14 @@ class GridEngine:
                     import asyncio
                     asyncio.create_task(self._sync_to_sheet())
 
-    async def _check_reconciliation_and_halt(self, open_orders: List[dict], broker_shares: int):
+    async def _check_reconciliation_and_halt(self, open_orders: List[dict], broker_shares: int) -> bool:
         """
         Startup / early reconciliation check before placing any orders or regenerating grid.
         1. Checks for unmatched external orders.
         2. Checks if Tracker demands more owned shares than the broker actually has.
         """
         if self._halted_reconciliation:
-            return
+            return False
 
         # 1. Unmatched external open orders check
         # Verify that all active open TQQQ orders clearly match Tracker intent.
@@ -904,7 +904,7 @@ class GridEngine:
                 open_orders_count=len(open_orders),
                 broker_shares=broker_shares
             )
-            return
+            return False
 
         # 2. Hard tracker vs broker position check
         if not self.grid_state:
@@ -924,7 +924,7 @@ class GridEngine:
                     open_orders_count=len(open_orders),
                     broker_shares=broker_shares
                 )
-                return
+                return False
 
         (
             tracker_required_shares_raw,
@@ -958,6 +958,7 @@ class GridEngine:
         has_missing_orders = bool(missing_working_sell_rows) or bool(missing_working_buy_rows)
         can_self_heal = (
             broker_shares == tracker_required_shares_raw and
+            total_partial_fill_adjustment == 0 and
             not has_invalid_unreconciled_sell and
             has_missing_orders
         )
@@ -979,9 +980,8 @@ class GridEngine:
 
             await self._sync_to_sheet()
 
-            # Halting tick after correction so grid places valid orders next tick
-            self._halted_reconciliation = True # Not a hard halt (didn't write to error row), just stop tick
-            return
+            # Transient return so _tick() halts this cycle without freezing the bot
+            return True
 
         # If there's an invalid unreconciled sell or unresolved missing sells, we must halt immediately.
         # We also halt if broker shares are insufficient to support the claimed rows.
@@ -1002,7 +1002,7 @@ class GridEngine:
                 open_orders_count=len(open_orders),
                 broker_shares=broker_shares
             )
-            return
+            return False
 
     async def _run_pre_sell_guard(self, requested_qty: int, row_index: int, action: str, open_orders: List[dict], broker_shares: int) -> bool:
         """
@@ -1278,8 +1278,8 @@ class GridEngine:
             return
 
         # 1.3 Startup / early reconciliation halt checks
-        await self._check_reconciliation_and_halt(open_orders, broker_shares)
-        if self._halted_reconciliation:
+        reconciliation_changed = await self._check_reconciliation_and_halt(open_orders, broker_shares)
+        if self._halted_reconciliation or reconciliation_changed:
             return
 
         # 2. Daily Grid Regeneration Check
