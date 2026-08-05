@@ -181,7 +181,7 @@ async def test_pre_sell_guard_tick_integration(engine, mock_broker):
 
     # Pre-check mismatch helper
     from engine.engine import _calculate_partial_fill_adjusted_required_shares
-    raw, adj, part, rem, invalid = _calculate_partial_fill_adjusted_required_shares(grid.rows, [], None)
+    raw, adj, part, rem, invalid, missing = _calculate_partial_fill_adjusted_required_shares(grid.rows, [], None)
     assert adj == 314
 
     # Run Tick
