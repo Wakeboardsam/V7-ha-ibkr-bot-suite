@@ -576,8 +576,7 @@ async def test_full_sell_cycle_halts_trading_evaluation(mock_broker, mock_sheet,
     engine.last_broker_shares = 10
 
     from unittest.mock import AsyncMock, patch
-    with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock) as mock_chk:
-        mock_chk.return_value = False
+    with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock, return_value=False):
         await engine._tick()
 
     # Verify G7 is updated
@@ -621,8 +620,7 @@ async def test_full_sell_cycle_same_shares(mock_broker, mock_sheet, config):
 
     # First tick triggers anchor reset
     from unittest.mock import AsyncMock, patch
-    with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock) as mock_chk:
-        mock_chk.return_value = False
+    with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock, return_value=False):
         await engine._tick()
     mock_sheet.write_anchor_ask.assert_called_with(102.0)
     mock_broker.place_limit_order.assert_not_called()

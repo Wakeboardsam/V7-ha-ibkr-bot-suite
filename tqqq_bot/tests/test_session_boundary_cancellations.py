@@ -207,7 +207,7 @@ async def test_settlement_gate_blocks_tick_while_inflight(engine):
 
     # Set the counter to simulate an in-flight async verification
     engine._inflight_session_cancels = 1
-    engine._check_reconciliation_and_halt = AsyncMock(return_value=False)
+    engine._check_reconciliation_and_halt = AsyncMock()
 
     # The tick should return early before reconciliation
     await engine._tick()
@@ -223,7 +223,7 @@ async def test_settlement_gate_consumes_one_tick_after_verification(engine, mock
     # Set inflight to 0 but require settlement
     engine._inflight_session_cancels = 0
     engine._session_cancel_settlement_required = True
-    engine._check_reconciliation_and_halt = AsyncMock(return_value=False)
+    engine._check_reconciliation_and_halt = AsyncMock()
 
     # 1. First tick should skip and reset the flag
     await engine._tick()
@@ -268,7 +268,7 @@ async def test_boundary_sell_cancel_integration_gate_lifecycle(engine, mock_shee
             coro = mock_create_task.call_args[0][0]
 
         # Tick while inflight blocks
-        engine._check_reconciliation_and_halt = AsyncMock(return_value=False)
+        engine._check_reconciliation_and_halt = AsyncMock()
         await engine._tick()
         engine._check_reconciliation_and_halt.assert_not_called()
 

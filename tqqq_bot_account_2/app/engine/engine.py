@@ -179,6 +179,7 @@ class GridEngine:
         self._snapshot_error_logged = False
         self._recent_session_cancels: dict[str, datetime] = {}
         self._inflight_session_cancels = 0
+        self._missing_sell_confirmations: set[str] = set()
         self._session_cancel_settlement_required = False
 
         # Bridge Anchor states
@@ -935,55 +936,31 @@ class GridEngine:
             missing_working_sell_rows
         ) = _calculate_partial_fill_adjusted_required_shares(self.grid_state.rows, open_orders, self.config.ibkr_account_id)
 
-        # Find missing WORKING_BUY rows
-        missing_working_buy_rows = []
-        for row in self.grid_state.rows.values():
-            sheet_buy_order_id = _extract_order_id_from_status(row.status, "WORKING_BUY:")
-            if sheet_buy_order_id:
-                found = any(
-                    str(o.get('order_id')) == sheet_buy_order_id and o.get('action') == 'BUY' and o.get('ticker') == TICKER
-                    and (not self.config.ibkr_account_id or o.get('account') == self.config.ibkr_account_id)
-                    for o in open_orders
-                )
-                if not found:
-                    missing_working_buy_rows.append(row.row_index)
+        # Handle two-snapshot confirmation for missing WORKING_SELL orders
+        missing_sell_ids_this_tick = set()
+        for row_idx in missing_working_sell_rows:
+            row_status = self.grid_state.rows[row_idx].status
+            sell_id = _extract_order_id_from_status(row_status, "WORKING_SELL:")
+            if sell_id and not self.order_manager.is_tracked(sell_id):
+                missing_sell_ids_this_tick.add(sell_id)
 
-        # Self-heal safe recovery conditions
-        # We can self-heal missing/stale WORKING_SELL and WORKING_BUY if:
-        # 1. Broker shares exactly match raw expected tracker shares
-        # 2. There are no invalid/ambiguous partial fills (has_invalid_unreconciled_sell is False)
-        # 3. No unresolved ERROR_RECONCILE_REQUIRED (checked above)
-        # 4. No unmatched external orders (checked above)
+        # Cleanup reappeared or no-longer-relevant missing sells
+        self._missing_sell_confirmations.intersection_update(missing_sell_ids_this_tick)
 
-        has_missing_orders = bool(missing_working_sell_rows) or bool(missing_working_buy_rows)
-        can_self_heal = (
-            broker_shares == tracker_required_shares_raw and
-            total_partial_fill_adjustment == 0 and
-            not has_invalid_unreconciled_sell and
-            has_missing_orders
-        )
+        if missing_sell_ids_this_tick and broker_shares == tracker_required_shares_raw and total_partial_fill_adjustment == 0 and not has_invalid_unreconciled_sell:
+            newly_missing = missing_sell_ids_this_tick - self._missing_sell_confirmations
+            if newly_missing:
+                logger.info(f"First missing snapshot for WORKING_SELL IDs: {newly_missing}. Skipping tick to confirm.")
+                self._missing_sell_confirmations.update(newly_missing)
+                # Ensure we return True to skip the tick (reconciliation changed/pending)
+                return True
+            else:
+                logger.info(f"Second consecutive missing snapshot confirmed for WORKING_SELL IDs: {missing_sell_ids_this_tick}. Bypassing halt to allow replacement.")
+                self._missing_sell_confirmations.difference_update(missing_sell_ids_this_tick)
+                # Clear missing_working_sell_rows so we don't halt below
+                missing_working_sell_rows = []
 
-        if can_self_heal:
-            logger.info(f"Self-healing {len(missing_working_sell_rows)} missing WORKING_SELL and {len(missing_working_buy_rows)} missing WORKING_BUY orders since broker shares ({broker_shares}) exactly matches tracker intent.")
-
-            for row_idx in missing_working_sell_rows:
-                current_status = self.grid_state.rows[row_idx].status
-                new_status = _remove_status_part(current_status, "WORKING_SELL:")
-                self._update_row_status_in_memory(row_idx, new_status)
-
-            for row_idx in missing_working_buy_rows:
-                current_status = self.grid_state.rows[row_idx].status
-                new_status = _remove_status_part(current_status, "WORKING_BUY:")
-                if new_status == "OWNED:0" and "OWNED" not in current_status:
-                    new_status = "IDLE"
-                self._update_row_status_in_memory(row_idx, new_status)
-
-            await self._sync_to_sheet()
-
-            # Transient return so _tick() halts this cycle without freezing the bot
-            return True
-
-        # If there's an invalid unreconciled sell or unresolved missing sells, we must halt immediately.
+        # If there's an invalid unreconciled sell, or un-bypassed missing sells, we must halt immediately.
         # We also halt if broker shares are insufficient to support the claimed rows.
         if has_invalid_unreconciled_sell or missing_working_sell_rows or broker_shares < tracker_required_shares_adjusted:
             effective_required = tracker_required_shares_raw if (has_invalid_unreconciled_sell or missing_working_sell_rows) else tracker_required_shares_adjusted
@@ -1002,7 +979,9 @@ class GridEngine:
                 open_orders_count=len(open_orders),
                 broker_shares=broker_shares
             )
-            return False
+            return
+
+        return False
 
     async def _run_pre_sell_guard(self, requested_qty: int, row_index: int, action: str, open_orders: List[dict], broker_shares: int) -> bool:
         """
@@ -1490,7 +1469,7 @@ class GridEngine:
             missing_working_sell_rows
         ) = _calculate_partial_fill_adjusted_required_shares(self.grid_state.rows, open_orders, self.config.ibkr_account_id)
 
-        if has_invalid_unreconciled_sell or missing_working_sell_rows:
+        if has_invalid_unreconciled_sell:
             msg = f"CIRCUIT BREAKER: Missing or invalid unreconciled WORKING_SELL order detected. Broker: {broker_shares}, Sheet: {sheet_shares} (Raw expected: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}, Open sell remaining: {open_sell_remaining_shares}). Immediate manual reconciliation required."
             logger.critical(msg)
             try:
