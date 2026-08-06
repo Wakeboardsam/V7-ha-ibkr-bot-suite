@@ -606,18 +606,19 @@ async def test_runtime_missing_open_order_halts(engine, mock_broker, mock_sheet)
     })
     engine.order_manager.track(7, OrderResult(order_id="101", status="submitted"), "SELL")
 
-    # Missing order 101
-    mock_broker.get_open_orders.return_value = [{'order_id': '100', 'action': 'SELL', 'ticker': 'TQQQ', 'remaining_qty': 136, 'filled_qty': 0, 'qty': 136, 'limit_price': 78.70}]
+    # Missing order 101, empty open_orders
+    mock_broker.get_open_orders.return_value = []
+    # Position differs from tracker requirement
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     mock_sheet.fetch_grid.return_value = engine.grid_state
 
     # We call _tick instead of _check_reconciliation_and_halt
-    # We need to make sure distal_y_row returns a valid row
     from unittest.mock import patch
     with patch('app.engine.grid_state.GridState.distal_y_row', return_value=7):
         await engine._tick()
 
     assert engine._halted_reconciliation is True
+    assert getattr(engine, '_last_reconciliation_halt', {}).get("code") == "SELL_POSITION_MISMATCH_HALT"
     # Verify no row status update happened to IDLE
     mock_sheet.update_row_status.assert_not_called()
 
@@ -660,20 +661,32 @@ async def test_working_sell_missing_reappears(engine, mock_broker, mock_sheet):
     engine.grid_state = GridState(rows={
         7: GridRow(row_index=7, status="WORKING_SELL:101", has_y=True, sell_price=10.0, buy_price=9.0, shares=101)
     })
+    mock_sheet.fetch_grid.return_value = engine.grid_state
 
     # Tick 1: Missing
-    open_orders = []
-    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    mock_broker.get_open_orders.return_value = []
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 101})
+
+    from unittest.mock import patch, PropertyMock
+    with patch('app.engine.grid_state.GridState.distal_y_row', new_callable=PropertyMock, return_value=7):
+        await engine._tick()
+
     assert engine._halted_reconciliation is False
     assert "101" in engine._missing_sell_confirmations
+    assert not engine.order_manager.is_tracked("101")
+    assert mock_broker.place_limit_order.call_count == 0
 
     # Tick 2: Reappears
-    open_orders = [{'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'status': 'Submitted', 'remaining_qty': 101, 'filled_qty': 0, 'qty': 101, 'limit_price': 10.0}]
-    engine.order_manager.track(7, OrderResult(order_id='101', status='Submitted'), 'SELL')
+    mock_broker.get_open_orders.return_value = [{'order_id': '101', 'action': 'SELL', 'ticker': 'TQQQ', 'status': 'Submitted', 'remaining_qty': 101, 'filled_qty': 0, 'qty': 101, 'limit_price': 10.0}]
 
-    await engine._check_reconciliation_and_halt(open_orders=open_orders, broker_shares=101)
+    with patch('app.engine.grid_state.GridState.distal_y_row', new_callable=PropertyMock, return_value=7):
+        await engine._tick()
+
     assert engine._halted_reconciliation is False
     assert "101" not in engine._missing_sell_confirmations
+    assert engine.order_manager.is_tracked("101")
+    assert engine.grid_state.rows[7].status == "WORKING_SELL:101"
+    assert mock_broker.place_limit_order.call_count == 0
 
 @pytest.mark.asyncio
 async def test_working_buy_missing_and_shares_match(engine, mock_broker, mock_sheet):
@@ -700,14 +713,16 @@ async def test_two_tick_stale_order_recovery(engine, mock_broker, mock_sheet):
     Second _tick() replaces the SELL via _run_pre_sell_guard.
     """
     engine.grid_state = GridState(rows={
-        16: GridRow(row_index=16, status="OWNED:0", has_y=False, sell_price=10.0, buy_price=9.0, shares=1077),
+        16: GridRow(row_index=16, status="WORKING_SELL:456", has_y=True, sell_price=10.0, buy_price=9.0, shares=1077),
         17: GridRow(row_index=17, status="WORKING_SELL:117", has_y=True, sell_price=10.0, buy_price=9.0, shares=46),
     })
+
+    engine.order_manager.track(16, OrderResult(order_id='456', status='submitted'), 'SELL')
 
     mock_sheet.fetch_grid.return_value = engine.grid_state
 
     # First tick: Stale orders missing
-    mock_broker.get_open_orders.return_value = []
+    mock_broker.get_open_orders.return_value = [{'order_id': '456', 'action': 'SELL', 'ticker': 'TQQQ', 'status': 'Submitted', 'remaining_qty': 1077, 'filled_qty': 0, 'qty': 1077, 'limit_price': 10.0}]
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 1123})
 
     from unittest.mock import patch, PropertyMock
@@ -720,9 +735,9 @@ async def test_two_tick_stale_order_recovery(engine, mock_broker, mock_sheet):
     assert "117" in engine._missing_sell_confirmations
 
     # Second tick: Orders get placed
-    mock_broker.get_open_orders.return_value = []
+    mock_broker.get_open_orders.return_value = [{'order_id': '456', 'action': 'SELL', 'ticker': 'TQQQ', 'status': 'Submitted', 'remaining_qty': 1077, 'filled_qty': 0, 'qty': 1077, 'limit_price': 10.0}]
     mock_sheet.fetch_grid.return_value = GridState(rows={
-        16: GridRow(row_index=16, status="OWNED:0", has_y=True, sell_price=10.0, buy_price=9.0, shares=1077),
+        16: GridRow(row_index=16, status="WORKING_SELL:456", has_y=True, sell_price=10.0, buy_price=9.0, shares=1077),
         17: GridRow(row_index=17, status="WORKING_SELL:117", has_y=True, sell_price=10.0, buy_price=9.0, shares=46),
     })
 
@@ -737,7 +752,12 @@ async def test_two_tick_stale_order_recovery(engine, mock_broker, mock_sheet):
             await engine._tick()
 
             assert engine._halted_reconciliation is False
-            assert mock_guard.call_count == 2
-            assert mock_broker.place_limit_order.call_count == 2 # 2 replacement SELLs
+            assert mock_guard.call_count == 1
+            assert mock_broker.place_limit_order.call_count == 1 # exactly 1 replacement SELL
+
+            # verify it's replacing row 17's shares
+            call_args = mock_broker.place_limit_order.call_args[1]
+            assert call_args['qty'] == 46
+
             assert engine.grid_state.rows[17].status == "WORKING_SELL:999"
             assert "117" not in engine._missing_sell_confirmations
