@@ -180,6 +180,9 @@ class GridEngine:
         self._recent_session_cancels: dict[str, datetime] = {}
         self._inflight_session_cancels = 0
         self._missing_sell_confirmations: set[str] = set()
+        self._sheet_status_lock = asyncio.Lock()
+        self._status_revisions = {}
+        self._status_revision_counter = 0
         self._session_cancel_settlement_required = False
 
         # Bridge Anchor states
@@ -688,6 +691,8 @@ class GridEngine:
             # Mirror has_y logic: OWNED or WORKING_SELL or ERROR_RECONCILE_REQUIRED implies we have it
             row.has_y = status.startswith("OWNED:") or status.startswith("WORKING_SELL:") or status.startswith("ERROR_RECONCILE_REQUIRED")
 
+        self._status_revision_counter += 1
+        self._status_revisions[row_index] = self._status_revision_counter
         self.pending_status_updates[row_index] = status
         logger.debug(f"Queued status update for row {row_index}: {status}")
 
@@ -696,22 +701,84 @@ class GridEngine:
         Attempts to write all pending status updates to the Google Sheet.
         Successfully written updates are removed from the queue.
         """
-        if not self.pending_status_updates:
-            return
+        async with self._sheet_status_lock:
+            while self.pending_status_updates:
+                updates = self.pending_status_updates.copy()
+                revisions_at_capture = {r: self._status_revisions.get(r, 0) for r in updates}
 
-        logger.info(f"Syncing {len(self.pending_status_updates)} pending status updates to sheet...")
-        # Create a copy to iterate over while potentially modifying the original
-        to_sync = list(self.pending_status_updates.items())
+                # Update in batches to respect rate limits if needed (currently sequential)
+                for row, status in updates.items():
+                    try:
+                        await self.sheet.update_row_status(row, status)
+                        logger.info(f"Successfully synced status for row {row} to sheet: {status}")
 
-        for row_index, status in to_sync:
-            try:
-                await self.sheet.update_row_status(row_index, status)
-                # If successful, remove from pending
-                if self.pending_status_updates.get(row_index) == status:
-                    del self.pending_status_updates[row_index]
-            except Exception as e:
-                logger.error(f"Failed to sync status for row {row_index} to sheet: {e}")
-                # We leave it in pending_status_updates to retry next time
+                        # Remove tracking revisions and queued intent on success if unmodified
+                        if self._status_revisions.get(row, 0) == revisions_at_capture[row]:
+                            self.pending_status_updates.pop(row, None)
+                            self._status_revisions.pop(row, None)
+                    except Exception as e:
+                        logger.error(f"Failed to sync status for row {row} to sheet: {e}")
+                        # Keep it pending if it failed, will retry next drain iteration unless overwritten
+                        return
+
+    def _correct_stale_tracker_rows(self, open_orders: List[dict], physical_statuses: dict):
+        if not self.grid_state:
+            return False
+
+        has_corrections = False
+        for o in open_orders:
+            ticker = o.get('ticker', '')
+            if ticker != TICKER:
+                continue
+
+            oid = str(o.get('order_id', ''))
+            if not oid:
+                continue
+
+            broker_action = o.get('action')
+            if broker_action not in ("BUY", "SELL"):
+                continue
+
+            if not self.order_manager.is_tracked(oid):
+                continue
+
+            res = self.order_manager.get_row_and_action(oid)
+            if res is None:
+                continue
+
+            row_idx, tracked_action = res
+
+            if tracked_action != broker_action:
+                continue
+
+            if row_idx not in self.grid_state.rows:
+                continue
+
+            # Skip if row already has pending intent overriding the physical status
+            if row_idx in self.pending_status_updates:
+                continue
+
+            physical_status = physical_statuses.get(row_idx, "")
+
+            # Skip rows with special active or error conditions
+            if physical_status.startswith("ERROR_") or "BRIDGE" in physical_status or "TRIM" in physical_status:
+                continue
+
+            has_order_physically = False
+            expected_prefix = f"WORKING_{broker_action}"
+            for part in physical_status.split('|'):
+                if part == f"{expected_prefix}:{oid}":
+                    has_order_physically = True
+                    break
+
+            if not has_order_physically:
+                expected_status = f"{expected_prefix}:{oid}"
+                logger.warning(f"Tracker row {row_idx} physical status ({physical_status}) stale. Active {broker_action} order {oid} is tracked. Queueing correction to {expected_status}.")
+                self._update_row_status_in_memory(row_idx, expected_status)
+                has_corrections = True
+
+        return has_corrections
+
 
     async def _check_daily_grid_regeneration(self) -> bool:
         """
