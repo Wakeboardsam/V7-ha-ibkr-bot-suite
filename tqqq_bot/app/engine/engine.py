@@ -691,6 +691,8 @@ class GridEngine:
             # Mirror has_y logic: OWNED or WORKING_SELL or ERROR_RECONCILE_REQUIRED implies we have it
             row.has_y = status.startswith("OWNED:") or status.startswith("WORKING_SELL:") or status.startswith("ERROR_RECONCILE_REQUIRED")
 
+        self._status_revision_counter += 1
+        self._status_revisions[row_index] = self._status_revision_counter
         self.pending_status_updates[row_index] = status
         logger.debug(f"Queued status update for row {row_index}: {status}")
 

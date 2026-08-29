@@ -1,8 +1,10 @@
 import pytest
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, patch
 from app.engine.engine import GridEngine
 from app.config.schema import AppConfig
 from app.sheets.interface import GridRow, GridState
+from brokers.base import PositionSnapshot
 
 @pytest.mark.asyncio
 async def test_latest_write_wins_sync():
@@ -13,42 +15,30 @@ async def test_latest_write_wins_sync():
     engine = GridEngine(mock_broker, mock_sheet, config)
     engine.grid_state = GridState(rows={10: GridRow(row_index=10, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
 
-    async def slow_update_fail(row, status):
-        raise Exception("simulated failure")
+    pause_event = asyncio.Event()
 
-    mock_sheet.update_row_status.side_effect = slow_update_fail
+    async def slow_update_row_status(row, status):
+        if status == "WORKING_BUY:111":
+            await pause_event.wait()
+            raise Exception("simulated failure")
 
-    # First update
+    mock_sheet.update_row_status.side_effect = slow_update_row_status
+
     engine._update_row_status_in_memory(10, "WORKING_BUY:111")
 
-    # Sync fails, keeps it pending
-    await engine._sync_to_sheet()
+    task = asyncio.create_task(engine._sync_to_sheet())
+    await asyncio.sleep(0.01)
 
-    assert 10 in engine.pending_status_updates
-    assert engine.pending_status_updates[10] == "WORKING_BUY:111"
-
-    # Newest update
-    engine._update_row_status_in_memory(10, "WORKING_SELL:222")
-
-    # Manually test the logic inside _sync_to_sheet to simulate concurrency
-    updates = engine.pending_status_updates.copy()
-    revisions_at_capture = {r: engine._status_revisions.get(r, 0) for r in updates}
-
-    # Simulate a newer update coming in while writing
     engine._update_row_status_in_memory(10, "IDLE")
 
-    for row, status in updates.items():
-        try:
-            await engine.sheet.update_row_status(row, status)
-            if engine._status_revisions.get(row, 0) == revisions_at_capture[row]:
-                engine.pending_status_updates.pop(row, None)
-                engine._status_revisions.pop(row, None)
-        except Exception:
-            pass # Keep in pending_status_updates if it failed
+    pause_event.set()
+    await task
 
-    # Since IDLE is newer, it should still be in pending_status_updates and NOT WORKING_SELL
-    assert 10 in engine.pending_status_updates
-    assert engine.pending_status_updates[10] == "IDLE"
+    await engine._sync_to_sheet()
+
+    assert len(engine.pending_status_updates) == 0
+    mock_sheet.update_row_status.assert_called_with(10, "IDLE")
+
 
 @pytest.mark.asyncio
 async def test_reconciliation_generic_stale_row():
@@ -62,23 +52,33 @@ async def test_reconciliation_generic_stale_row():
         11: GridRow(row_index=11, status="OWNED:555", has_y=True, sell_price=105.0, buy_price=100.0, shares=10)
     })
 
-    # Track orders internally
+    # We must patch the order manager internally properly to be "tracked"
     engine.order_manager._order_map["111"] = (10, "BUY")
     engine.order_manager._order_map["222"] = (11, "SELL")
 
-    open_orders = [
-        {'order_id': '111', 'action': 'BUY', 'ticker': 'TQQQ'},
-        {'order_id': '222', 'action': 'SELL', 'ticker': 'TQQQ'}
+    mock_broker.get_open_orders.return_value = [
+        {'order_id': '111', 'action': 'BUY', 'ticker': 'TQQQ', 'status': 'PreSubmitted'},
+        {'order_id': '222', 'action': 'SELL', 'ticker': 'TQQQ', 'status': 'PreSubmitted'}
     ]
 
-    physical_statuses = {
-        10: "IDLE", # Stale, missing BUY
-        11: "WORKING_SELL:222" # Correct
-    }
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
+    mock_broker.get_wallet_balance.return_value = 100000.0
+    mock_broker.get_bid_ask.return_value = (100.0, 101.0)
 
-    engine._correct_stale_tracker_rows(open_orders, physical_statuses)
+    mock_sheet.fetch_grid.return_value = engine.grid_state
 
-    assert 10 in engine.pending_status_updates
-    assert engine.pending_status_updates[10] == "WORKING_BUY:111"
+    with patch.object(engine, '_check_reconciliation_and_halt', new_callable=AsyncMock, return_value=False):
+        # We manually process the subset of what tick does up to _sync_to_sheet to bypass executing full grid mechanics that error out without other setup mocks
+        open_orders = mock_broker.get_open_orders.return_value
+        physical_statuses = {
+            10: "IDLE", # Stale, missing BUY
+            11: "WORKING_SELL:222" # Correct
+        }
+        has_corrections = engine._correct_stale_tracker_rows(open_orders, physical_statuses)
+        if has_corrections:
+            await engine._sync_to_sheet()
 
-    assert 11 not in engine.pending_status_updates
+
+    mock_sheet.update_row_status.assert_called_with(10, "WORKING_BUY:111")
+
+    mock_broker.place_limit_order.assert_not_called()
