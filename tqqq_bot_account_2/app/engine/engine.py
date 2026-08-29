@@ -180,6 +180,9 @@ class GridEngine:
         self._recent_session_cancels: dict[str, datetime] = {}
         self._inflight_session_cancels = 0
         self._missing_sell_confirmations: set[str] = set()
+        self._sheet_status_lock = asyncio.Lock()
+        self._status_revisions = {}
+        self._status_revision_counter = 0
         self._session_cancel_settlement_required = False
 
         # Bridge Anchor states
@@ -712,6 +715,60 @@ class GridEngine:
             except Exception as e:
                 logger.error(f"Failed to sync status for row {row_index} to sheet: {e}")
                 # We leave it in pending_status_updates to retry next time
+
+    def _correct_stale_tracker_rows(self, open_orders: List[dict], physical_statuses: dict):
+        if not self.grid_state:
+            return False
+
+        has_corrections = False
+        for o in open_orders:
+            ticker = o.get('ticker', '')
+            if ticker != TICKER:
+                continue
+
+            oid = str(o.get('order_id', ''))
+            action = o.get('action')
+
+            if action not in ("BUY", "SELL"):
+                continue
+
+            if not self.order_manager.is_tracked(oid):
+                continue
+
+            res = self.order_manager.get_row_and_action(oid)
+            if res is None:
+                continue
+
+            row_idx, _ = res
+
+            if row_idx not in self.grid_state.rows:
+                continue
+
+            # Skip if row already has pending intent overriding the physical status
+            if row_idx in self.pending_status_updates:
+                continue
+
+            physical_status = physical_statuses.get(row_idx, "")
+
+            # Skip rows with special active or error conditions
+            if physical_status.startswith("ERROR_") or "BRIDGE" in physical_status or "TRIM" in physical_status:
+                continue
+
+            has_order_physically = False
+            expected_prefix = f"WORKING_{action}"
+            for part in physical_status.split('|'):
+                if part == f"{expected_prefix}:{oid}":
+                    has_order_physically = True
+                    break
+
+            if not has_order_physically:
+                expected_status = f"{expected_prefix}:{oid}"
+                logger.warning(f"Tracker row {row_idx} physical status ({physical_status}) stale. Active {action} order {oid} is tracked. Queueing correction to {expected_status}.")
+                self._update_row_status_in_memory(row_idx, expected_status)
+                has_corrections = True
+
+        return has_corrections
+
 
     async def _check_daily_grid_regeneration(self) -> bool:
         """
