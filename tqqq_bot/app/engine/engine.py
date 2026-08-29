@@ -699,22 +699,25 @@ class GridEngine:
         Attempts to write all pending status updates to the Google Sheet.
         Successfully written updates are removed from the queue.
         """
-        if not self.pending_status_updates:
-            return
+        async with self._sheet_status_lock:
+            while self.pending_status_updates:
+                updates = self.pending_status_updates.copy()
+                revisions_at_capture = {r: self._status_revisions.get(r, 0) for r in updates}
 
-        logger.info(f"Syncing {len(self.pending_status_updates)} pending status updates to sheet...")
-        # Create a copy to iterate over while potentially modifying the original
-        to_sync = list(self.pending_status_updates.items())
+                # Update in batches to respect rate limits if needed (currently sequential)
+                for row, status in updates.items():
+                    try:
+                        await self.sheet.update_row_status(row, status)
+                        logger.info(f"Successfully synced status for row {row} to sheet: {status}")
 
-        for row_index, status in to_sync:
-            try:
-                await self.sheet.update_row_status(row_index, status)
-                # If successful, remove from pending
-                if self.pending_status_updates.get(row_index) == status:
-                    del self.pending_status_updates[row_index]
-            except Exception as e:
-                logger.error(f"Failed to sync status for row {row_index} to sheet: {e}")
-                # We leave it in pending_status_updates to retry next time
+                        # Remove tracking revisions and queued intent on success if unmodified
+                        if self._status_revisions.get(row, 0) == revisions_at_capture[row]:
+                            self.pending_status_updates.pop(row, None)
+                            self._status_revisions.pop(row, None)
+                    except Exception as e:
+                        logger.error(f"Failed to sync status for row {row} to sheet: {e}")
+                        # Keep it pending if it failed, will retry next drain iteration unless overwritten
+                        return
 
     def _correct_stale_tracker_rows(self, open_orders: List[dict], physical_statuses: dict):
         if not self.grid_state:
@@ -727,9 +730,11 @@ class GridEngine:
                 continue
 
             oid = str(o.get('order_id', ''))
-            action = o.get('action')
+            if not oid:
+                continue
 
-            if action not in ("BUY", "SELL"):
+            broker_action = o.get('action')
+            if broker_action not in ("BUY", "SELL"):
                 continue
 
             if not self.order_manager.is_tracked(oid):
@@ -739,7 +744,10 @@ class GridEngine:
             if res is None:
                 continue
 
-            row_idx, _ = res
+            row_idx, tracked_action = res
+
+            if tracked_action != broker_action:
+                continue
 
             if row_idx not in self.grid_state.rows:
                 continue
@@ -755,7 +763,7 @@ class GridEngine:
                 continue
 
             has_order_physically = False
-            expected_prefix = f"WORKING_{action}"
+            expected_prefix = f"WORKING_{broker_action}"
             for part in physical_status.split('|'):
                 if part == f"{expected_prefix}:{oid}":
                     has_order_physically = True
@@ -763,7 +771,7 @@ class GridEngine:
 
             if not has_order_physically:
                 expected_status = f"{expected_prefix}:{oid}"
-                logger.warning(f"Tracker row {row_idx} physical status ({physical_status}) stale. Active {action} order {oid} is tracked. Queueing correction to {expected_status}.")
+                logger.warning(f"Tracker row {row_idx} physical status ({physical_status}) stale. Active {broker_action} order {oid} is tracked. Queueing correction to {expected_status}.")
                 self._update_row_status_in_memory(row_idx, expected_status)
                 has_corrections = True
 
