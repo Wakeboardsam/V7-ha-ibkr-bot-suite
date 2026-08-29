@@ -170,6 +170,9 @@ class GridEngine:
         self.last_fill_time: Optional[datetime] = None
         self.last_broker_shares = 0
         self.pending_status_updates: dict[int, str] = {}
+        self._sheet_status_lock = asyncio.Lock()
+        self._status_revisions: dict[int, int] = {}
+        self._status_revision_counter = 0
         self.row_cooldowns: dict[int, datetime] = {}
         self._shutdown_event = asyncio.Event()
         tz = zoneinfo.ZoneInfo("America/New_York")
@@ -685,33 +688,151 @@ class GridEngine:
         if self.grid_state and row_index in self.grid_state.rows:
             row = self.grid_state.rows[row_index]
             row.status = status
-            # Mirror has_y logic: OWNED or WORKING_SELL or ERROR_RECONCILE_REQUIRED implies we have it
-            row.has_y = status.startswith("OWNED:") or status.startswith("WORKING_SELL:") or status.startswith("ERROR_RECONCILE_REQUIRED")
+            row.has_y = (
+                status.startswith("OWNED:")
+                or status.startswith("WORKING_SELL:")
+                or status.startswith("ERROR_RECONCILE_REQUIRED")
+            )
 
+        self._status_revision_counter += 1
         self.pending_status_updates[row_index] = status
-        logger.debug(f"Queued status update for row {row_index}: {status}")
+        self._status_revisions[row_index] = self._status_revision_counter
+        logger.debug(
+            f"Queued status update for row {row_index} at revision "
+            f"{self._status_revision_counter}: {status}"
+        )
 
     async def _sync_to_sheet(self):
         """
-        Attempts to write all pending status updates to the Google Sheet.
-        Successfully written updates are removed from the queue.
+        Serialize physical Tracker status writes and drain the newest pending
+        revision for every row.
         """
-        if not self.pending_status_updates:
-            return
+        async with self._sheet_status_lock:
+            while self.pending_status_updates:
+                to_sync = [
+                    (
+                        row_index,
+                        status,
+                        self._status_revisions.get(row_index),
+                    )
+                    for row_index, status in self.pending_status_updates.items()
+                ]
 
-        logger.info(f"Syncing {len(self.pending_status_updates)} pending status updates to sheet...")
-        # Create a copy to iterate over while potentially modifying the original
-        to_sync = list(self.pending_status_updates.items())
+                logger.info(
+                    f"Syncing {len(to_sync)} pending status updates to sheet..."
+                )
 
-        for row_index, status in to_sync:
-            try:
-                await self.sheet.update_row_status(row_index, status)
-                # If successful, remove from pending
-                if self.pending_status_updates.get(row_index) == status:
-                    del self.pending_status_updates[row_index]
-            except Exception as e:
-                logger.error(f"Failed to sync status for row {row_index} to sheet: {e}")
-                # We leave it in pending_status_updates to retry next time
+                for row_index, status, revision in to_sync:
+                    # Another row write may have awaited Google Sheets, allowing a
+                    # newer value for this row to be queued. Do not issue a physical
+                    # write for a stale captured revision.
+                    if (
+                        self.pending_status_updates.get(row_index) != status
+                        or self._status_revisions.get(row_index) != revision
+                    ):
+                        continue
+
+                    try:
+                        await self.sheet.update_row_status(row_index, status)
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to sync status for row {row_index} "
+                            f"at revision {revision}: {e}"
+                        )
+                        # Preserve whichever revision is currently newest.
+                        # A waiting sync task or a later tick will retry it.
+                        return
+
+                    # A newer status can be queued while the physical write above
+                    # is awaiting Google Sheets. Remove only the exact status and
+                    # revision that were successfully written.
+                    if (
+                        self.pending_status_updates.get(row_index) == status
+                        and self._status_revisions.get(row_index) == revision
+                    ):
+                        self.pending_status_updates.pop(row_index, None)
+                        self._status_revisions.pop(row_index, None)
+                        logger.info(
+                            f"Successfully synced status for row {row_index} "
+                            f"at revision {revision}: {status}"
+                        )
+
+    def _correct_stale_tracker_rows(
+        self,
+        open_orders: List[dict],
+        physical_status_by_row: Dict[int, str],
+    ) -> bool:
+        """
+        Queue Tracker status repairs only for active broker orders already
+        recognized by this running GridEngine's OrderManager.
+        """
+        if not self.grid_state:
+            return False
+
+        correction_queued = False
+
+        for order in open_orders:
+            if str(order.get("ticker", "")).upper() != TICKER:
+                continue
+
+            order_id = str(order.get("order_id", "")).strip()
+            broker_action = str(order.get("action", "")).upper()
+
+            if not order_id or broker_action not in ("BUY", "SELL"):
+                continue
+
+            # Never adopt an unknown/manual broker order.
+            if not self.order_manager.is_tracked(order_id):
+                continue
+
+            row_index, tracked_action = self.order_manager.get_row_and_action(order_id)
+
+            if row_index is None:
+                continue
+
+            if str(tracked_action).upper() != broker_action:
+                continue
+
+            if row_index not in self.grid_state.rows:
+                continue
+
+            # Pending local state is newer than the physical snapshot.
+            if row_index in self.pending_status_updates:
+                continue
+
+            physical_status = str(
+                physical_status_by_row.get(row_index, "IDLE") or "IDLE"
+            )
+
+            physical_parts = {
+                part.strip()
+                for part in physical_status.split("|")
+                if part.strip()
+            }
+
+            expected_status = f"WORKING_{broker_action}:{order_id}"
+
+            if expected_status in physical_parts:
+                continue
+
+            # Bridge, trim, and error rows have separate safety behavior.
+            if (
+                physical_status.startswith("ERROR_")
+                or any(part.startswith("BRIDGE_BUY:") for part in physical_parts)
+                or any(part.startswith("TRIM_SELL:") for part in physical_parts)
+            ):
+                continue
+
+            logger.warning(
+                f"Correcting stale physical Tracker row {row_index}: "
+                f"'{physical_status}' -> '{expected_status}' for recognized "
+                f"active broker order {order_id}."
+            )
+
+            self._update_row_status_in_memory(row_index, expected_status)
+            correction_queued = True
+
+        return correction_queued
 
     async def _check_daily_grid_regeneration(self) -> bool:
         """
@@ -1227,6 +1348,13 @@ class GridEngine:
         if not self.grid_state:
             return
 
+        # Preserve exactly what Google Sheets returned before pending local
+        # updates are overlaid onto self.grid_state below.
+        physical_status_by_row = {
+            row_index: row.status
+            for row_index, row in self.grid_state.rows.items()
+        }
+
         # 1.1 Reconcile with pending updates
         # If we have a pending update that hasn't hit the sheet yet, use it locally
         for row_index, pending_status in self.pending_status_updates.items():
@@ -1254,6 +1382,13 @@ class GridEngine:
         if self._session_cancel_settlement_required:
             logger.info("Skipping reconciliation and tick evaluation: one settlement tick required after session boundary verifications.")
             self._session_cancel_settlement_required = False
+            return
+
+        # Repair only a clerical Tracker mismatch for an order this running
+        # engine already recognizes. Persist it and stop this tick before
+        # reconciliation or placement can act on the stale physical cell.
+        if self._correct_stale_tracker_rows(open_orders, physical_status_by_row):
+            await self._sync_to_sheet()
             return
 
         # 1.3 Startup / early reconciliation halt checks
