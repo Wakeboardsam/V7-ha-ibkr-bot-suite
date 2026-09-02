@@ -135,6 +135,45 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["row_id"], "7")
         self.assertEqual(item["type"], "BUY")
 
+    async def test_fills_worker_appends_with_formulas_and_user_entered(self):
+        # Setup mock worksheet
+        mock_worksheet = MagicMock()
+        mock_worksheet.get_values.return_value = [["Header"]] # Not empty, prevents headers append
+        self.mock_sheet.worksheet.return_value = mock_worksheet
+
+        # Setup specific exec_id as requested
+        fill_data = {
+            "exec_id": "0001051b.6a97c92c.01.01",
+            "row_id": "7",
+            "type": "SELL",
+            "filled_price": 100.0,
+            "filled_qty": 10,
+            "order_id": "ORDER-456",
+            "perm_id": "PERM2",
+            "symbol": "TQQQ"
+        }
+
+        await self.interface.log_fill(fill_data)
+
+        # Start worker and wait slightly to process queue, then stop it
+        await self.interface.start_fill_worker()
+        await asyncio.sleep(0.1)
+        await self.interface.stop_fill_worker()
+
+        # Verify call to append_row
+        mock_worksheet.append_row.assert_called_once()
+        args, kwargs = mock_worksheet.append_row.call_args
+
+        # Verify value_input_option was set correctly
+        self.assertEqual(kwargs.get("value_input_option"), "USER_ENTERED")
+
+        # Verify row contents
+        appended_row = args[0]
+        self.assertEqual(len(appended_row), 11) # Should contain 11 values now
+        self.assertEqual(appended_row[1], "0001051b.6a97c92c.01.01") # EXEC_ID
+        self.assertEqual(appended_row[9], '=IF(INDEX(C:C,ROW())="","",INDEX(C:C,ROW())-7)') # Level
+        self.assertEqual(appended_row[10], '=IF(ISNUMBER(SEARCH("sell",INDEX(D:D,ROW()))),(INDEX(F:F,ROW())*INDEX(E:E,ROW()))*TQQQ_Tracker!H3,"")') # Profit
+
     async def test_log_error_success(self):
         mock_worksheet = MagicMock()
         mock_worksheet.get_values.return_value = [["Header"]] # Not empty
