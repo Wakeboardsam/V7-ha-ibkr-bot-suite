@@ -183,8 +183,9 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result)
         mock_worksheet.append_row.assert_called_once()
-        args = mock_worksheet.append_row.call_args[0][0]
-        self.assertEqual(args[7], "Test error") # Details column is at index 7
+        args, kwargs = mock_worksheet.append_row.call_args
+        self.assertEqual(kwargs.get("value_input_option"), "RAW")
+        self.assertEqual(args[0][7], "Test error") # Details column is at index 7
 
     async def test_log_error_structured(self):
         mock_worksheet = MagicMock()
@@ -292,6 +293,7 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         result = await self.interface.log_health(health_data)
         self.assertTrue(result)
 
-        args = mock_worksheet.append_row.call_args[0][0]
-        self.assertEqual(len(args), 20)
-        self.assertEqual(args[9], 12345.67)
+        args, kwargs = mock_worksheet.append_row.call_args
+        self.assertEqual(kwargs.get("value_input_option"), "RAW")
+        self.assertEqual(len(args[0]), 20)
+        self.assertEqual(args[0][9], 12345.67)
