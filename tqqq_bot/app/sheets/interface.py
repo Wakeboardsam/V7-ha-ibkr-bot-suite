@@ -226,7 +226,7 @@ class SheetInterface:
             logger.error(f"Failed to log health status: {e}")
             return False
 
-    def _append_row_with_guard(self, worksheet_name: str, row_data: list, expected_headers: list = None):
+    def _append_row_with_guard(self, worksheet_name: str, row_data: list, expected_headers: list = None, value_input_option: str = "RAW"):
         """Guarded append method to ensure only approved tabs are appended to."""
         if worksheet_name not in [FILLS_TAB_NAME, HEALTH_TAB_NAME, ERRORS_TAB_NAME]:
             raise ValueError(f"Unauthorized append attempt to {worksheet_name}")
@@ -238,10 +238,10 @@ class SheetInterface:
                 # Check if empty (no headers)
                 first_cell = worksheet.get_values("A1:A1")
                 if not first_cell and expected_headers:
-                    worksheet.append_row(expected_headers)
+                    worksheet.append_row(expected_headers, value_input_option="RAW")
                 self._verified_tabs.add(worksheet_name)
 
-            worksheet.append_row(row_data)
+            worksheet.append_row(row_data, value_input_option=value_input_option)
         except gspread.exceptions.WorksheetNotFound:
             logger.error(f"Worksheet '{worksheet_name}' not found in the spreadsheet.")
             raise
@@ -314,7 +314,7 @@ class SheetInterface:
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # TIMESTAMP, EXEC_ID, ROW_ID, TYPE, FILLED_PRICE, FILLED_QTY, ORDER_ID, PERM_ID, SYMBOL
+                # TIMESTAMP, EXEC_ID, ROW_ID, TYPE, FILLED_PRICE, FILLED_QTY, ORDER_ID, PERM_ID, SYMBOL, LEVEL, PROFIT
                 row = [
                     timestamp,
                     fill_data.get("exec_id", ""),
@@ -324,7 +324,9 @@ class SheetInterface:
                     fill_data.get("filled_qty", ""),
                     fill_data.get("order_id", ""),
                     fill_data.get("perm_id", ""),
-                    fill_data.get("symbol", "")
+                    fill_data.get("symbol", ""),
+                    '=IF(INDEX(C:C,ROW())="","",INDEX(C:C,ROW())-7)',
+                    '=IF(ISNUMBER(SEARCH("sell",INDEX(D:D,ROW()))),(INDEX(F:F,ROW())*INDEX(E:E,ROW()))*TQQQ_Tracker!H3,"")'
                 ]
 
                 max_retries = 3
@@ -333,7 +335,7 @@ class SheetInterface:
 
                 for attempt in range(max_retries):
                     try:
-                        await asyncio.to_thread(self._append_row_with_guard, FILLS_TAB_NAME, row, FILLS_HEADERS)
+                        await asyncio.to_thread(self._append_row_with_guard, FILLS_TAB_NAME, row, FILLS_HEADERS, value_input_option="USER_ENTERED")
                         success = True
                         break
                     except Exception as e:
