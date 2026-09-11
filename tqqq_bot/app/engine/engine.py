@@ -207,7 +207,14 @@ class GridEngine:
             "action": action,
             "timestamp": datetime.now()
         }
-        return await self.broker.cancel_order(oid)
+        try:
+            success = await self.broker.cancel_order(oid)
+            if not success:
+                self._bot_initiated_cancel_ids.pop(str(oid), None)
+            return success
+        except Exception:
+            self._bot_initiated_cancel_ids.pop(str(oid), None)
+            raise
 
     async def _halt_for_reconciliation_error(
         self,
@@ -1375,6 +1382,32 @@ class GridEngine:
         open_orders = await self.broker.get_open_orders()
         broker_order_ids = {str(o['order_id']) for o in open_orders}
 
+        # Pre-callback barrier for session boundary cancellations
+        pending_boundary_cancels = [
+            oid for oid, intent in self._bot_initiated_cancel_ids.items()
+            if intent.get("reason") == "stale_session_boundary_cleanup"
+        ]
+        if pending_boundary_cancels:
+            # Check for timeout
+            for oid in pending_boundary_cancels:
+                intent = self._bot_initiated_cancel_ids[oid]
+                age = (datetime.now() - intent["timestamp"]).total_seconds()
+                if age > 900:
+                    logger.critical(f"Pending session boundary cancel for order {oid} exceeded 15 minutes. Halting.")
+                    self._halted_reconciliation = True
+                    await self._halt_for_reconciliation_error(
+                        code="SESSION_BOUNDARY_CANCEL_TIMEOUT_HALT",
+                        symbol=TICKER,
+                        row=intent.get("row", "UNKNOWN"),
+                        action=intent.get("action", "UNKNOWN"),
+                        details=f"Session boundary cancellation for orders {pending_boundary_cancels} exceeded 15 minutes without a callback.",
+                        severity="CRITICAL"
+                    )
+                    return
+
+            logger.info(f"Skipping reconciliation and tick evaluation: waiting for session-boundary cancellation callbacks for orders {pending_boundary_cancels}.")
+            return
+
         # Settlement gate for session boundary cancellations
         if self._inflight_session_cancels > 0:
             logger.info(f"Skipping reconciliation and tick evaluation: {self._inflight_session_cancels} session cancellation verifications in flight.")
@@ -2171,12 +2204,15 @@ class GridEngine:
     def _handle_order_update(self, result: OrderResult):
         order_id = result.order_id
 
-        # Pop cancel intent if any (expire if older than 15 mins)
-        cancel_intent = self._bot_initiated_cancel_ids.pop(str(order_id), None)
+        # Get cancel intent if any (expire if older than 15 mins)
+        cancel_intent = self._bot_initiated_cancel_ids.get(str(order_id))
         if cancel_intent:
             age = datetime.now() - cancel_intent.get("timestamp", datetime.min)
             if age.total_seconds() > 900:
                 cancel_intent = None
+
+        if result.status in ('filled', 'cancelled', 'error'):
+            self._bot_initiated_cancel_ids.pop(str(order_id), None)
 
         import asyncio
         if result.status == 'filled':
@@ -2355,7 +2391,14 @@ class GridEngine:
                             is_unexpected_sell_drop = True
 
                 # Check for session boundary cancellation (IBKR OVERNIGHT -> premarket cutoff)
-                if self._is_session_boundary() and result.status == 'cancelled':
+                is_boundary_cancel = False
+                if result.status == 'cancelled':
+                    if self._is_session_boundary():
+                        is_boundary_cancel = True
+                    elif cancel_intent is not None and cancel_intent.get("reason") == "stale_session_boundary_cleanup":
+                        is_boundary_cancel = True
+
+                if is_boundary_cancel:
                     if action in ('SELL', 'TRIM_SELL') and is_unexpected_sell_drop:
                         logger.info(f"Session boundary SELL cancel detected for order {order_id} (row {row_index}). Scheduling async verification.")
                         # Do not halt synchronously. Delegate to async helper.
@@ -2386,6 +2429,7 @@ class GridEngine:
 
                         self._update_row_status_in_memory(row_index, new_status)
                         asyncio.create_task(self._sync_to_sheet())
+                        self._session_cancel_settlement_required = True
                         return
 
                 # Apply bot-initiated cancel exception

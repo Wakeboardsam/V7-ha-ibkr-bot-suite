@@ -200,10 +200,11 @@ async def test_boundary_sell_cancel_snapshot_partial(engine):
         engine._safe_async_halt.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_settlement_gate_blocks_tick_while_inflight(engine):
+async def test_settlement_gate_blocks_tick_while_inflight(engine, mock_sheet):
     # Ensure grid_state exists so it doesn't return early due to missing grid_state
     if not engine.grid_state:
         engine.grid_state = GridState(rows={})
+    mock_sheet.fetch_grid.return_value = engine.grid_state
 
     # Set the counter to simulate an in-flight async verification
     engine._inflight_session_cancels = 1
