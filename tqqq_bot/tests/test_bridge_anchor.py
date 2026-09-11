@@ -325,7 +325,9 @@ async def test_bridge_anchor_failed_cancel_halts(mock_broker, mock_sheet, config
 
     assert engine._halted_reconciliation is True
     assert engine._bridge_state == 'BRIDGE_HALTED'
-    assert "ORD-BRIDGE" in engine._bot_initiated_cancel_ids
+
+    # The intent should NOT be present if cancel failed and we removed it immediately
+    assert "ORD-BRIDGE" not in engine._bot_initiated_cancel_ids
 
     # Check it actually logged the error
     # We must await the sleep slightly to let the halt task fire
