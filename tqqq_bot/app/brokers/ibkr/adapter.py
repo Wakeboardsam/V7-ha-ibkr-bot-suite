@@ -387,9 +387,9 @@ class IBKRAdapter(BrokerBase):
         """
         return str(self.ib.client.getReqId())
 
-    async def get_wallet_balance(self) -> float:
+    async def get_wallet_balance(self) -> Optional[float]:
         """
-        Returns the USD balance from the selected conservative account tag.
+        Returns the TOTAL USD cash balance from the selected account tag.
         """
         try:
             account_values = self.ib.accountValues()
@@ -398,39 +398,40 @@ class IBKRAdapter(BrokerBase):
 
             if not account_values:
                 logger.error("API call returned empty — possible Gateway auth or subscription issue")
-                return 0.0
+                return None
 
             # Filter for USD only
             usd_values = [v for v in account_values if v.currency == 'USD']
 
             if not self._selected_cash_tag:
-                # 1. Search for "Settled" (case-insensitive)
-                settled_tag = next((v.tag for v in usd_values if "settled" in v.tag.lower()), None)
-                if settled_tag:
-                    self._selected_cash_tag = settled_tag
-                else:
-                    # 2. Fallback to confirmed tags
-                    for fallback in ["TotalCashValue", "TotalCashBalance"]:
-                        if any(v.tag == fallback for v in usd_values):
-                            self._selected_cash_tag = fallback
-                            break
+                # 1. Prefer TotalCashValue
+                for fallback in ["TotalCashValue", "TotalCashBalance"]:
+                    if any(v.tag == fallback for v in usd_values):
+                        self._selected_cash_tag = fallback
+                        break
 
                 if self._selected_cash_tag:
-                    logger.info(f"Selected IBKR cash field: {self._selected_cash_tag}")
+                    logger.info(f"Selected IBKR total cash field: {self._selected_cash_tag}")
                 else:
                     available_tags = [v.tag for v in usd_values]
-                    logger.warning(f"No preferred conservative cash tags found. Available USD tags: {available_tags}")
-                    return 0.0
+                    logger.warning(f"No preferred total cash tags (TotalCashValue, TotalCashBalance) found. Available USD tags: {available_tags}")
+                    return None
 
             # Retrieve value for the selected tag
             balance_entry = next((v for v in usd_values if v.tag == self._selected_cash_tag), None)
             if balance_entry:
-                return float(balance_entry.value)
+                import math
+                val = float(balance_entry.value)
+                if not math.isfinite(val):
+                    logger.warning(f"Total cash field {self._selected_cash_tag} returned non-finite value: {val}")
+                    return None
+                return val
 
-            return 0.0
+            logger.warning(f"Previously selected total cash field {self._selected_cash_tag} is no longer available in account values.")
+            return None
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
-            return 0.0
+            return None
 
     async def get_net_liquidation_value(self) -> Optional[float]:
         """

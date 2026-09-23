@@ -1449,10 +1449,14 @@ class GridEngine:
         # 0.1 Diagnostic: fetch balance and price
         try:
             balance = await self.broker.get_wallet_balance()
-            await self.sheet.write_cash_value(balance)
+            if balance is not None:
+                await self.sheet.write_cash_value(balance)
+            else:
+                logger.warning("Total cash balance is unavailable. Skipping cash value write for this tick.")
+
             price = await self.broker.get_price(TICKER)
             self.last_price = price
-            if balance == 0 or price == 0:
+            if price == 0:
                 logger.error("API call returned empty — possible Gateway auth or subscription issue")
         except Exception as e:
             logger.error(f"Diagnostic API call failed: {e}")
