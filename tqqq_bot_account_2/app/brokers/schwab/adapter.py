@@ -27,7 +27,7 @@ class SchwabAdapter(BrokerBase):
     async def get_bid_ask(self, ticker: str) -> tuple[float, float]:
         raise NotImplementedError
 
-    async def get_wallet_balance(self) -> float:
+    async def get_wallet_balance(self) -> Optional[float]:
         raise NotImplementedError
 
     async def get_net_liquidation_value(self) -> Optional[float]:

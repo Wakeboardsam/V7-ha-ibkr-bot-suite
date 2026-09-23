@@ -371,49 +371,60 @@ async def test_get_net_liquidation_value_empty(mock_ib):
     assert nlv is None
 
 @pytest.mark.asyncio
-async def test_get_wallet_balance_selection_settled(mock_ib):
+async def test_get_wallet_balance_selection_total_cash(mock_ib):
     adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True)
     adapter.ib = mock_ib
 
-    # Mock accountValues: SettledCash should win
+    # TotalCashValue should win over SettledCash and others
     v1 = MagicMock(tag='NetLiquidation', value='1000.0', currency='USD')
     v2 = MagicMock(tag='TotalCashValue', value='500.0', currency='USD')
     v3 = MagicMock(tag='SettledCash', value='400.0', currency='USD')
-    v4 = MagicMock(tag='SettledCash', value='300.0', currency='EUR')
+    v4 = MagicMock(tag='TotalCashBalance', value='450.0', currency='USD')
 
     mock_ib.accountValues.return_value = [v1, v2, v3, v4]
-
-    balance = await adapter.get_wallet_balance()
-    assert balance == 400.0
-    assert adapter._selected_cash_tag == 'SettledCash'
-
-@pytest.mark.asyncio
-async def test_get_wallet_balance_selection_fallback_total(mock_ib):
-    adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True)
-    adapter.ib = mock_ib
-
-    # No settled tag, TotalCashValue should win
-    v1 = MagicMock(tag='NetLiquidation', value='1000.0', currency='USD')
-    v2 = MagicMock(tag='TotalCashValue', value='500.0', currency='USD')
-    v3 = MagicMock(tag='TotalCashBalance', value='450.0', currency='USD')
-
-    mock_ib.accountValues.return_value = [v1, v2, v3]
 
     balance = await adapter.get_wallet_balance()
     assert balance == 500.0
     assert adapter._selected_cash_tag == 'TotalCashValue'
 
+
 @pytest.mark.asyncio
-async def test_get_wallet_balance_selection_fallback_balance(mock_ib):
+async def test_get_wallet_balance_fallback_when_preferred_invalid(mock_ib):
     adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True)
     adapter.ib = mock_ib
 
-    # Only TotalCashBalance available
+    # TotalCashValue is invalid (inf), should fallback to TotalCashBalance
     v1 = MagicMock(tag='NetLiquidation', value='1000.0', currency='USD')
-    v2 = MagicMock(tag='TotalCashBalance', value='450.0', currency='USD')
+    v2 = MagicMock(tag='TotalCashValue', value='inf', currency='USD')
+    v3 = MagicMock(tag='TotalCashBalance', value='450.0', currency='USD')
 
-    mock_ib.accountValues.return_value = [v1, v2]
+    mock_ib.accountValues.return_value = [v1, v2, v3]
 
+    balance = await adapter.get_wallet_balance()
+    assert balance == 450.0
+    assert adapter._selected_cash_tag == 'TotalCashBalance'
+
+@pytest.mark.asyncio
+async def test_get_wallet_balance_dynamic_recovery(mock_ib):
+    adapter = IBKRAdapter(host='localhost', port=7497, client_id=1, paper=True)
+    adapter.ib = mock_ib
+
+    # Call 1: TotalCashBalance is the only valid one
+    v_balance = MagicMock(tag='TotalCashBalance', value='450.0', currency='USD')
+    mock_ib.accountValues.return_value = [v_balance]
+    balance = await adapter.get_wallet_balance()
+    assert balance == 450.0
+    assert adapter._selected_cash_tag == 'TotalCashBalance'
+
+    # Call 2: TotalCashValue appears, it should win
+    v_value = MagicMock(tag='TotalCashValue', value='500.0', currency='USD')
+    mock_ib.accountValues.return_value = [v_value, v_balance]
+    balance = await adapter.get_wallet_balance()
+    assert balance == 500.0
+    assert adapter._selected_cash_tag == 'TotalCashValue'
+
+    # Call 3: TotalCashValue disappears, should fallback to TotalCashBalance again
+    mock_ib.accountValues.return_value = [v_balance]
     balance = await adapter.get_wallet_balance()
     assert balance == 450.0
     assert adapter._selected_cash_tag == 'TotalCashBalance'
@@ -426,11 +437,13 @@ async def test_get_wallet_balance_no_match(mock_ib):
     # No preferred tags
     v1 = MagicMock(tag='NetLiquidation', value='1000.0', currency='USD')
     v2 = MagicMock(tag='BuyingPower', value='2000.0', currency='USD')
+    v3 = MagicMock(tag='SettledCash', value='400.0', currency='USD')
 
-    mock_ib.accountValues.return_value = [v1, v2]
+    mock_ib.accountValues.return_value = [v1, v2, v3]
 
     balance = await adapter.get_wallet_balance()
-    assert balance == 0.0
+    assert balance is None
+    # Depending on previous tests state, _selected_cash_tag might not change, but for a new adapter it should be None
     assert adapter._selected_cash_tag is None
 
 @pytest.mark.asyncio
