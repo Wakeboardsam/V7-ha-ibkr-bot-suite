@@ -403,31 +403,24 @@ class IBKRAdapter(BrokerBase):
             # Filter for USD only
             usd_values = [v for v in account_values if v.currency == 'USD']
 
-            if not self._selected_cash_tag:
-                # 1. Prefer TotalCashValue
-                for fallback in ["TotalCashValue", "TotalCashBalance"]:
-                    if any(v.tag == fallback for v in usd_values):
-                        self._selected_cash_tag = fallback
-                        break
+            import math
+            for candidate in ["TotalCashValue", "TotalCashBalance"]:
+                balance_entry = next((v for v in usd_values if v.tag == candidate), None)
+                if balance_entry:
+                    try:
+                        val = float(balance_entry.value)
+                        if math.isfinite(val):
+                            if self._selected_cash_tag != candidate:
+                                self._selected_cash_tag = candidate
+                                logger.info(f"Selected IBKR total cash field: {self._selected_cash_tag}")
+                            return val
+                        else:
+                            logger.warning(f"Total cash field {candidate} returned non-finite value: {val}")
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse total cash field {candidate} value '{balance_entry.value}': {e}")
 
-                if self._selected_cash_tag:
-                    logger.info(f"Selected IBKR total cash field: {self._selected_cash_tag}")
-                else:
-                    available_tags = [v.tag for v in usd_values]
-                    logger.warning(f"No preferred total cash tags (TotalCashValue, TotalCashBalance) found. Available USD tags: {available_tags}")
-                    return None
-
-            # Retrieve value for the selected tag
-            balance_entry = next((v for v in usd_values if v.tag == self._selected_cash_tag), None)
-            if balance_entry:
-                import math
-                val = float(balance_entry.value)
-                if not math.isfinite(val):
-                    logger.warning(f"Total cash field {self._selected_cash_tag} returned non-finite value: {val}")
-                    return None
-                return val
-
-            logger.warning(f"Previously selected total cash field {self._selected_cash_tag} is no longer available in account values.")
+            available_tags = [v.tag for v in usd_values]
+            logger.warning(f"No valid preferred total cash tags (TotalCashValue, TotalCashBalance) found. Available USD tags: {available_tags}")
             return None
         except Exception as e:
             logger.error(f"Error fetching balance: {e}")
