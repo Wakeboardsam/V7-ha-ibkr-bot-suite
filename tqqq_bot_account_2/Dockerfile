@@ -33,6 +33,10 @@ RUN mkdir -p /root/Jts/ibgateway \
     && ln -sfn $JARS_PARENT /root/Jts/ibgateway/1019 \
     && ln -sfn $JARS_PARENT /root/Jts/1019
 
+# Secure the installer-provided JRE to a stable image-owned location
+RUN cp -rL /root/Jts/ibgateway/jre /opt/ibgateway_jre \
+    && /opt/ibgateway_jre/bin/java -version || (echo "Failed to verify copied JRE" && false)
+
 # Configure IB Gateway memory limit
 RUN find /root/Jts/ibgateway -name "*.vmoptions" -exec sh -c 'echo "-Xmx512m" >> "{}"' \;
 
@@ -43,6 +47,10 @@ RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.23.0/IBCLinux-3.
     && (chmod +x /opt/ibc/scripts/*.sh /opt/ibc/*.sh 2>/dev/null || true) \
     && rm IBCLinux-3.23.0.zip
 
+
+# Fix IBC fallback by explicitly passing the stable JRE location
+RUN sed -i 's/^JAVA_PATH=$/JAVA_PATH=\/opt\/ibgateway_jre\/bin/' /opt/ibc/gatewaystart.sh \
+    && grep -q "^JAVA_PATH=/opt/ibgateway_jre/bin$" /opt/ibc/gatewaystart.sh || (echo "Failed to patch JAVA_PATH" && false)
 RUN sed -i 's/xterm.*-e //' /opt/ibc/gatewaystart.sh
 RUN ! grep -q "xterm" /opt/ibc/gatewaystart.sh
 
