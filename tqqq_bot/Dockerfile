@@ -28,6 +28,8 @@ RUN wget -q https://download2.interactivebrokers.com/installers/ibgateway/stable
     && ./ibgateway-stable-standalone-linux-x64.sh -q -dir /root/Jts/ibgateway \
     && rm ibgateway-stable-standalone-linux-x64.sh
 
+RUN JRE_SRC=$(find /root/Jts/ibgateway -maxdepth 3 -name jre -type d | head -n 1) && cp -r "$JRE_SRC" /opt/ibgateway_jre
+
 RUN mkdir -p /root/Jts/ibgateway \
     && JARS_PARENT=$(dirname $(find /root/Jts -name jars -type d | head -n 1)) \
     && ln -sfn $JARS_PARENT /root/Jts/ibgateway/1019 \
@@ -45,6 +47,10 @@ RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.23.0/IBCLinux-3.
 
 RUN sed -i 's/xterm.*-e //' /opt/ibc/gatewaystart.sh
 RUN ! grep -q "xterm" /opt/ibc/gatewaystart.sh
+RUN sed -i 's|^JAVA_PATH=.*|JAVA_PATH=/opt/ibgateway_jre/bin|' /opt/ibc/gatewaystart.sh
+
+# Verify preserved JRE execution
+RUN /opt/ibgateway_jre/bin/java -version
 
 # Python dependencies
 COPY requirements.txt .

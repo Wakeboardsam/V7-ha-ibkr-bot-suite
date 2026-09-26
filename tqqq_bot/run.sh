@@ -265,6 +265,15 @@ else
     echo "VNC disabled."
 fi
 
+echo "[Gateway] Pre-flight check: verifying preserved IB Gateway JRE..."
+JAVA_BIN="/opt/ibgateway_jre/bin/java"
+if [ ! -x "$JAVA_BIN" ]; then
+    echo "ERROR: Preserved Java runtime binary not found or not executable at $JAVA_BIN."
+    exit 1
+fi
+echo "[Gateway] Java runtime version:"
+"$JAVA_BIN" -version
+
 echo "Starting IB Gateway via IBC..."
 export TWS_MAJOR_VRSN=1019
 export IBC_PATH=/opt/ibc
