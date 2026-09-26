@@ -265,6 +265,26 @@ else
     echo "VNC disabled."
 fi
 
+echo "Validating Java runtime before starting Gateway..."
+JAVA_EXE="/opt/ibgateway_jre/bin/java"
+if [ ! -x "$JAVA_EXE" ]; then
+    echo "ERROR: Java executable not found or not executable at $JAVA_EXE"
+    exit 1
+fi
+
+echo "Java runtime verified at $JAVA_EXE:"
+"$JAVA_EXE" -version
+
+# Dynamically identify the installed Gateway version from the jars directory
+GATEWAY_JAR=$(ls /root/Jts/ibgateway/jars/twslaunch-*.jar 2>/dev/null | head -n 1)
+if [ -n "$GATEWAY_JAR" ]; then
+    # Extract the version number (e.g. twslaunch-1050.jar -> 1050)
+    ACTUAL_VERSION=$(basename "$GATEWAY_JAR" | sed 's/twslaunch-//' | sed 's/\\.jar//')
+    echo "Actual installed IB Gateway version detected: ${ACTUAL_VERSION}"
+else
+    echo "Warning: Could not determine actual IB Gateway version from /root/Jts/ibgateway/jars/"
+fi
+
 echo "Starting IB Gateway via IBC..."
 export TWS_MAJOR_VRSN=1019
 export IBC_PATH=/opt/ibc
