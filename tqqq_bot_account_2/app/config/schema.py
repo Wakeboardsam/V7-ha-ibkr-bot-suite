@@ -11,6 +11,7 @@ class NotificationSettings(BaseModel):
     notify_on_errors: bool = Field(default=True)
     notify_on_halts: bool = Field(default=True)
     notify_on_order_submit: bool = Field(default=False)
+    notify_on_startup_ok: bool = Field(default=True)
 
 class AppConfig(BaseModel):
     active_broker: str = Field(default="ibkr")

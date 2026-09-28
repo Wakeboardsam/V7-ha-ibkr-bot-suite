@@ -1,7 +1,7 @@
 import pytest
 import time
 import asyncio
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from app.notifications.home_assistant import NotificationConfig, HomeAssistantNotifier
 from app.engine.engine import GridEngine
 from app.config.schema import AppConfig
@@ -115,3 +115,195 @@ async def test_engine_sends_notification_on_fill():
          patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
         engine._handle_order_update(result)
     assert mock_to_thread.call_count == 0 # Deduplicated
+
+@pytest.mark.asyncio
+async def test_startup_ok_notification_sent_on_successful_reconciliation():
+    config = AppConfig(google_sheet_id="test", google_credentials_json="test")
+    config.notifications.enabled = True
+    config.notifications.notify_on_startup_ok = True
+
+    broker = MagicMock(spec=BrokerBase)
+    snapshot = MagicMock()
+    snapshot.is_ready = True
+    snapshot.positions = {"TQQQ": 0}
+    broker.get_position_snapshot = AsyncMock(return_value=snapshot)
+    broker.get_open_orders = AsyncMock(return_value=[])
+    broker.ensure_connected = AsyncMock()
+    broker.get_wallet_balance = AsyncMock(return_value=1000.0)
+    broker.get_price = AsyncMock(return_value=100.0)
+
+    sheet = MagicMock()
+    grid_state = MagicMock()
+    grid_state.rows = {}
+    grid_state.distal_y_row = 7
+    sheet.fetch_grid = AsyncMock(return_value=grid_state)
+    sheet.write_cash_value = AsyncMock()
+
+    notifier = MagicMock(spec=HomeAssistantNotifier)
+
+    engine = GridEngine(broker=broker, sheet=sheet, config=config, notifier=notifier)
+    engine._sync_to_sheet = AsyncMock()
+
+    with patch('app.engine.engine.asyncio.create_task') as mock_create_task, \
+         patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
+        await engine._tick()
+
+    assert engine._startup_ok_notification_sent is True
+    assert mock_to_thread.call_count == 1
+    args, kwargs = mock_to_thread.call_args
+    assert args[0] == notifier.send
+    assert kwargs['title'] == "TQQQ Bot Started"
+    assert kwargs['message'] == "Startup reconciliation passed. Bot is monitoring."
+    assert kwargs['severity'] == "info"
+    assert kwargs['event_type'] == "BOT_STARTED"
+    assert kwargs['tag'] == "tqqq_bot_startup"
+    assert kwargs['group'] == "trading_bot_status"
+    assert kwargs['extra'] == {
+        "symbol": "TQQQ",
+        "broker_shares": 0,
+        "open_orders_count": 0,
+        "dry_run": config.dry_run,
+        "paper_trading": config.paper_trading,
+    }
+
+    # Second tick should not send startup OK again
+    with patch('app.engine.engine.asyncio.create_task') as mock_create_task, \
+         patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
+        await engine._tick()
+
+    assert mock_to_thread.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_ok_notification_not_sent_when_halted():
+    config = AppConfig(google_sheet_id="test", google_credentials_json="test")
+    config.notifications.enabled = True
+    config.notifications.notify_on_startup_ok = True
+
+    broker = MagicMock(spec=BrokerBase)
+    snapshot = MagicMock()
+    snapshot.is_ready = True
+    snapshot.positions = {"TQQQ": 0}
+    broker.get_position_snapshot = AsyncMock(return_value=snapshot)
+    broker.get_open_orders = AsyncMock(return_value=[])
+    broker.ensure_connected = AsyncMock()
+
+    sheet = MagicMock()
+    grid_state = MagicMock()
+    grid_state.rows = {}
+    sheet.fetch_grid = AsyncMock(return_value=grid_state)
+
+    notifier = MagicMock(spec=HomeAssistantNotifier)
+
+    engine = GridEngine(broker=broker, sheet=sheet, config=config, notifier=notifier)
+    engine._sync_to_sheet = AsyncMock()
+    engine._check_reconciliation_and_halt = AsyncMock(return_value=False)
+    engine._halted_reconciliation = True
+
+    with patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
+        await engine._tick()
+
+    assert engine._startup_ok_notification_sent is False
+    assert mock_to_thread.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_ok_notification_not_sent_when_reconciliation_changed():
+    config = AppConfig(google_sheet_id="test", google_credentials_json="test")
+    config.notifications.enabled = True
+    config.notifications.notify_on_startup_ok = True
+
+    broker = MagicMock(spec=BrokerBase)
+    snapshot = MagicMock()
+    snapshot.is_ready = True
+    snapshot.positions = {"TQQQ": 0}
+    broker.get_position_snapshot = AsyncMock(return_value=snapshot)
+    broker.get_open_orders = AsyncMock(return_value=[])
+    broker.ensure_connected = AsyncMock()
+
+    sheet = MagicMock()
+    grid_state = MagicMock()
+    grid_state.rows = {}
+    sheet.fetch_grid = AsyncMock(return_value=grid_state)
+
+    notifier = MagicMock(spec=HomeAssistantNotifier)
+
+    engine = GridEngine(broker=broker, sheet=sheet, config=config, notifier=notifier)
+    engine._sync_to_sheet = AsyncMock()
+    engine._check_reconciliation_and_halt = AsyncMock(return_value=True)
+
+    with patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
+        await engine._tick()
+
+    assert engine._startup_ok_notification_sent is False
+    assert mock_to_thread.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_ok_notification_not_sent_when_disabled():
+    config = AppConfig(google_sheet_id="test", google_credentials_json="test")
+    config.notifications.enabled = False
+    config.notifications.notify_on_startup_ok = True
+
+    broker = MagicMock(spec=BrokerBase)
+    snapshot = MagicMock()
+    snapshot.is_ready = True
+    snapshot.positions = {"TQQQ": 0}
+    broker.get_position_snapshot = AsyncMock(return_value=snapshot)
+    broker.get_open_orders = AsyncMock(return_value=[])
+    broker.ensure_connected = AsyncMock()
+    broker.get_wallet_balance = AsyncMock(return_value=1000.0)
+    broker.get_price = AsyncMock(return_value=100.0)
+
+    sheet = MagicMock()
+    grid_state = MagicMock()
+    grid_state.rows = {}
+    grid_state.distal_y_row = 7
+    sheet.fetch_grid = AsyncMock(return_value=grid_state)
+    sheet.write_cash_value = AsyncMock()
+
+    notifier = MagicMock(spec=HomeAssistantNotifier)
+
+    engine = GridEngine(broker=broker, sheet=sheet, config=config, notifier=notifier)
+    engine._sync_to_sheet = AsyncMock()
+
+    with patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
+        await engine._tick()
+
+    assert engine._startup_ok_notification_sent is False
+    assert mock_to_thread.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_ok_notification_not_sent_when_notify_option_false():
+    config = AppConfig(google_sheet_id="test", google_credentials_json="test")
+    config.notifications.enabled = True
+    config.notifications.notify_on_startup_ok = False
+
+    broker = MagicMock(spec=BrokerBase)
+    snapshot = MagicMock()
+    snapshot.is_ready = True
+    snapshot.positions = {"TQQQ": 0}
+    broker.get_position_snapshot = AsyncMock(return_value=snapshot)
+    broker.get_open_orders = AsyncMock(return_value=[])
+    broker.ensure_connected = AsyncMock()
+    broker.get_wallet_balance = AsyncMock(return_value=1000.0)
+    broker.get_price = AsyncMock(return_value=100.0)
+
+    sheet = MagicMock()
+    grid_state = MagicMock()
+    grid_state.rows = {}
+    grid_state.distal_y_row = 7
+    sheet.fetch_grid = AsyncMock(return_value=grid_state)
+    sheet.write_cash_value = AsyncMock()
+
+    notifier = MagicMock(spec=HomeAssistantNotifier)
+
+    engine = GridEngine(broker=broker, sheet=sheet, config=config, notifier=notifier)
+    engine._sync_to_sheet = AsyncMock()
+
+    with patch('app.engine.engine.asyncio.to_thread') as mock_to_thread:
+        await engine._tick()
+
+    assert engine._startup_ok_notification_sent is False
+    assert mock_to_thread.call_count == 0

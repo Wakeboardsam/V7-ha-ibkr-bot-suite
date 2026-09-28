@@ -191,6 +191,7 @@ class GridEngine:
         self._bridge_shares_acquired: int = 0
         self._bridge_fill_price: float = 0.0
 
+        self._startup_ok_notification_sent = False
         self._halted_reconciliation = False
         self._error_written_keys = set()
         self._health_written_keys = set()
@@ -950,7 +951,6 @@ class GridEngine:
                 new_status = "|".join(new_parts) if new_parts else "IDLE"
                 if row7.status != new_status:
                     self._update_row_status_in_memory(7, new_status)
-                    import asyncio
                     asyncio.create_task(self._sync_to_sheet())
 
     async def _check_reconciliation_and_halt(self, open_orders: List[dict], broker_shares: int) -> bool:
@@ -1429,6 +1429,32 @@ class GridEngine:
         if self._halted_reconciliation or reconciliation_changed:
             return
 
+        if (
+            not self._startup_ok_notification_sent
+            and self.config.notifications.enabled
+            and self.config.notifications.notify_on_startup_ok
+            and self.notifier
+        ):
+            self._startup_ok_notification_sent = True
+            asyncio.create_task(
+                asyncio.to_thread(
+                    self.notifier.send,
+                    title="TQQQ Bot Started",
+                    message="Startup reconciliation passed. Bot is monitoring.",
+                    severity="info",
+                    event_type="BOT_STARTED",
+                    tag="tqqq_bot_startup",
+                    group="trading_bot_status",
+                    extra={
+                        "symbol": TICKER,
+                        "broker_shares": broker_shares,
+                        "open_orders_count": len(open_orders),
+                        "dry_run": self.config.dry_run,
+                        "paper_trading": self.config.paper_trading,
+                    },
+                )
+            )
+
         # 2. Daily Grid Regeneration Check
         # Run AFTER safety reconciliation guarantees we don't have mismatch or unknown orders
         # We wrap this in a try-except to prevent tests from sporadically failing if mocked time is unexpected
@@ -1627,7 +1653,6 @@ class GridEngine:
                         current_status = self.grid_state.rows[7].status
                         new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
                         self._update_row_status_in_memory(7, new_status)
-                        import asyncio
                         asyncio.create_task(self._sync_to_sheet())
                 return
 
@@ -1822,7 +1847,6 @@ class GridEngine:
                                         if "TRIM_SELL" not in current_status:
                                             new_status = f"{current_status}|TRIM_SELL:{trim_order_id}"
                                             self._update_row_status_in_memory(7, new_status)
-                                        import asyncio
                                         asyncio.create_task(self._sync_to_sheet())
                     else:
                         msg = f"Bridge flow halted: Excess shares ({excess}) exceed bridge_max_auto_trim_shares ({self.config.bridge_max_auto_trim_shares})."
@@ -2218,7 +2242,6 @@ class GridEngine:
         if result.status in ('filled', 'cancelled', 'error'):
             self._bot_initiated_cancel_ids.pop(str(order_id), None)
 
-        import asyncio
         if result.status == 'filled':
             self.last_fill_time = datetime.now()
             row_index, action = self.order_manager.mark_filled(order_id)
@@ -2449,7 +2472,6 @@ class GridEngine:
                     self._update_row_status_in_memory(row_index, new_status)
                     if action == 'TRIM_SELL':
                         self._bridge_state = 'BRIDGE_HALTED' # Trim was aborted, so bridge flow halts normally (not a hard crash)
-                    import asyncio
                     asyncio.create_task(self._sync_to_sheet())
                     return
 
@@ -2466,7 +2488,6 @@ class GridEngine:
                         self._bridge_state = 'BRIDGE_HALTED'
 
                     # Queue sync to sheet and call async halt helper via task
-                    import asyncio
                     asyncio.create_task(self._safe_async_halt(
                         code=code,
                         symbol=TICKER,
@@ -2494,7 +2515,6 @@ class GridEngine:
 
                     logger.info(f"Setting {new_status} and cooldown for row {row_index} due to async order error.")
                     self._update_row_status_in_memory(row_index, new_status)
-                    import asyncio
                     asyncio.create_task(self._sync_to_sheet())
                 else:
                     # Cancelled explicitly
@@ -2511,5 +2531,4 @@ class GridEngine:
 
                     logger.info(f"Setting {new_status} for row {row_index} due to async order cancellation.")
                     self._update_row_status_in_memory(row_index, new_status)
-                    import asyncio
                     asyncio.create_task(self._sync_to_sheet())
