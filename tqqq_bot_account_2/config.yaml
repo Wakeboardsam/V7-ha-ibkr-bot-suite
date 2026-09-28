@@ -1,5 +1,5 @@
 name: V7_tqqq_bot_account_2
-version: 0.1.36
+version: 0.1.37
 slug: tqqq_bot_account_2
 description: TQQQ automated trading bot for an independent IBKR account_2
 arch:
@@ -53,6 +53,7 @@ options:
     notify_on_errors: true
     notify_on_halts: true
     notify_on_order_submit: false
+    notify_on_startup_ok: true
 schema:
   active_broker: list(ibkr)
   paper_trading: bool
@@ -100,5 +101,6 @@ schema:
     notify_on_errors: bool
     notify_on_halts: bool
     notify_on_order_submit: bool
+    notify_on_startup_ok: bool
 ports:
   5900/tcp: null
