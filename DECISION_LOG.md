@@ -101,3 +101,13 @@ Account 1 is declared the stable baseline and Account 2 duplication is authorize
 
 Decision:
 The `tqqq_bot_account_2` add-on provides a second independent bot copy. It must be created using manual boot, paper mode, dry-run enabled, read-only API enabled, VNC disabled, and placeholders for credentials to maintain a strict safe default posture. Stale documentation forbidding the creation of Account 2 has been updated.
+
+## 2026-10-04 — Consolidate repository documentation
+
+Outcome:
+- `README.md` is now the single authoritative guide to the project: architecture, startup and recovery, trading lifecycle, Google Sheet, configuration, account isolation, notifications, and development, testing, parity, versioning and rollback.
+- `CLAUDE.md` holds concise working rules for AI agents and points to the README for everything else. `CONTRIBUTING.md` is reduced to a pointer. The v6 baseline note in `docs/` was folded into the README and removed. Add-on READMEs now cover only add-on-specific operator details.
+
+Decision:
+- Current behavior is documented in `README.md`; this log keeps the historical reasons for decisions. Earlier entries are unchanged, including those that describe superseded plans (for example the staged shared-Gateway implementation and the instruction not to create account copies).
+- Changes to halt, circuit-breaker or reconciliation behavior require a decision log entry. Other significant behavior changes continue to be recorded here; routine wording edits are not.

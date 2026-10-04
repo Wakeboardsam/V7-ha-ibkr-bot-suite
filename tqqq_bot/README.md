@@ -1,193 +1,51 @@
 # TQQQ Bot (v7)
 
-The `tqqq_bot` add-on is the primary Phase 1 bundled Gateway + trading bot target for the v7 HA IBKR Bot Suite.
+Bundled IBKR Gateway and TQQQ grid-trading bot for a single IBKR account and a single Google Sheet.
 
-It is based on the proven v6 TQQQ Grid Strategy and is intended to preserve v6 strategy behavior while adding Home Assistant packaging and account-scoping safety.
+**Warning: this add-on can trade live. Keep `paper_trading: true` and `trading_mode: paper` while testing, and use `dry_run: true` to validate without placing orders.**
 
-**Warning: This add-on is capable of live trading. Keep `paper_trading: true` while testing.**
+The full description of the architecture, trading behavior, configuration options, account isolation and development workflow is in the repository's [main README](https://github.com/Wakeboardsam/V7-ha-ibkr-bot-suite/blob/main/README.md). This page covers only what an operator needs when configuring this add-on in Home Assistant.
 
-## Phase 1 Architecture Target
+## What runs inside
 
-The intended Phase 1 bundled model is:
+One instance runs one IBKR Gateway session (through IBC), an optional VNC server and one Python bot, all in this container. The bot connects to the Gateway on `127.0.0.1`; `ibkr_host` is forced to that value. Startup order: Xvfb, VNC (optional), IBC and Gateway, wait for the local API port, then the bot.
 
-```text
-one bundled add-on instance = one IBKR Gateway session = one trading bot = one IBKR account = one Google Sheet
-```
+## Required configuration
 
-For Phase 1, `tqqq_bot` is the first bundled implementation target.
+Set these in the add-on configuration; the defaults in `config.yaml` are placeholders.
 
-The target bundled add-on contains:
+- `ibkr_username` and `ibkr_password`: IBKR login (password field).
+- `ibkr_account_id`: the one account this instance may trade. The bot refuses live operation without it.
+- `google_sheet_id` and `google_credentials_json`: the Sheet and its service-account JSON. Provide the JSON as a **single line**; multi-line JSON may not round-trip through the Home Assistant password field.
+- `paper_trading` and `trading_mode` should agree. The paper API port is `7497`, live is `7496`.
 
-1. IBKR Gateway runtime
-2. IBC / Gateway startup configuration
-3. optional VNC troubleshooting access
-4. Python trading bot runtime
-5. IBKR account configuration
-6. Google Sheet configuration
-7. account ID masking and account-scoping guardrails
+Never commit real values. Use `DU1234567`, `placeholder_user`, `placeholder_password` and `your_google_sheet_id_here`.
 
-The expected target startup sequence is:
+## Gateway settings persistence
 
-```text
-run.sh
-  -> parse Home Assistant options
-  -> generate IBC / Gateway config
-  -> start Xvfb
-  -> optionally start VNC
-  -> start IBKR Gateway through IBC
-  -> wait for local Gateway port
-  -> start Python trading bot
-```
+Gateway runs with its active settings under `/root/Jts`, and selected settings are saved to and restored from `/data/ibgateway/persist` across restarts. This keeps first-run choices such as the SSL reconnect prompt. VNC may be needed once to click that prompt; after one successful click and a restart it should not recur.
 
-## Gateway API Settings Persistence
+## Dry run
 
-V7 now intentionally runs Gateway with V6-style active settings under `/root/Jts`.
+`dry_run` is `false` by default for this add-on.
 
-`/data/ibgateway/persist/...` is used to restore and save selected settings across HA restarts.
+- It connects to the real Gateway and reads real broker, account and Sheet state.
+- It places, cancels, modifies and transmits no orders.
+- It is not paper trading and does not simulate fills or create fake order IDs.
+- It logs `DRY RUN MODE ENABLED — NO ORDERS WILL BE PLACED, CANCELLED, OR MODIFIED` at startup.
 
-This is intended to preserve first-run Gateway choices such as the SSL reconnect prompt.
+## Logging
 
-VNC may be needed once to click the SSL prompt.
+Normal IBKR market-data farm connection messages are logged as `INFO` or `WARNING`. Order failures, API failures that prevent trading, and account-scoping failures are logged as `ERROR` or `CRITICAL`. Account IDs are masked (`DU1****567`) unless `mask_account_ids_in_logs` is turned off; do not share logs if it is.
 
-After one successful click and restart, the prompt should not recur.
+## VNC
 
-VNC should be disabled and the port mapping removed after troubleshooting.
+VNC is for troubleshooting and manual login or two-factor approval only.
 
-The bundled bot is intended to connect locally to Gateway:
+1. Set `enable_vnc: true`.
+2. The VNC server has **no password**. Port `5900` is unmapped by default; map it in the add-on's Network settings only if you need it, and only on a trusted network.
+3. Turn VNC off and remove the port mapping afterwards.
 
-```yaml
-ibkr_host: "127.0.0.1"
-ibkr_port: 7497
-```
+## Shared Gateway add-on
 
-The default paper API port is 7497.
-
-`readonly_api` controls whether IBC starts the Gateway API in read-only mode.
-
-VNC remains disabled by default:
-
-```yaml
-enable_vnc: false
-```
-
-Only enable VNC for troubleshooting. Do not expose it to untrusted networks.
-
-
-## Dry Run Mode
-
-The `dry_run` option (`false` by default) allows you to safely validate account-scoping, startup, Google Sheet state, Bridge Anchor decisions, and grid regeneration without risking real trades.
-
-- `dry_run: false` is normal live behavior.
-- `dry_run: true` is safe validation mode.
-- Dry-run still connects to the real Gateway.
-- Dry-run still reads real broker/account/Sheet state.
-- Dry-run **does not** place, cancel, modify, replace, or transmit any broker orders.
-- Dry-run is not paper trading.
-- Dry-run does not simulate fills.
-- Dry-run does not create fake order IDs.
-- Dry-run is intended for account-scoping and startup safety validation.
-
-When `dry_run: true` is enabled, the bot logs an explicit warning at startup:
-`DRY RUN MODE ENABLED — NO ORDERS WILL BE PLACED, CANCELLED, OR MODIFIED`
-
-## Logging and Error Handling
-
-Normal IBKR farm status and connection messages (e.g., market data farm connection OK, historical data farm disconnected) are expected behavior and are logged as `INFO` or `WARNING`.
-
-Actual order failures, API failures that prevent trading, and account safety/scoping failures remain loud and are logged as `ERROR` or `CRITICAL`.
-
-## Shared Gateway Status
-
-The separate `ibkr_gateway` add-on remains in the repository as optional/experimental shared-Gateway mode.
-
-Shared `ibkr_gateway` mode is no longer the recommended primary Phase 1 path. The recommended Phase 1 path is bundled Gateway + bot per account, starting with this `tqqq_bot` add-on.
-
-## Strategy Scope
-
-Preserve v6 strategy behavior unless a later task explicitly requires a safety or packaging change.
-
-Keep:
-
-- existing grid logic
-- existing Bridge Anchor behavior
-- TQQQ as the only traded symbol for now
-- existing Google Sheets behavior unless safe account separation requires adjustment
-
-Do not rewrite the trading strategy in bundled-architecture PRs.
-
-## Account-Scoping Policy
-
-One `tqqq_bot` bundled instance must operate against one configured IBKR account and one configured Google Sheet.
-
-If multiple IBKR accounts are visible and no `ibkr_account_id` is configured, the bot should warn loudly or refuse unsafe trading.
-
-When `ibkr_account_id` is configured, the bot must:
-
-- place orders explicitly into the configured account
-- read only broker state for the configured account when possible
-- process only fills/executions for the configured account when account data is available
-- mask account IDs in logs and UI output by default
-
-Example masked account format:
-
-```text
-DU1****567
-```
-
-**Note:** By default, `mask_account_ids_in_logs` is `true`. Do not share logs or debug output if this has been disabled.
-
-## Target Placeholder Configuration
-
-Use placeholder values only in source-controlled examples.
-
-```yaml
-active_broker: "ibkr"
-paper_trading: true
-ibkr_host: "127.0.0.1"
-ibkr_port: 7497
-ibkr_client_id: 1
-ibkr_account_id: "DU1234567"
-google_sheet_id: "your_google_sheet_id_here"
-google_credentials_json: ""
-poll_interval_seconds: 60
-heartbeat_interval_seconds: 60
-health_log_interval_seconds: 300
-anchor_buy_offset: 1.5
-share_mismatch_mode: "halt"
-max_spread_pct: 0.5
-enable_bridge_anchor: true
-bridge_max_auto_trim_shares: 5
-maintenance_enabled: true
-maintenance_start_local: "23:44"
-maintenance_end_local: "00:00"
-maintenance_cancel_open_orders: true
-mask_account_ids_in_logs: true
-enable_vnc: false
-vnc_port: 5900
-```
-
-Gateway/IBC-related fields may also be exposed as needed:
-
-```yaml
-ibkr_username: "placeholder_user"
-ibkr_password: "placeholder_password"
-trading_mode: "paper"
-readonly_api: false
-```
-
-Password fields should use Home Assistant password schema fields.
-
-`google_credentials_json` is stored as a Home Assistant password-style option. Provide it as a single-line JSON string. Multiline service-account JSON may not round-trip cleanly through the Home Assistant add-on UI because of password schema escaping behavior.
-
-## Security
-
-Never commit real credentials, real account IDs, OAuth certs, private keys, API tokens, Google service-account files, Google Sheet IDs, `.env` secrets, token caches, or logs/screenshots containing sensitive data.
-
-`DU1234567`, `placeholder_user`, `placeholder_password`, and `your_google_sheet_id_here` are placeholders only.
-
-## VNC Access
-VNC is available for internal troubleshooting only. To connect:
-1. Set `enable_vnc: true` in your add-on configuration.
-2. The VNC server runs without a password, which is insecure for public exposure.
-3. The port `5900` is mapped internally but hidden by default (`null`). If you need to access it externally from your Home Assistant host, explicitly map it in the add-on's Network configuration.
-**Warning: Expose this port to untrusted networks at your own risk. It has NO password.**
+The separate `ibkr_gateway` add-on is not used by this add-on, which always uses its own bundled Gateway.
