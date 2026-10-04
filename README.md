@@ -101,7 +101,7 @@ On `SIGTERM` the engine stops its loop, drains the fill-logging queue, cancels t
 
 The **Google Sheet decides the grid; the bot executes it.** The bot reads, for rows 7–100 of the `TQQQ_Tracker` tab, the status (column C), the owned flag `Y` (column D), the sell price (F), the buy price (G) and the share count (H). It does not compute prices or quantities. **[Unverified]** How the Sheet derives these values: the Sheet and its formulas are not in this repository.
 
-The bot writes only: row status (column C, rows 7–100), the heartbeat (`C1`), the cash value (`C2`) and the anchor ask price (`G7`). Writes to any other cell raise an error.
+The bot writes only: row status (column C, rows 7–100), the heartbeat (`C1`), the cash value (`C2`) and the anchor ask price (`G7`). The Sheet interface rejects writes to any other cell.
 
 ### Row statuses
 
@@ -117,7 +117,7 @@ Column C holds one status per row, and several parts can be combined with `|` (f
 | `ERROR_RECONCILE_REQUIRED:<code>` | The bot stopped on this row; an operator must reconcile it. |
 | `FAILED` | The bot skips the row. |
 
-The bot treats a row as owned when column D is `Y`, or its status begins `OWNED:`, `WORKING_SELL:` or `ERROR_RECONCILE_REQUIRED`.
+**Owned flag (`has_y`).** When the bot reads the Sheet, a row counts as owned when column D is `Y`, with one exception: a row whose status begins `ERROR_RECONCILE_REQUIRED` is also treated as owned. Once the bot changes a row's status itself, or overlays a status that has not yet been written to the Sheet, it recomputes the flag from the status text (`OWNED:` or `WORKING_SELL:`, plus `ERROR_RECONCILE_REQUIRED` for its own updates). The owned flag drives `distal_y`, the grid window, the Bridge Anchor's "only owned row" test and the Sheet-shares total in the share-mismatch check. The reconciliation share requirement is computed separately from status text (`OWNED:`, `WORKING_SELL:`, `BRIDGE_BUY:` and `TRIM_SELL:` rows).
 
 ### The tick
 
@@ -159,7 +159,7 @@ Any other SELL that errors, is rejected or is cancelled with zero fill, and was 
 
 ### Bridge Anchor
 
-The Bridge Anchor protects against a fast rally after row 7, the last owned row, sells. It arms only when all of these hold: the feature is enabled (`enable_bridge_anchor`), row 7 is the only owned row, row 7 has a working SELL, broker shares equal row 7's share count, the session is not `OVERNIGHT`, it is not the weekend gap, and no share mismatch is active. It then places a GTC stop-limit BUY for row 7's share count with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`. It cancels the order whenever those conditions stop holding, and never leaves it live without row 7's protective SELL.
+The Bridge Anchor protects against a fast rally after row 7, the last owned row, sells. It arms only when all of these hold: the feature is enabled (`enable_bridge_anchor`), row 7 is the only owned row, row 7 has a working SELL, broker shares equal row 7's share count, the session is not `OVERNIGHT`, it is not the weekend gap, and no share mismatch is active. It then places a GTC stop-limit BUY for row 7's share count with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`. It cancels the order when those conditions stop holding, and a separate check cancels a live Bridge order whenever no row 7 SELL is found at the broker. These checks run on each tick, so they reduce but do not eliminate the time a Bridge order can be live without its SELL.
 
 When the Bridge BUY fills:
 
@@ -183,7 +183,7 @@ Before the bot trades, and again each tick, it compares the Sheet with the broke
 - The shares the Sheet claims for owned and working rows, adjusted for partial fills, must not exceed broker shares, and every `WORKING_SELL` must be live at the broker with a valid remaining quantity (`SELL_POSITION_MISMATCH_HALT`).
 - If a Tracker `WORKING_SELL` is missing at the broker but broker shares exactly match the Tracker with no partial fills, and the running bot is not tracking that order, the bot waits for a **second consecutive snapshot** before treating it as stale and allowing the SELL to be replaced. That case is not a halt. A missing `WORKING_BUY` is not repaired automatically.
 - A **pre-SELL guard** runs immediately before every SELL and trim: broker shares minus working SELL quantity must cover the order, otherwise the bot halts instead of risking a short sale.
-- A **share-mismatch check** compares broker shares with the Sheet's owned shares (partial-fill adjusted). A mismatch that exactly one combination of working-order rows explains, where those orders are gone from the broker, is repaired (rows set to `OWNED` or `IDLE`) and the tick ends. Any other mismatch is logged to the Errors tab as a circuit-breaker event. With `share_mismatch_mode: halt` the bot skips the tick and repeats the check on the next tick; with `warn` it continues but places no BUYs and arms no Bridge Anchor. **[Intended]** This `halt` mode does not set the persistent halted state or send a notification, unlike the reconciliation halts below. Whether it is meant to is not recorded in the decision log.
+- A **share-mismatch check** compares broker shares with the Sheet's owned shares (partial-fill adjusted). A mismatch that exactly one combination of working-order rows explains, where those orders are gone from the broker, is repaired (rows set to `OWNED` or `IDLE`) and the tick ends. Any other mismatch is logged to the Errors tab as a circuit-breaker event. With `share_mismatch_mode: halt` the bot skips the tick and repeats the check on the next tick; with `warn` it continues but places no BUYs and arms no Bridge Anchor. In `halt` mode the bot does not set the persistent halted state and sends no notification, unlike the reconciliation halts below. **[Unverified]** Whether this difference is intended is not recorded in the decision log.
 
 A **reconciliation halt** sets `HALTED_RECONCILIATION`: the bot places and cancels nothing, writes the Errors and Health tabs (retrying in the background if the Sheet is unreachable), and sends the `HALT_RECONCILIATION` notification. Halts latch until the add-on restarts, and restarting with an unresolved `ERROR_RECONCILE_REQUIRED` row halts again. The operator must compare the Sheet with the broker, correct the Tracker, then restart.
 
@@ -201,7 +201,7 @@ A **reconciliation halt** sets `HALTED_RECONCILIATION`: the bot places and cance
 
 ### Sheet synchronization
 
-The bot keeps row statuses in memory first. Each change is numbered, and writes to the Sheet go through a single lock that skips a write if a newer status for that row was queued in the meantime. Failed writes are retried by later ticks. The next tick re-reads the Sheet, but pending local statuses override the Sheet's value until they have been written, so a slow write cannot make the bot act on stale state.
+The bot keeps row statuses in memory first. Each change is numbered, and writes to the Sheet go through a single lock that skips a write if a newer status for that row was queued in the meantime. Failed writes are retried by later ticks. The next tick re-reads the Sheet, but pending local statuses override the Sheet's value until they have been written. This is intended to keep the bot from acting on an older Sheet value while a write is in flight; it does not rule out every timing gap between the Sheet, the broker and the bot.
 
 ## Google Sheet
 
@@ -246,7 +246,7 @@ Account 2's committed defaults (manual boot, paper, `dry_run`, read-only API, VN
 
 ## Notifications
 
-When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSON to a Home Assistant webhook. Sends run off the event loop, failures never affect trading, and identical messages inside `dedupe_window_seconds` are dropped.
+When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSON to a Home Assistant webhook. Sends run off the event loop, network and HTTP send errors are caught and logged rather than raised, and identical messages inside `dedupe_window_seconds` are dropped.
 
 | Event | When | Controlled by |
 |---|---|---|
