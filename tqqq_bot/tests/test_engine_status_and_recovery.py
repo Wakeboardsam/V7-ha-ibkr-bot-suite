@@ -988,3 +988,80 @@ async def test_restart_trim_cancel_inside_the_session_boundary_window_is_not_a_b
     assert not sheet.statuses[7].startswith("ERROR_RECONCILE_REQUIRED")
     assert (await health_row(engine, sheet))["status"].startswith("BRIDGE_HALTED: saved trim SELL")
     assert events(notifier, "HALT_RECONCILIATION") == []
+
+
+# --------------------------------------------------------------------------
+# 7. Reconnect while halted: an empty order list is not proof an order is gone
+# --------------------------------------------------------------------------
+
+def placements(broker):
+    return [e for e in broker.events if e[0] in ("place", "place_stop")]
+
+
+@pytest.mark.asyncio
+async def test_halted_trim_cancel_survives_unsynchronized_broker_reads(config):
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.position = 64
+    broker.refuse_cancel = {trim_id}
+    sheet.fail_error_writes = 10 ** 6
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    await run_ticks(engine, 3)
+    broker.position = 60
+    await run_ticks(engine, 2)
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+    placed_before = len(placements(broker))
+
+    # Reconnect: snapshot not ready, order cache empty, the trim still live at IBKR.
+    broker.synchronized = False
+    broker.refuse_cancel = set()
+    sheet.fail_error_writes = 0                 # the Sheet is back; the owed Errors row must still go out
+    await run_ticks(engine, 3)
+
+    assert engine.order_manager.is_tracked(trim_id), "an empty list from an unready broker is not confirmation"
+    assert engine._restart_trim_cancel_id == trim_id
+    assert json.load(open(engine._bridge_state_path))["trim_cancel_required"] is True
+    assert trim_id in broker.orders
+    assert len([r for r in sheet.error_rows if r["code"] == "BRIDGE_HALTED"]) == 1, "Errors retry does not need the broker"
+
+    broker.synchronized = True                  # broker data recovers
+    await run_ticks(engine, 3)
+
+    assert trim_id not in broker.orders, "cancellation resumes after recovery"
+    assert broker.event_index("fill", lambda e: e[1] == trim_id) is None
+    assert broker.position == 60
+    assert len(placements(broker)) == placed_before, "no new orders"
+    assert engine._halted_reconciliation is True
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+
+
+@pytest.mark.asyncio
+async def test_halted_reanchor_buy_cancel_survives_unsynchronized_broker_reads(config):
+    broker, sheet, engine = friday_state(config, MagicMock())
+    engine._cancel_resend_seconds = 0
+    await run_ticks(engine, 1)
+    broker.refuse_cancel = {"820"}
+    await bridge_fires(broker)
+    assert "820" in broker.orders
+    await engine._halt_for_reconciliation_error(
+        code="SELL_POSITION_MISMATCH_HALT", symbol="TQQQ", row=7, action="SELL", details="test halt")
+    placed_before = len(placements(broker))
+
+    broker.synchronized = False
+    await run_ticks(engine, 3)
+
+    assert engine.order_manager.is_tracked("820")
+    assert sheet.statuses[8] == "WORKING_BUY:820", "the Tracker row is not cleared on an unready read"
+    assert engine._reanchor_unresolved_buys == []
+    assert json.load(open(engine._bridge_state_path))["unresolved_buys"] == []
+
+    broker.synchronized = True
+    broker.refuse_cancel = set()
+    await run_ticks(engine, 3)
+
+    assert "820" not in broker.orders
+    assert broker.event_index("cancel", lambda e: e[1] == "820") is not None
+    assert len(placements(broker)) == placed_before
+    assert engine._halted_reconciliation is True
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"

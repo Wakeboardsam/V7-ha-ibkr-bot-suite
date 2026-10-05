@@ -178,3 +178,12 @@ Decision:
 - The record carries the cancel requirement and the halt reason, written before the cancel is requested. A later restart cancels the trim and halts with that reason whatever the position is.
 - The bot's own cancel of a saved trim is not treated as an IBKR session-boundary cancellation, even between 03:45 and 04:05 ET.
 - Not changed: once the trim is confirmed gone, the record is removed and `BRIDGE_HALTED` is held in memory only, as before.
+
+## 2026-10-05 — Halted cancels wait for a ready broker snapshot
+
+Outcome:
+- A review of `f4aee5c` showed that the cancel loop that runs during a reconciliation halt read open orders without checking that broker state was ready. In a simulated reconnect, two empty reads made the bot forget a trim that was still live and delete its record; the trim then sold a share (60 to 59). This was a simulation, not an observed IBKR reconnect.
+
+Decision:
+- While reconciliation-halted, the bot counts an order as absent only on a ready broker snapshot. Without one it keeps the order's tracking, the cancel requirement and the saved record, and starts its consecutive-absence counts over. The Errors row retry still runs.
+- Ticks that are not halted were already skipped on an unready snapshot before any of this logic.

@@ -402,6 +402,17 @@ class GridEngine:
             return
         try:
             await self.broker.ensure_connected()
+            # An empty order list from a broker that has not finished
+            # synchronizing (for example just after a reconnect) says nothing
+            # about what is live there. Without a ready snapshot nothing is
+            # counted as absent: tracking, the cancel requirement and the saved
+            # record all stay, and the consecutive-absence counts start over.
+            snapshot = await self.broker.get_position_snapshot()
+            if not snapshot.is_ready:
+                self._restart_trim_absent_ticks = 0
+                self._reanchor_absent_buys = set()
+                logger.warning("Broker state is not ready while halted. Owed cancellations wait for a ready snapshot.")
+                return
             open_orders = await self.broker.get_open_orders()
             if self._restart_trim_cancel_id:
                 await self._cancel_unresumable_restart_trim(open_orders)

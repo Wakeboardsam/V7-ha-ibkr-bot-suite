@@ -47,6 +47,9 @@ class FakeBroker:
         self.lose_next_cancel: set[str] = set()
         # Order ids whose cancel requests the broker refuses outright.
         self.refuse_cancel: set[str] = set()
+        # False simulates a reconnect: the snapshot is not ready and the local
+        # order cache is empty, although the orders are still live at the broker.
+        self.synchronized = True
         # The next SELL placement reaches the broker, then the call raises.
         self.raise_after_next_sell_placement = False
 
@@ -113,6 +116,8 @@ class FakeBroker:
         return True
 
     async def get_position_snapshot(self):
+        if not self.synchronized:
+            return PositionSnapshot(is_ready=False, positions={})
         return PositionSnapshot(is_ready=True, positions={TICKER: self.position})
 
     async def get_verified_symbol_snapshot(self, ticker):
@@ -135,6 +140,8 @@ class FakeBroker:
         )
 
     async def get_open_orders(self):
+        if not self.synchronized:
+            return []
         return [dict(o) for o in self.orders.values()]
 
     async def get_next_order_id(self):
