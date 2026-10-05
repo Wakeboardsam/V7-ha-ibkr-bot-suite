@@ -166,3 +166,15 @@ Decision:
 - An order with the saved ID but different terms is still left alone: it is not verifiably the bot's order.
 - The bridge-halt Errors row is marked written only when the Sheet accepts it, and is retried each tick until then. The notification is still sent once.
 - Reconciliation halt behavior change: an untracked bridge order is matched to the Tracker only if it passes the strict stop-limit check Health uses. A plain stop order with the bridge's prices now halts with `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`.
+
+## 2026-10-05 — Owed cancels and reports continue during a reconciliation halt
+
+Outcome:
+- A review of `86e2fb4` showed that once a reconciliation halt was set, the tick returned before the trim cancellation and bridge-halt reporting retries. A trim whose cancel the broker had refused stayed live after the broker recovered and sold another share (60 to 59), and a failed `BRIDGE_HALTED` Errors row was never written.
+- It also showed that the saved record did not say the trim had to be cancelled. After an unconfirmed cancel, a second restart with the position back at 65 resumed the trim as a normal working order and the bot returned to Running without the operator.
+
+Decision:
+- Reconciliation halt behavior change: while halted the bot still places nothing, but it keeps cancelling orders it already owes a cancel for (a saved trim that must not run, and old-grid BUYs of a re-anchor in progress) and keeps retrying a bridge-halt Errors row that failed to write. The halt itself stays latched.
+- The record carries the cancel requirement and the halt reason, written before the cancel is requested. A later restart cancels the trim and halts with that reason whatever the position is.
+- The bot's own cancel of a saved trim is not treated as an IBKR session-boundary cancellation, even between 03:45 and 04:05 ET.
+- Not changed: once the trim is confirmed gone, the record is removed and `BRIDGE_HALTED` is held in memory only, as before.

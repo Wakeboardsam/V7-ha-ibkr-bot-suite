@@ -874,3 +874,117 @@ async def test_trim_placement_that_raises_after_reaching_the_broker_is_not_repea
     await run_ticks(engine, 3)
     assert broker.position == 64
     assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]
+
+
+# --------------------------------------------------------------------------
+# 6. Gaps reproduced against 86e2fb4
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_trim_cancel_and_halt_row_keep_retrying_during_a_reconciliation_halt(config):
+    """
+    A reconciliation halt blocks trading. It must not block the cancel of a
+    trim that has to go, or the Errors row that still has to be written.
+    """
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.position = 64
+    broker.refuse_cancel = {trim_id}
+    sheet.fail_error_writes = 10 ** 6           # the Sheet rejects Errors rows for now
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    await run_ticks(engine, 3)
+    broker.position = 60                        # broker falls below the Tracker
+    await run_ticks(engine, 2)
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+    assert trim_id in broker.orders
+    assert not [r for r in sheet.error_rows if r["code"] == "BRIDGE_HALTED"]
+
+    # Broker and Sheet recover while the engine stays halted.
+    broker.refuse_cancel = set()
+    sheet.fail_error_writes = 0
+    placed_before = len([e for e in broker.events if e[0] in ("place", "place_stop")])
+    await run_ticks(engine, 4)
+
+    assert trim_id not in broker.orders, "the trim must be cancelled even though trading is halted"
+    assert broker.position == 60, "the trim did not sell another share"
+    halt_rows = [r for r in sheet.error_rows if r["code"] == "BRIDGE_HALTED"]
+    assert len(halt_rows) == 1 and trim_id in halt_rows[0]["details"]
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION", "the halt itself stays latched"
+    assert len([e for e in broker.events if e[0] in ("place", "place_stop")]) == placed_before, "no new orders while halted"
+    assert len(events(notifier, "HALT_RECONCILIATION")) == 1
+    assert len(events(notifier, "BRIDGE_HALTED")) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_requirement_survives_a_second_restart_even_if_the_position_matches_again(config):
+    """
+    First restart: broker and Tracker both 64, so the saved 1-share trim must be
+    cancelled; the cancel is not confirmed. The position then becomes 65, which
+    happens to equal what the trim would sell. A second restart must still
+    cancel it and stay halted, not resume it as a normal working trim.
+    """
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.position = 64
+    broker.lose_next_cancel = {trim_id}
+
+    first = restart(broker, sheet, config)
+    await run_ticks(first, 1)
+    record = json.load(open(first._bridge_state_path))
+    assert record["trim_cancel_required"] is True
+    assert "does not match the broker's excess of 0" in record["halt_reason"]
+    assert trim_id in broker.orders
+
+    broker.position = 65
+    notifier = MagicMock()
+    second = restart(broker, sheet, config, notifier)
+    await run_ticks(second, 1)
+    assert (await health_row(second, sheet))["status"] != "WAITING_TRIM"
+
+    await run_ticks(second, 4)
+    assert trim_id not in broker.orders
+    assert broker.event_index("fill", lambda e: e[1] == trim_id) is None, "the trim was cancelled, not filled"
+    assert broker.position == 65
+    status = (await health_row(second, sheet))["status"]
+    assert status == f"BRIDGE_HALTED: saved trim SELL {trim_id} for 1 shares does not match the broker's excess of 0; trim not resumed"
+    assert [e for e in broker.events if e[0] == "place"] == [e for e in broker.events if e[0] == "place" and e[1] == trim_id]
+    assert len(events(notifier, "BRIDGE_HALTED")) == 1
+
+
+@pytest.mark.asyncio
+async def test_reanchor_flush_keeps_retrying_during_a_reconciliation_halt(config):
+    """An old-grid BUY whose cancel was lost must still be cancelled if the engine then halts."""
+    broker, sheet, engine = friday_state(config, MagicMock())
+    engine._cancel_resend_seconds = 0
+    broker.lose_next_cancel = {"820"}
+    await run_ticks(engine, 1)
+    await bridge_fires(broker)
+    assert "820" in broker.orders
+
+    await engine._halt_for_reconciliation_error(
+        code="SELL_POSITION_MISMATCH_HALT", symbol="TQQQ", row=7, action="SELL", details="test halt")
+    placed_before = len([e for e in broker.events if e[0] in ("place", "place_stop")])
+    await run_ticks(engine, 3)
+
+    assert "820" not in broker.orders
+    assert len([e for e in broker.events if e[0] in ("place", "place_stop")]) == placed_before
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+
+
+@pytest.mark.asyncio
+async def test_restart_trim_cancel_inside_the_session_boundary_window_is_not_a_boundary_event(config):
+    """03:45-04:05 ET: the bot's own cancel of the saved trim must not be read as an IBKR session cancel."""
+    from unittest.mock import patch
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.position = 64
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    with patch.object(GridEngine, "_is_session_boundary", return_value=True):
+        await run_ticks(engine, 4)
+
+    assert trim_id not in broker.orders
+    assert engine._halted_reconciliation is False
+    assert not sheet.statuses[7].startswith("ERROR_RECONCILE_REQUIRED")
+    assert (await health_row(engine, sheet))["status"].startswith("BRIDGE_HALTED: saved trim SELL")
+    assert events(notifier, "HALT_RECONCILIATION") == []

@@ -226,6 +226,10 @@ class GridEngine:
         # A saved trim SELL found at restart that must not run; cancelled until gone
         self._restart_trim_cancel_id: Optional[str] = None
         self._restart_trim_absent_ticks = 0
+        # Saved with the record: the trim must be cancelled, never resumed
+        self._bridge_trim_cancel_required = False
+        # The bridge-halt Errors row failed to write and is owed to the Sheet
+        self._bridge_halt_row_retry_pending = False
 
         # Restart recovery of an in-progress re-anchor
         self._bridge_state_path = BRIDGE_REANCHOR_STATE_PATH
@@ -316,6 +320,7 @@ class GridEngine:
         if self._bridge_state != 'BRIDGE_HALTED':
             self._bridge_halt_reported = False
             self._bridge_halt_error_logged = False
+            self._bridge_halt_row_retry_pending = False
             self._bridge_halt_details = ""
             self._bridge_halt_reason = reason
         self._bridge_state = 'BRIDGE_HALTED'
@@ -339,7 +344,9 @@ class GridEngine:
             written = False
         if written:
             self._bridge_halt_error_logged = True
+            self._bridge_halt_row_retry_pending = False
         else:
+            self._bridge_halt_row_retry_pending = True
             logger.error("Bridge halt Errors row was not written. It will be retried on the next tick.")
 
     async def _halt_bridge_flow(self, reason: str, details: str):
@@ -371,6 +378,39 @@ class GridEngine:
             tag="tqqq_bridge_halted",
             extra={"reason": self._bridge_halt_reason},
         )
+
+    async def _halted_housekeeping(self):
+        """
+        Runs on every tick while the engine is reconciliation-halted. The halt
+        blocks trading: nothing is placed and nothing is re-priced. It does not
+        cancel what is already at the broker, so two narrow duties continue:
+
+          - cancels the bot already owes: a saved trim SELL that must not run,
+            and old-grid BUYs of a re-anchor that was in progress
+          - a bridge-halt Errors row whose earlier write failed
+        """
+        if self._bridge_state == 'BRIDGE_HALTED' and self._bridge_halt_row_retry_pending:
+            await self._write_bridge_halt_row()
+
+        if self.config.dry_run:
+            return
+        reanchor_flush_owed = self._bridge_state == 'ANCHOR_RECALC_PENDING' and any(
+            self.order_manager.get_row_and_action(oid)[1] == 'BUY'
+            for oid in self.order_manager.get_tracked_order_ids()
+        )
+        if not self._restart_trim_cancel_id and not reanchor_flush_owed:
+            return
+        try:
+            await self.broker.ensure_connected()
+            open_orders = await self.broker.get_open_orders()
+            if self._restart_trim_cancel_id:
+                await self._cancel_unresumable_restart_trim(open_orders)
+            if reanchor_flush_owed:
+                # confirm_absent: a BUY the broker no longer shows is released and
+                # recorded as unknown, so this does not poll for it forever.
+                await self._flush_old_grid_orders_for_reanchor(open_orders, confirm_absent=True)
+        except Exception as e:
+            logger.error(f"Cancellation retry during reconciliation halt failed; it will be retried on the next tick: {e}")
 
     async def _cancel_unresumable_restart_trim(self, open_orders: List[dict]) -> bool:
         """
@@ -442,6 +482,8 @@ class GridEngine:
                 "filled_qty": float(self._bridge_shares_acquired or 0),
                 "unresolved_buys": [str(oid) for oid in self._reanchor_unresolved_buys],
                 "trim": self._bridge_trim_record,
+                "trim_cancel_required": bool(self._bridge_trim_cancel_required),
+                "halt_reason": self._bridge_halt_reason if self._bridge_trim_cancel_required else "",
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             tmp_path = f"{self._bridge_state_path}.tmp"
@@ -471,6 +513,8 @@ class GridEngine:
             float(record.get("fill_price", 0.0))
             if not isinstance(record.get("unresolved_buys", []), list):
                 raise ValueError("unresolved_buys is not a list")
+            if not isinstance(record.get("trim_cancel_required", False), bool):
+                raise ValueError("trim_cancel_required is not a boolean")
             trim = record.get("trim")
             if trim is not None:
                 if not isinstance(trim, dict) or not str(trim.get("order_id", "")).strip():
@@ -571,24 +615,37 @@ class GridEngine:
                 saved_qty = float(trim["qty"])
                 trim_remaining = int(remaining) if remaining is not None and 0 < remaining <= saved_qty else int(saved_qty)
                 excess_now = broker_shares - sum(r.shares for r in self._rows_holding_shares())
-                if excess_now != trim_remaining:
+                # An earlier restart may already have decided this trim must be
+                # cancelled. That decision is final: it holds even if the
+                # position has since moved to match the trim again.
+                cancel_already_required = bool(record.get("trim_cancel_required"))
+                if cancel_already_required or excess_now != trim_remaining:
                     # The position changed while the bot was down. Letting this
                     # trim run would sell shares the Tracker says are owned, and
                     # halting alone does not stop an order already at the broker.
                     # It is verifiably this bot's order (id and terms match the
                     # record), so it is tracked and cancelled. Tracking it means a
                     # fill that beats the cancel still reaches the engine.
-                    logger.error(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} would sell {trim_remaining} shares but the broker now holds {excess_now} above the Tracker. Cancelling it.")
+                    reason = str(record.get("halt_reason") or "") if cancel_already_required else ""
+                    if not reason:
+                        reason = f"saved trim SELL {saved_trim_id} for {trim_remaining} shares does not match the broker's excess of {excess_now}; trim not resumed"
+                    logger.error(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} must not run ({reason}). Cancelling it.")
                     self._bridge_order_id = bridge_order_id
+                    self._bridge_fill_price = float(record.get("fill_price") or 0.0)
+                    self._bridge_shares_acquired = int(float(record.get("filled_qty") or 0))
+                    self._begin_bridge_reanchor()
+                    self._reanchor_unresolved_buys = saved_unresolved
                     self._bridge_trim_record = dict(trim)
                     self.order_manager.track(7, OrderResult(order_id=saved_trim_id, status='submitted'), 'TRIM_SELL',
                                              broker=self.broker, on_update=self._handle_order_update)
                     self._restart_trim_cancel_id = saved_trim_id
                     self._restart_trim_absent_ticks = 0
-                    self._enter_bridge_halt(
-                        f"saved trim SELL {saved_trim_id} for {trim_remaining} shares does not match the broker's excess of {excess_now}; trim not resumed",
-                        keep_record=True,
-                    )
+                    self._enter_bridge_halt(reason, keep_record=True)
+                    # The requirement and its reason go to disk before the cancel
+                    # is requested, so another restart cannot resume this trim.
+                    self._bridge_trim_cancel_required = True
+                    if not self._save_bridge_reanchor_state():
+                        logger.error(f"Could not save the cancel requirement for trim SELL {saved_trim_id}. Cancelling it anyway.")
                     await self._cancel_unresumable_restart_trim(open_orders)
                     return True
                 # The trim this bot placed is still working, exactly as saved.
@@ -617,7 +674,10 @@ class GridEngine:
                 logger.warning(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} finished while the bot was down and shares match. Re-anchor complete.")
                 self._clear_bridge_reanchor_state()
             else:
-                self._enter_bridge_halt(f"trim SELL {saved_trim_id} is no longer at the broker and the broker holds {excess_now} shares above the tracker")
+                gone_reason = f"trim SELL {saved_trim_id} is no longer at the broker and the broker holds {excess_now} shares above the tracker"
+                if record.get("trim_cancel_required") and record.get("halt_reason"):
+                    gone_reason = f"{record['halt_reason']}; {gone_reason}"
+                self._enter_bridge_halt(gone_reason)
             return False
 
         self._bridge_state = 'ANCHOR_RECALC_PENDING'
@@ -1456,6 +1516,7 @@ class GridEngine:
         self._reanchor_absent_buys = set()
         self._reanchor_unresolved_buys = []
         self._bridge_trim_record = None
+        self._bridge_trim_cancel_required = False
         self._bridge_recalc_started_at = datetime.now()
         self._bridge_recalc_last_values = None
         self._bridge_recalc_ticks = 0
@@ -2073,6 +2134,8 @@ class GridEngine:
     async def _tick(self):
         if self._halted_reconciliation:
             logger.debug("Tick skipped because engine is HALTED_RECONCILIATION.")
+            # No trading while halted, but cancels and reports already owed continue.
+            await self._halted_housekeeping()
             return
 
         if self._bridge_state == 'BRIDGE_HALTED' and not (self._bridge_halt_reported and self._bridge_halt_error_logged):
@@ -3269,6 +3332,11 @@ class GridEngine:
                         is_boundary_cancel = True
                     elif cancel_intent is not None and cancel_intent.get("reason") == "stale_session_boundary_cleanup":
                         is_boundary_cancel = True
+
+                # A trim the bot itself is cancelling after a restart is not a
+                # session-boundary event, whatever the clock says.
+                if cancel_intent is not None and cancel_intent.get("reason") == "restart_trim_excess_mismatch":
+                    is_boundary_cancel = False
 
                 if is_boundary_cancel:
                     if action in ('SELL', 'TRIM_SELL') and is_unexpected_sell_drop:
