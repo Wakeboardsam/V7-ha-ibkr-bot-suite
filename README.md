@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.39). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.40). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -168,13 +168,21 @@ When the Bridge BUY fills, the anchor moves and every level is recalculated, so 
 3. It waits for the Sheet to recalculate: row 7's buy price must match the fill price, and row 7's sell price, buy price and share count must be identical on two consecutive reads. If the fill price has not appeared, the bot writes `G7` again.
 4. It compares broker shares with the recalculated share count of every row the Tracker shows as owned. Normally that is row 7 alone; if an old-grid BUY filled before its cancel landed, that row is owned too and its shares are counted. Equal means normal operation resumes.
 5. Excess shares, up to `bridge_max_auto_trim_shares`, are sold with a trim SELL at the current bid minus `anchor_buy_offset`. That tick ends there; the new row 7 SELL, the window BUYs and the next bridge order are placed on later ticks from a fresh broker read.
-6. More excess than the limit, fewer shares than expected, an unusable bid, or a failed cancel moves the bridge flow to `BRIDGE_HALTED`, which stops all grid evaluation. The reason is shown in the Health status and sent once as a `BRIDGE_HALTED` notification. These halts need operator attention.
+6. More excess than the limit, fewer shares than expected, an unusable bid, or a failed cancel moves the bridge flow to `BRIDGE_HALTED`, which stops all grid evaluation. The halt is entered first and then written to the Errors tab with code `BRIDGE_HALTED`, the reason and the same status text Health shows; it is also sent once as a `BRIDGE_HALTED` notification. If a trim SELL this process sent is already working, the bot waits for it and does not place another. These halts need operator attention.
 
 A re-anchor that has not settled after five minutes is reported once to the Errors tab and by a `BRIDGE_REANCHOR_STALLED` notification; the bot keeps waiting and places nothing.
 
 **Fills that race the cancel.** An old-grid BUY that fills completely before its cancel lands marks its row owned, and the shares above the recalculated Tracker counts are trimmed in step 5 if they are within the limit. An old-grid BUY that was partly filled is cancelled like the others and its row returns to `IDLE`, so its filled shares count as excess: within the limit they are trimmed, above it the bridge flow halts and the operator reconciles. An old-grid BUY that left the broker without any cancel or fill report is treated as unknown: the bot then trims only the shares the bridge fill itself explains, and halts on anything more, whatever the trim limit.
 
-**Restart during a re-anchor.** On a Bridge BUY fill the bot saves a small record (bridge order ID, fill price, filled quantity and a fingerprint of the configured account) to `/data/bridge_reanchor_state.json`. At startup it resumes the re-anchor only if that record matches the configured account, row 7 still reads `OWNED:<bridge order ID>` with no trim placed, and the broker holds shares; old-grid BUYs still at the broker are picked up by the order IDs in the Tracker and cancelled. The record is removed when the shares match, when the trim SELL is placed, or when the bridge flow halts. Without a matching record the bot does not trim: a share difference alone is handled as an ordinary share mismatch. A restart while the old row 7 SELL is still working ends in `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`, and `BRIDGE_HALTED` itself is held in memory only, so after a restart an unresolved bridge halt shows as a share mismatch.
+**Restart during a re-anchor.** The bot keeps a small record of the re-anchor in progress in `/data/bridge_reanchor_state.json`: the bridge order ID, fill price and filled quantity, a fingerprint of the configured account, the IDs of old-grid BUYs that left the broker without a report, and, once a trim is being placed, the trim SELL's order ID, quantity and limit price. An unreported old-grid BUY is written to the record before its Tracker row is cleared; if the record cannot be written, the row keeps its `WORKING_BUY:<id>` status. The record is removed when the shares match, when the trim finishes, or when the bridge flow halts.
+
+At startup the bot uses the record only if it matches the configured account and row 7 still reads `OWNED:<bridge order ID>` (checked on two reads before a non-matching record is discarded). Then:
+
+- **No trim placed yet:** it resumes the re-anchor, with the unreported old-grid BUYs still counted as unknown. Old-grid BUYs still at the broker are picked up by the order IDs in the Tracker and cancelled.
+- **Saved trim still working:** it restores the wait for the trim only if the broker order has the saved ID, is a SELL limit order with the saved quantity and limit price, and the broker's excess over the Tracker equals what the trim still has to sell. Otherwise the order is not adopted and reconciliation halts on it as an unknown order.
+- **Saved trim no longer at the broker:** if broker and Tracker shares now agree, the re-anchor is complete. If excess remains, the bridge flow halts and no replacement trim is placed, as when a running bot's trim is cancelled.
+
+Without a matching record the bot does not trim: a share difference alone is handled as an ordinary share mismatch. A restart while the old row 7 SELL is still working ends in `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`, and `BRIDGE_HALTED` itself is held in memory only, so after a restart an unresolved bridge halt shows as a share mismatch.
 
 ### Fills and partial fills
 
@@ -209,7 +217,7 @@ A **reconciliation halt** sets `HALTED_RECONCILIATION`: the bot places and cance
 | `WAITING_TRIM` | A trim SELL is working. |
 | `PAUSED_WEEKEND_GAP` | Friday 20:00 ET to Sunday 20:00 ET: no new orders. |
 
-The Health order comparison treats a Bridge Anchor order as a BUY and a trim as a SELL. A bridge order matches when it is a stop-limit for row 7's shares with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`; a trim matches on its trim quantity, not row 7's share count.
+The Health order comparison treats a Bridge Anchor order as a BUY and a trim as a SELL. A bridge order matches only when its order type is exactly the stop-limit type the bot places (`STP LMT`; a plain stop does not match), for row 7's shares, with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`. A trim matches on the trim it placed (SELL limit order, trim quantity and limit price), not row 7's share count.
 
 | Halt code | Meaning |
 |---|---|
@@ -312,7 +320,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.39, Account 1 runs 262 tests with 3 failures, and Account 2 runs 253 with the same 3 failures (259 and 250 pass). The failures are `test_cancel_outside_window_working_buy`, `test_cancel_outside_window_working_sell` and `test_owned_fallback_enforcement` in `tests/test_status_strings.py`. Their cause is not established and they are tracked separately.
+**Current baseline.** At add-on version 0.1.40, Account 1 runs 277 tests with 3 failures, and Account 2 runs 268 with the same 3 failures (274 and 265 pass). The failures are `test_cancel_outside_window_working_buy`, `test_cancel_outside_window_working_sell` and `test_owned_fallback_enforcement` in `tests/test_status_strings.py`. Their cause is not established and they are tracked separately.
 
 ### Continuous integration
 

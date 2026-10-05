@@ -140,3 +140,17 @@ Decision:
 - Restart recovery uses a small record in the add-on's `/data` folder rather than a Tracker status marker, because row 7's status after a bridge fill must stay exactly `OWNED:<id>`. The record is account-fingerprinted and is honoured only when row 7 and the broker still agree with it. A re-anchor that halted leaves no record and is never resumed automatically. No trim is ever inferred from a share difference alone.
 - The share comparison after a re-anchor counts every row the Tracker shows as owned, so an old-grid BUY that fills before its cancel lands stays accounted for; excess within `bridge_max_auto_trim_shares` is trimmed. Shares that may come from an old BUY whose outcome the bot never saw are not trimmed: the bridge flow halts.
 - Not changed: the share-mismatch comparison itself and its tolerance, the trim limit, the per-tick Errors row while a mismatch persists, and `BRIDGE_HALTED` being held in memory only.
+
+## 2026-10-05 — Re-anchor record carries unknown BUYs and the trim
+
+Outcome:
+- A review of `375c33f` reproduced a restart safety bug: an old-grid BUY that left the broker without a report was remembered as unknown only in memory. With three unexplained shares plus the bridge's one, a running bot halted and sold nothing, but a restarted bot sold four shares and reported Running.
+- The same review found that a bridge halt's first Errors row had code `ERROR` and no status, that a restart while a trim was working ended in a reconciliation halt, and that Health accepted a plain stop order as a valid bridge.
+
+Decision:
+- The record now names unreported old-grid BUYs, and is written before their Tracker rows are cleared. A restart restores that uncertainty, so shares the bridge fill does not explain are still not trimmed.
+- The record also carries the trim SELL's order ID, quantity and limit price, written before the order is sent. A restart restores the wait for the trim only on an exact match of those terms and of the remaining excess. A saved trim that is gone with excess remaining halts the bridge flow; it is not replaced.
+- A bridge halt enters the halt state before it writes its Errors row, through one helper, so the row has code `BRIDGE_HALTED` and the status Health shows. Other Errors rows written by the engine now carry the status as well.
+- The share comparison does not place a trim while one this process already sent is working. This closes an older case where a placement call that failed after reaching the broker led to two trims for one excess share.
+- Health requires the bridge order type to be exactly `STP LMT`.
+- Not changed: the trim limit, the share-mismatch comparison and its tolerance, and the looser stop-order test reconciliation uses when it matches an untracked bridge order to the Tracker.

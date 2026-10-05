@@ -499,3 +499,241 @@ async def test_old_buy_large_partial_fill_before_cancel_is_a_stable_reported_hal
     assert len(events(notifier, "BRIDGE_HALTED")) == 1
     assert events(notifier, "BRIDGE_HALTED")[0].kwargs["extra"]["bot_status"] == status
     assert events(notifier, "SHARE_MISMATCH") == []
+
+
+# --------------------------------------------------------------------------
+# 5. Gaps reproduced against 375c33f
+# --------------------------------------------------------------------------
+
+async def run_until_old_buy_released_unexplained(config, notifier=None):
+    """
+    Old BUY 820 leaves the broker with no callback and three shares appear that
+    nothing explains. The bot has released 820 and set row 8 to IDLE, and has
+    not yet compared shares. Broker 68 = bridge 65 + 3; Tracker row 7 = 64.
+    """
+    broker, sheet, engine = friday_state(config, notifier)
+    engine._startup_ok_notification_sent = True
+    await run_ticks(engine, 1)
+    broker.orders.pop("820")
+    await bridge_fires(broker)
+    broker.position += 3
+    sheet.recalc_lag_reads = 4                  # the Sheet is still recalculating
+    await run_ticks(engine, 2)
+    await engine._sync_to_sheet()               # any order callback triggers this write
+    assert not engine.order_manager.is_tracked("820")
+    assert sheet.statuses[8] == "IDLE"
+    assert json.load(open(engine._bridge_state_path))["unresolved_buys"] == ["820"], \
+        "the record names 820 by the time its Tracker row is cleared"
+    assert engine._bridge_state == "ANCHOR_RECALC_PENDING"
+    assert broker.event_index("place") is None
+    return broker, sheet, engine
+
+
+@pytest.mark.asyncio
+async def test_unexplained_fill_halts_without_restart(config):
+    broker, sheet, engine = await run_until_old_buy_released_unexplained(config)
+    await run_ticks(engine, 6)
+    assert engine._bridge_state == "BRIDGE_HALTED"
+    assert broker.position == 68 and broker.event_index("place") is None
+
+
+@pytest.mark.asyncio
+async def test_unexplained_fill_still_halts_after_restart(config):
+    """The uncertainty about order 820 must survive a restart: nothing is sold."""
+    broker, sheet, _ = await run_until_old_buy_released_unexplained(config)
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    await run_ticks(engine, 8)
+
+    assert broker.event_index("place") is None, "four shares within the trim limit must not be sold"
+    assert broker.position == 68
+    assert engine._bridge_state == "BRIDGE_HALTED"
+    status = (await health_row(engine, sheet))["status"]
+    assert status == "BRIDGE_HALTED: broker 68 vs tracker 64, old BUY 820 may have filled unreported"
+    assert len(events(notifier, "BRIDGE_HALTED")) == 1
+
+
+@pytest.mark.asyncio
+async def test_unresolved_buy_is_saved_before_its_tracker_status_is_cleared(config):
+    """If the record cannot be written, the Tracker row keeps the order id as the evidence."""
+    broker, sheet, engine = friday_state(config)
+    await run_ticks(engine, 1)
+    broker.orders.pop("820")
+    await bridge_fires(broker)
+    engine._bridge_state_path = os.path.join(os.path.dirname(engine._bridge_state_path), "missing", "state.json")
+    await run_ticks(engine, 2)
+    await engine._sync_to_sheet()
+
+    assert not engine.order_manager.is_tracked("820")
+    assert sheet.statuses[8] == "WORKING_BUY:820"
+
+
+@pytest.mark.asyncio
+async def test_bridge_halt_errors_row_carries_code_reason_and_status(config):
+    broker, sheet, engine = friday_state(config, MagicMock())
+    broker.lose_next_cancel = {"820"}
+    await run_ticks(engine, 1)
+    await bridge_fires(broker)
+    await run_ticks(engine, 1)
+    broker.partial_fill("820", 10)
+    broker.complete_cancel("820")
+    await run_ticks(engine, 6)
+
+    status = (await health_row(engine, sheet))["status"]
+    assert status.startswith("BRIDGE_HALTED: ")
+    halt_rows = [r for r in sheet.error_rows if "Bridge flow halted" in r["details"]]
+    assert len(halt_rows) == 1, "one Errors row for the halt, not a generic one plus a second"
+    assert halt_rows[0]["code"] == "BRIDGE_HALTED"
+    assert halt_rows[0]["bot_status"] == status
+    assert "Broker: 75, Tracker: 64" in halt_rows[0]["details"]
+    assert all(r["bot_status"] for r in sheet.error_rows), "every Errors row states the engine status"
+
+
+async def run_until_trim_working(config):
+    broker, sheet, engine = friday_state(config)
+    broker.fill_marketable_sells = False
+    await run_ticks(engine, 1)
+    await bridge_fires(broker)
+    await run_ticks(engine, 3)
+    trim = next(o for o in broker.live(action="SELL") if o["qty"] == 1)
+    assert (await health_row(engine, sheet))["status"] == "WAITING_TRIM"
+    assert sheet.statuses[7] == f"OWNED:818|TRIM_SELL:{trim['order_id']}"
+    return broker, sheet, engine, trim["order_id"]
+
+
+@pytest.mark.asyncio
+async def test_restart_while_trim_is_working_restores_waiting_trim(config):
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+
+    engine = restart(broker, sheet, config)
+    await run_ticks(engine, 2)
+
+    assert engine._halted_reconciliation is False
+    row = await health_row(engine, sheet)
+    assert row["status"] == "WAITING_TRIM"
+    assert row["order_match_status"] == "MATCH"
+    assert [e for e in broker.events if e[0] == "place" and e[2] == "SELL" and e[3] == 1] \
+        == [e for e in broker.events if e[0] == "place" and e[1] == trim_id], "no second trim"
+
+    broker.fill(trim_id, price=82.06)
+    await run_ticks(engine, 3)
+    assert broker.position == 64
+    assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]
+    assert (await health_row(engine, sheet))["status"] == "Running"
+    assert not os.path.exists(engine._bridge_state_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("qty", 3), ("limit_price", 70.00), ("action", "BUY"), ("order_type", "MKT"),
+])
+async def test_restart_does_not_adopt_a_trim_whose_terms_differ(config, field, value):
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.orders[trim_id][field] = value
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    await run_ticks(engine, 3)
+
+    assert not engine.order_manager.is_tracked(trim_id)
+    assert engine._bridge_state != "TRIM_PENDING"
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+    assert len(events(notifier, "HALT_RECONCILIATION")) == 1
+    assert [e for e in broker.events if e[0] == "place"] == [e for e in broker.events if e[0] == "place" and e[1] == trim_id]
+
+
+@pytest.mark.asyncio
+async def test_restart_after_trim_filled_while_down_does_not_trim_again(config):
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.orders.pop(trim_id)
+    broker.position = 64                        # the trim filled while the bot was down
+
+    engine = restart(broker, sheet, config)
+    await run_ticks(engine, 6)
+
+    assert [e for e in broker.events if e[0] == "place" and e[2] == "SELL" and e[3] == 1] \
+        == [e for e in broker.events if e[0] == "place" and e[1] == trim_id]
+    assert broker.position == 64
+    assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]
+    assert (await health_row(engine, sheet))["status"] == "Running"
+
+
+@pytest.mark.asyncio
+async def test_health_plain_stop_order_is_not_a_valid_bridge(config):
+    """A plain stop with the bridge's price fields is still not a stop-limit."""
+    broker, sheet, engine = friday_state(config)
+    await engine._tick()
+    broker.orders["818"]["order_type"] = "STP"
+    row = await health_row(engine, sheet)
+    assert row["order_match_status"] == "MISMATCH"
+    assert row["unmatched_broker_orders"] == "818"
+
+
+@pytest.mark.asyncio
+async def test_unexplained_fill_still_halts_after_repeated_restarts(config):
+    broker, sheet, _ = await run_until_old_buy_released_unexplained(config)
+    for _ in range(3):
+        engine = restart(broker, sheet, config)
+        await run_ticks(engine, 1)
+    await run_ticks(engine, 8)
+    assert engine._bridge_state == "BRIDGE_HALTED"
+    assert broker.event_index("place") is None and broker.position == 68
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_adopt_a_trim_when_the_excess_is_gone(config):
+    """The saved trim is still working, but the position already equals the Tracker."""
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.position = 64
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    await run_ticks(engine, 3)
+
+    assert not engine.order_manager.is_tracked(trim_id)
+    assert engine._bridge_state != "TRIM_PENDING"
+    assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+    assert len(events(notifier, "HALT_RECONCILIATION")) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_after_trim_cancelled_while_down_halts_and_places_no_new_trim(config):
+    """A running bot halts when its trim is cancelled; a restarted one must not replace it."""
+    broker, sheet, _, trim_id = await run_until_trim_working(config)
+    broker.orders.pop(trim_id)                  # cancelled while the bot was down; position still 65
+    notifier = MagicMock()
+
+    engine = restart(broker, sheet, config, notifier)
+    await run_ticks(engine, 6)
+
+    assert [e for e in broker.events if e[0] == "place" and e[2] == "SELL"] \
+        == [e for e in broker.events if e[0] == "place" and e[1] == trim_id], "no replacement trim, no SELL"
+    assert broker.position == 65
+    status = (await health_row(engine, sheet))["status"]
+    assert status == f"BRIDGE_HALTED: trim SELL {trim_id} is no longer at the broker and the broker holds 1 shares above the tracker"
+    assert len(events(notifier, "BRIDGE_HALTED")) == 1
+    assert not os.path.exists(engine._bridge_state_path)
+
+
+@pytest.mark.asyncio
+async def test_trim_placement_that_raises_after_reaching_the_broker_is_not_repeated(config):
+    """The order went out but the call failed: the next tick must wait for it, not send a second trim."""
+    broker, sheet, engine = friday_state(config)
+    broker.fill_marketable_sells = False
+    broker.raise_after_next_sell_placement = True
+    await run_ticks(engine, 1)
+    await bridge_fires(broker)
+    await run_ticks(engine, 1)
+    with pytest.raises(TimeoutError):
+        await engine._tick()                    # trim reaches the broker, then the call raises
+
+    await run_ticks(engine, 4)
+    trims = [o for o in broker.live(action="SELL") if o["qty"] == 1]
+    assert len(trims) == 1, "exactly one trim for one excess share"
+    assert (await health_row(engine, sheet))["status"] == "WAITING_TRIM"
+
+    broker.fill(trims[0]["order_id"], price=82.06)
+    await run_ticks(engine, 3)
+    assert broker.position == 64
+    assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]

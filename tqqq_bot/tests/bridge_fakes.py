@@ -45,6 +45,8 @@ class FakeBroker:
         self.fill_marketable_sells = True
         # Order ids whose next cancel request is accepted but then lost.
         self.lose_next_cancel: set[str] = set()
+        # The next SELL placement reaches the broker, then the call raises.
+        self.raise_after_next_sell_placement = False
 
     # --- test helpers -------------------------------------------------
     def seed_order(self, order_id, action, qty, limit_price, order_type="LMT", aux_price=None):
@@ -155,6 +157,9 @@ class FakeBroker:
         if on_update:
             self.callbacks[oid] = on_update
         self.events.append(("place", oid, action, qty, limit_price))
+        if action == "SELL" and self.raise_after_next_sell_placement:
+            self.raise_after_next_sell_placement = False
+            raise TimeoutError("placement acknowledgement timed out")
         if action == "SELL" and self.fill_marketable_sells and limit_price <= self.bid:
             self.fill(oid, price=self.bid)
         return OrderResult(order_id=oid, status="submitted")

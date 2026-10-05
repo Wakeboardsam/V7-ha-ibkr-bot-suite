@@ -229,6 +229,9 @@ class GridEngine:
         self._bridge_recovery_reads = 0
         # Old-grid BUYs whose outcome (cancelled or filled) the bot never saw
         self._reanchor_unresolved_buys: list[str] = []
+        # Identity of the re-anchor in progress, as saved in the record
+        self._bridge_order_id: str = ""
+        self._bridge_trim_record: Optional[dict] = None
 
         self._startup_ok_notification_sent = False
         self._halted_reconciliation = False
@@ -299,7 +302,7 @@ class GridEngine:
             )
         )
 
-    def _enter_bridge_halt(self, reason: str, error_logged: bool = False):
+    def _enter_bridge_halt(self, reason: str):
         """
         Moves the bridge flow to BRIDGE_HALTED and records why. The next tick
         reports it once (see _report_bridge_halt), unless a reconciliation halt
@@ -307,12 +310,29 @@ class GridEngine:
         """
         if self._bridge_state != 'BRIDGE_HALTED':
             self._bridge_halt_reported = False
-            self._bridge_halt_error_logged = error_logged
+            self._bridge_halt_error_logged = False
         self._bridge_state = 'BRIDGE_HALTED'
         self._bridge_halt_reason = reason
         # A halted re-anchor needs the operator. It must not resume by itself
         # after a restart, so the saved record goes with it.
         self._clear_bridge_reanchor_state()
+
+    async def _halt_bridge_flow(self, reason: str, details: str):
+        """
+        Halts the bridge flow and writes its Errors row. The halt state is
+        entered first, so the row carries the BRIDGE_HALTED code, the reason and
+        the same status text Health shows.
+        """
+        self._enter_bridge_halt(reason)
+        self._bridge_halt_error_logged = True
+        logger.error(details)
+        try:
+            await self.sheet.log_error(
+                details, severity="CRITICAL", code="BRIDGE_HALTED", symbol=TICKER, row="7",
+                action="NO ACTION (HALT)", bot_status=self._execution_status(),
+            )
+        except Exception as e:
+            logger.error(f"Failed to log bridge halt to sheet: {e}")
 
     async def _report_bridge_halt(self):
         """Tells the operator once that the bridge flow has halted."""
@@ -342,22 +362,32 @@ class GridEngine:
     def _account_fingerprint(self) -> str:
         return hashlib.sha256(str(self.config.ibkr_account_id or "").encode()).hexdigest()[:16]
 
-    def _save_bridge_reanchor_state(self, order_id: str, fill_price: float, filled_qty):
+    def _save_bridge_reanchor_state(self) -> bool:
+        """
+        Writes the record of the re-anchor in progress: which bridge order
+        filled, at what price and size, which old-grid BUYs left the broker
+        without a report, and the trim SELL once one is being placed.
+        Returns False when it could not be written.
+        """
         try:
             record = {
-                "version": 1,
+                "version": 2,
                 "account": self._account_fingerprint(),
-                "bridge_order_id": str(order_id),
-                "fill_price": float(fill_price or 0.0),
-                "filled_qty": float(filled_qty or 0),
+                "bridge_order_id": str(self._bridge_order_id),
+                "fill_price": float(self._bridge_fill_price or 0.0),
+                "filled_qty": float(self._bridge_shares_acquired or 0),
+                "unresolved_buys": [str(oid) for oid in self._reanchor_unresolved_buys],
+                "trim": self._bridge_trim_record,
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             tmp_path = f"{self._bridge_state_path}.tmp"
             with open(tmp_path, "w") as f:
                 json.dump(record, f)
             os.replace(tmp_path, self._bridge_state_path)
+            return True
         except Exception as e:
             logger.error(f"Could not save bridge re-anchor state; a restart during this re-anchor will need manual reconciliation: {e}")
+            return False
 
     def _clear_bridge_reanchor_state(self):
         try:
@@ -375,10 +405,36 @@ class GridEngine:
             if not isinstance(record, dict) or not str(record.get("bridge_order_id", "")).strip():
                 raise ValueError("record is missing bridge_order_id")
             float(record.get("fill_price", 0.0))
+            if not isinstance(record.get("unresolved_buys", []), list):
+                raise ValueError("unresolved_buys is not a list")
+            trim = record.get("trim")
+            if trim is not None:
+                if not isinstance(trim, dict) or not str(trim.get("order_id", "")).strip():
+                    raise ValueError("trim record is malformed")
+                float(trim["qty"]); float(trim["limit_price"])
             return record
         except Exception as e:
             logger.error(f"Bridge re-anchor state file is unreadable and was ignored: {e}")
             return None
+
+    def _trim_order_matches_record(self, order: dict, trim: dict) -> bool:
+        """Strict check that a broker order is the trim SELL this bot saved: side, type, size and price."""
+        try:
+            saved_qty = float(trim["qty"])
+            saved_limit = float(trim["limit_price"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not (0 < saved_qty <= self.config.bridge_max_auto_trim_shares):
+            return False
+        if str(order.get('ticker', '')).upper() != TICKER or order.get('action') != 'SELL':
+            return False
+        if str(order.get('order_type', '')).upper().strip() != 'LMT':
+            return False
+        qty = order.get('qty')
+        limit_price = order.get('limit_price')
+        if qty is None or limit_price is None:
+            return False
+        return abs(qty - saved_qty) < 0.01 and abs(limit_price - saved_limit) < 0.011
 
     def _recover_bridge_reanchor_after_restart(self, open_orders: List[dict], broker_shares: int) -> bool:
         """
@@ -417,9 +473,13 @@ class GridEngine:
             return False
 
         bridge_order_id = str(record["bridge_order_id"])
+        trim = record.get("trim")
+        saved_trim_id = str(trim["order_id"]) if trim else None
         row7 = self.grid_state.rows.get(7) if self.grid_state else None
         row7_parts = row7.status.split('|') if row7 else []
-        if f"OWNED:{bridge_order_id}" not in row7_parts or any(p.startswith("TRIM_SELL:") for p in row7_parts):
+        # Row 7 may carry the trim, but only the trim this record placed.
+        foreign_trim = any(p.startswith("TRIM_SELL:") and p != f"TRIM_SELL:{saved_trim_id}" for p in row7_parts)
+        if f"OWNED:{bridge_order_id}" not in row7_parts or foreign_trim:
             self._bridge_recovery_reads += 1
             if self._bridge_recovery_reads < 2:
                 logger.info("Bridge re-anchor state file does not match Tracker row 7 on this read. Checking once more before discarding it.")
@@ -435,10 +495,59 @@ class GridEngine:
             logger.warning("Bridge re-anchor state file found but the broker holds no shares. Not resuming; reconciliation decides.")
             return False
 
+        saved_unresolved = [str(oid) for oid in record.get("unresolved_buys", [])]
+
+        if trim:
+            trim_order = next((o for o in open_orders if str(o.get('order_id', '')) == saved_trim_id), None)
+            if trim_order is not None:
+                if not self._trim_order_matches_record(trim_order, trim):
+                    logger.error(f"Bridge re-anchor recovery: order {saved_trim_id} is at the broker but its terms do not match the saved trim. Not adopting it; reconciliation decides.")
+                    return False
+                remaining = trim_order.get('remaining_qty')
+                saved_qty = float(trim["qty"])
+                trim_remaining = int(remaining) if remaining is not None and 0 < remaining <= saved_qty else int(saved_qty)
+                excess_now = broker_shares - sum(r.shares for r in self._rows_holding_shares())
+                if excess_now != trim_remaining:
+                    # The position changed while the bot was down. Letting this
+                    # trim run would sell shares the Tracker says are owned.
+                    logger.error(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} would sell {trim_remaining} shares but the broker now holds {excess_now} above the Tracker. Not adopting it; reconciliation decides.")
+                    return False
+                # The trim this bot placed is still working, exactly as saved.
+                self._bridge_order_id = bridge_order_id
+                self._bridge_fill_price = float(record.get("fill_price") or 0.0)
+                self._bridge_shares_acquired = int(float(record.get("filled_qty") or 0))
+                self._begin_bridge_reanchor()
+                self._reanchor_unresolved_buys = saved_unresolved
+                self._bridge_trim_record = dict(trim)
+                self.order_manager.track(7, OrderResult(order_id=saved_trim_id, status='submitted'), 'TRIM_SELL',
+                                         broker=self.broker, on_update=self._handle_order_update)
+                self._pending_trim_qty = trim_remaining
+                self._bridge_state = 'TRIM_PENDING'
+                if f"TRIM_SELL:{saved_trim_id}" not in row7_parts:
+                    self._update_row_status_in_memory(7, f"{row7.status}|TRIM_SELL:{saved_trim_id}")
+                logger.warning(f"Resuming after restart with trim SELL {saved_trim_id} still working ({self._pending_trim_qty} shares remaining).")
+                return False
+            # The saved trim is no longer at the broker. If the position now
+            # equals the Tracker it filled and the re-anchor is complete. If
+            # excess remains it was cancelled or never sent; a running bot
+            # halts when its trim is cancelled, and so does a restarted one.
+            if f"TRIM_SELL:{saved_trim_id}" in row7_parts:
+                self._update_row_status_in_memory(7, '|'.join(p for p in row7_parts if not p.startswith("TRIM_SELL:")))
+            excess_now = broker_shares - sum(r.shares for r in self._rows_holding_shares())
+            if excess_now == 0:
+                logger.warning(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} finished while the bot was down and shares match. Re-anchor complete.")
+                self._clear_bridge_reanchor_state()
+            else:
+                self._enter_bridge_halt(f"trim SELL {saved_trim_id} is no longer at the broker and the broker holds {excess_now} shares above the tracker")
+            return False
+
         self._bridge_state = 'ANCHOR_RECALC_PENDING'
+        self._bridge_order_id = bridge_order_id
         self._bridge_fill_price = float(record.get("fill_price") or 0.0)
         self._bridge_shares_acquired = int(float(record.get("filled_qty") or 0))
         self._begin_bridge_reanchor()
+        # Uncertainty the previous process had already recorded comes back with it.
+        self._reanchor_unresolved_buys = saved_unresolved
 
         # Old-grid BUYs the previous process had not finished with. One still at
         # the broker is adopted, by the order id the Tracker itself records, so
@@ -459,7 +568,11 @@ class GridEngine:
                                          broker=self.broker, on_update=self._handle_order_update)
             else:
                 logger.warning(f"Bridge re-anchor recovery: Tracker row {row.row_index} lists BUY {oid}, which is no longer at the broker. Its outcome is unknown.")
-                self._reanchor_unresolved_buys.append(oid)
+                if oid not in self._reanchor_unresolved_buys:
+                    self._reanchor_unresolved_buys.append(oid)
+
+        if self._reanchor_unresolved_buys != saved_unresolved:
+            self._save_bridge_reanchor_state()
 
         logger.warning(f"Resuming Bridge Anchor re-anchor after restart: bridge order {bridge_order_id}, fill price {self._bridge_fill_price}, broker shares {broker_shares}.")
         return False
@@ -687,7 +800,7 @@ class GridEngine:
                     await self._tick()
                 except Exception as e:
                     logger.error(f"Error in engine tick: {e}", exc_info=True)
-                    await self.sheet.log_error(f"Engine tick error: {str(e)}")
+                    await self.sheet.log_error(f"Engine tick error: {str(e)}", bot_status=self._execution_status())
 
                 # Wait for poll interval or shutdown signal
                 try:
@@ -765,8 +878,9 @@ class GridEngine:
         """True when a broker order has the Bridge Anchor's intended terms for this row."""
         if row is None:
             return False
-        order_type = str(order.get('order_type', '')).upper()
-        if 'STP' not in order_type and 'STOP' not in order_type:
+        # The adapter places the bridge as an IBKR stop-limit ("STP LMT"). A plain
+        # stop ("STP") has no limit and is not a valid bridge.
+        if str(order.get('order_type', '')).upper().strip() != 'STP LMT':
             return False
         if abs(row.shares - (order.get('qty', 0) or 0)) > 0.01:
             return False
@@ -806,7 +920,9 @@ class GridEngine:
                         unmatched_broker.add(oid)
                 elif expected_action == 'TRIM_SELL':
                     # A trim sells the excess only, never the row's share count.
-                    if self._pending_trim_qty:
+                    if self._bridge_trim_record and str(self._bridge_trim_record.get("order_id")) == oid:
+                        trim_ok = self._trim_order_matches_record(o, self._bridge_trim_record)
+                    elif self._pending_trim_qty:
                         trim_ok = abs(self._pending_trim_qty - broker_qty) < 0.01
                     else:
                         trim_ok = 0 < broker_qty <= self.config.bridge_max_auto_trim_shares
@@ -1260,6 +1376,7 @@ class GridEngine:
         """Resets the settle tracking at the start of a Bridge Anchor re-anchor."""
         self._reanchor_absent_buys = set()
         self._reanchor_unresolved_buys = []
+        self._bridge_trim_record = None
         self._bridge_recalc_started_at = datetime.now()
         self._bridge_recalc_last_values = None
         self._bridge_recalc_ticks = 0
@@ -1303,13 +1420,19 @@ class GridEngine:
                     self.order_manager.mark_cancelled(oid)
                     self._bot_initiated_cancel_ids.pop(str(oid), None)
                     self._reanchor_unresolved_buys.append(str(oid))
-                    if self.grid_state and row_index in self.grid_state.rows:
+                    # The order id in the Tracker row is the only other evidence
+                    # that this BUY existed. Clear it only once the record that
+                    # names it is safely on disk, so a restart cannot forget it.
+                    if not self._save_bridge_reanchor_state():
+                        logger.error(f"Bridge re-anchor: leaving Tracker row {row_index} as WORKING_BUY:{oid} because the record could not be saved.")
+                    elif self.grid_state and row_index in self.grid_state.rows:
                         current_status = self.grid_state.rows[row_index].status
                         if f"WORKING_BUY:{oid}" in current_status.split('|'):
                             new_status = _remove_status_part(current_status, 'WORKING_BUY:')
                             if new_status == "OWNED:0" and "OWNED" not in current_status:
                                 new_status = "IDLE"
                             self._update_row_status_in_memory(row_index, new_status)
+                            asyncio.create_task(self._sync_to_sheet())
                 continue
             if self._cancel_in_flight(oid):
                 continue  # cancel sent recently, waiting for the broker callback
@@ -1367,7 +1490,7 @@ class GridEngine:
                    f"No orders are being placed. Check the broker for old orders and the Tracker G7 / row 7 values.")
             logger.error(msg)
             try:
-                await self.sheet.log_error(msg)
+                await self.sheet.log_error(msg, code="BRIDGE_REANCHOR_STALLED", symbol=TICKER, row="7", bot_status=self._execution_status())
             except Exception as e:
                 logger.error(f"Failed to log bridge re-anchor stall to sheet: {e}")
             self._send_status_notification(
@@ -2227,11 +2350,11 @@ class GridEngine:
         if has_invalid_unreconciled_sell:
             msg = f"CIRCUIT BREAKER: Missing or invalid unreconciled WORKING_SELL order detected. Broker: {broker_shares}, Sheet: {sheet_shares} (Raw expected: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}, Open sell remaining: {open_sell_remaining_shares}). Immediate manual reconciliation required."
             logger.critical(msg)
+            self._halted_reconciliation = True
             try:
-                await self.sheet.log_error(msg)
+                await self.sheet.log_error(msg, severity="CRITICAL", code="SELL_POSITION_MISMATCH_HALT", symbol=TICKER, bot_status=self._execution_status())
             except Exception as e:
                 logger.error(f"Failed to log missing/invalid WORKING_SELL discrepancy to sheet: {e}")
-            self._halted_reconciliation = True
             self._send_status_notification(
                 title="TQQQ Bot HALTED",
                 message="Reconciliation halt: missing or invalid WORKING_SELL order. Manual review required.",
@@ -2304,7 +2427,7 @@ class GridEngine:
                         msg = f"RECONCILIATION SUCCESSFUL: Reconciled {abs(delta)} shares across {len(matched_combination)} rows. Halting tick to let state stabilize."
                         logger.info(msg)
                         try:
-                            await self.sheet.log_error(msg)
+                            await self.sheet.log_error(msg, severity="INFO", code="SHARE_RECONCILED", symbol=TICKER, bot_status=self._execution_status())
                         except Exception as e:
                             pass
                         return
@@ -2385,10 +2508,22 @@ class GridEngine:
                             msg = (f"Bridge flow halted: {excess} excess shares but only {explained} explained by the bridge fill. "
                                    f"Old BUY order(s) {unresolved} left the broker without a report and may have filled. "
                                    f"Broker: {broker_shares}, Tracker: {tracker_shares} ({owned_desc}).")
-                            logger.error(msg)
-                            await self.sheet.log_error(msg)
-                            self._enter_bridge_halt(f"broker {broker_shares} vs tracker {tracker_shares}, old BUY {unresolved} may have filled unreported", error_logged=True)
+                            await self._halt_bridge_flow(f"broker {broker_shares} vs tracker {tracker_shares}, old BUY {unresolved} may have filled unreported", msg)
                             return
+                    existing_trims = self.order_manager.get_order_ids_for_action(7, 'TRIM_SELL')
+                    if existing_trims:
+                        # A trim was already sent for this excess (for example the
+                        # placement call failed after the order reached the broker).
+                        fresh_orders = await self.broker.get_open_orders()
+                        live_ids = {str(o.get('order_id')) for o in fresh_orders}
+                        if any(oid in live_ids for oid in existing_trims):
+                            logger.warning(f"Trim SELL {existing_trims} is already working. Waiting for it instead of placing another.")
+                            self._bridge_state = 'TRIM_PENDING'
+                            self._pending_trim_qty = excess
+                        else:
+                            logger.warning(f"Trim SELL {existing_trims} is tracked but not at the broker. Releasing it; the next tick compares shares again.")
+                            self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
+                        return
                     if 1 <= excess <= self.config.bridge_max_auto_trim_shares:
                         logger.info(f"Excess is within max auto trim limit ({self.config.bridge_max_auto_trim_shares}). Placing trim SELL for {excess} shares.")
 
@@ -2396,16 +2531,14 @@ class GridEngine:
                         if current_bid <= 0:
                             logger.error(f"Cannot auto-trim: current bid {current_bid} is invalid.")
                             msg = f"Bridge flow halted: Cannot auto-trim excess {excess} shares because bid is invalid."
-                            await self.sheet.log_error(msg)
-                            self._enter_bridge_halt(f"cannot trim {excess} excess shares, bid is invalid", error_logged=True)
+                            await self._halt_bridge_flow(f"cannot trim {excess} excess shares, bid is invalid", msg)
                             return
                         else:
                             trim_limit_price = current_bid - self.config.anchor_buy_offset
                             if trim_limit_price <= 0:
                                 logger.error(f"Cannot auto-trim: trim limit price {trim_limit_price} is <= 0.")
                                 msg = f"Bridge flow halted: Cannot auto-trim excess {excess} shares because limit price is <= 0."
-                                await self.sheet.log_error(msg)
-                                self._enter_bridge_halt(f"cannot trim {excess} excess shares, trim limit price is not positive", error_logged=True)
+                                await self._halt_bridge_flow(f"cannot trim {excess} excess shares, trim limit price is not positive", msg)
                                 return
                             else:
                                 if self.config.dry_run:
@@ -2418,6 +2551,9 @@ class GridEngine:
                                     # --- End Hard Pre-SELL Guard ---
 
                                     trim_order_id = await self.broker.get_next_order_id()
+                                    # Saved before the order is sent, so a restart can recognise it.
+                                    self._bridge_trim_record = {"order_id": str(trim_order_id), "qty": excess, "limit_price": trim_limit_price}
+                                    self._save_bridge_reanchor_state()
                                     self.order_manager.track(7, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL', broker=self.broker, on_update=self._handle_order_update)
 
                                     result = await self.broker.place_limit_order(
@@ -2453,30 +2589,25 @@ class GridEngine:
                                             self._bridge_state = 'TRIM_PENDING'
                                             self._pending_trim_qty = excess
                                             # Append TRIM_SELL to row 7 status to persist
-                                            current_status = row7.status
-                                            if "TRIM_SELL" not in current_status:
-                                                new_status = f"{current_status}|TRIM_SELL:{trim_order_id}"
+                                            kept = [p for p in row7.status.split('|') if not p.startswith("TRIM_SELL:")]
+                                            new_status = '|'.join(kept + [f"TRIM_SELL:{trim_order_id}"])
+                                            if row7.status != new_status:
                                                 self._update_row_status_in_memory(7, new_status)
                                         else:
-                                            # The fill callback already ran and returned row 7 to OWNED.
+                                            # The fill callback already ran, returned row 7 to OWNED
+                                            # and removed the record.
                                             logger.info("Trim SELL filled immediately.")
-                                        # From here the trim is recoverable from the Tracker and the broker.
-                                        self._clear_bridge_reanchor_state()
                                         # One step per tick: the row 7 SELL and the new window
                                         # are placed on the next tick from a fresh broker read.
                                         await self._sync_to_sheet()
                                         return
                     else:
                         msg = f"Bridge flow halted: Excess shares ({excess}) exceed bridge_max_auto_trim_shares ({self.config.bridge_max_auto_trim_shares}). Broker: {broker_shares}, Tracker: {tracker_shares} ({owned_desc})."
-                        logger.error(msg)
-                        await self.sheet.log_error(msg)
-                        self._enter_bridge_halt(f"broker {broker_shares} vs tracker {tracker_shares}, excess {excess} is above the trim limit", error_logged=True)
+                        await self._halt_bridge_flow(f"broker {broker_shares} vs tracker {tracker_shares}, excess {excess} is above the trim limit", msg)
                         return
                 elif broker_shares < tracker_shares:
                     msg = f"Bridge flow halted: Broker shares ({broker_shares}) are FEWER than recalculated Tracker shares ({tracker_shares}: {owned_desc})."
-                    logger.error(msg)
-                    await self.sheet.log_error(msg)
-                    self._enter_bridge_halt(f"broker {broker_shares} is below tracker {tracker_shares}", error_logged=True)
+                    await self._halt_bridge_flow(f"broker {broker_shares} is below tracker {tracker_shares}", msg)
                     return
                 else:
                     logger.info("Bridge recalc complete. Shares match perfectly. Resuming normal operations.")
@@ -2495,6 +2626,8 @@ class GridEngine:
             if not self.order_manager.has_open_action(7, 'TRIM_SELL'):
                 logger.info("Trim order no longer active. Resuming normal operations.")
                 self._bridge_state = None
+                self._bridge_trim_record = None
+                self._clear_bridge_reanchor_state()
             else:
                 # Do not place normal grid orders during trim pending
                 logger.info("Waiting for TRIM_SELL order to fill...")
@@ -2916,9 +3049,10 @@ class GridEngine:
                     self._bridge_state = 'ANCHOR_RECALC_PENDING'
                     self._bridge_shares_acquired = result.filled_qty if result.filled_qty else 0
                     self._bridge_fill_price = result.filled_price if result.filled_price else 0.0
+                    self._bridge_order_id = str(order_id)
                     self._begin_bridge_reanchor()
                     if not self.config.dry_run:
-                        self._save_bridge_reanchor_state(order_id, self._bridge_fill_price, self._bridge_shares_acquired)
+                        self._save_bridge_reanchor_state()
 
                     # The anchor is moving: old-grid BUYs are cancelled right away.
                     # The tick confirms they are gone before anything else happens.
@@ -2949,6 +3083,8 @@ class GridEngine:
                         new_status = f"OWNED:{owned_id}"
                         self._bridge_state = None
                         self._pending_trim_qty = 0
+                        self._bridge_trim_record = None
+                        self._clear_bridge_reanchor_state()
                     else: # SELL
                         # Check if this is a delayed row-7 SELL fill arriving AFTER the bridge anchor already bought
                         if row_index == 7 and self._bridge_state in ['ANCHOR_RECALC_PENDING', 'TRIM_PENDING']:
