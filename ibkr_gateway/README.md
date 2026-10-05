@@ -2,31 +2,9 @@
 
 ## Purpose
 
-The `ibkr_gateway` add-on provides a standalone IBKR Gateway / IBC service for the Home Assistant bot suite.
+The `ibkr_gateway` add-on runs a standalone IBKR Gateway (through IBC) with no trading logic. It comes from the shared-Gateway design, in which separate bot add-ons would connect to one Gateway.
 
-After the 2026-06-09 architecture pivot, this add-on is retained as optional/experimental shared-Gateway mode for Phase 1. It is no longer the recommended primary Phase 1 production path.
-
-The recommended Phase 1 path is a bundled Gateway + bot add-on per account, starting with `tqqq_bot`.
-
-## Architecture Status
-
-`ibkr_gateway` does not contain trading strategy logic, grid logic, Bridge Anchor behavior, Google Sheets trading logic, or bot runtime behavior. It only provides a Gateway connection.
-
-Shared Gateway mode may be revisited later if Home Assistant container networking and IBKR trusted-IP behavior are solved cleanly.
-
-Do not delete this add-on unless a later decision says it blocks the bundled add-on path.
-
-## Optional / Experimental Shared-Gateway Mode
-
-In shared-Gateway mode, separate bot add-ons connect to this Gateway add-on over the Home Assistant add-on network.
-
-This model is no longer the primary Phase 1 path because it can create practical trusted-IP/container-networking friction.
-
-For Phase 1, prefer:
-
-```text
-one bundled add-on instance = one IBKR Gateway session = one trading bot = one IBKR account = one Google Sheet
-```
+**Status: retained but not usable with the current bots.** The project moved to bundled add-ons (one Gateway, one bot, one account and one Google Sheet per add-on) because shared-Gateway mode created trusted-IP and container-networking friction in Home Assistant. The bundled `tqqq_bot` and `tqqq_bot_account_2` add-ons force `ibkr_host` to `127.0.0.1`, so they cannot connect to this add-on. The folder stays in the repository until a decision removes it. See the repository's [main README](https://github.com/Wakeboardsam/V7-ha-ibkr-bot-suite/blob/main/README.md) and the 2026-06-09 entry in `DECISION_LOG.md`.
 
 ## Configuration Options
 
@@ -48,26 +26,6 @@ one bundled add-on instance = one IBKR Gateway session = one trading bot = one I
 
 Changing exposed ports can affect Home Assistant add-on behavior and should be handled in a later runtime/config PR with an add-on version bump.
 
-## Connecting Bot Add-ons
-
-Shared-Gateway mode is optional/experimental for Phase 1.
-
-If this mode is used, bot add-ons connect to this Gateway using the Home Assistant service hostname or network alias, for example:
-
-```yaml
-gateway_host: "ibkr_gateway"
-gateway_port: 7497
-```
-
-Do not assume `localhost` in shared-Gateway mode unless the bot and Gateway are deliberately running in the same container.
-
-For the primary bundled Phase 1 path, the bot should connect to its local bundled Gateway instead:
-
-```yaml
-ibkr_host: "127.0.0.1"
-ibkr_port: 7497
-```
-
 ## VNC Usage
 
 If `enable_vnc` is `true`, an X11 VNC server may start on port `5900`.
@@ -83,33 +41,4 @@ vnc_port: 5900
 
 ## Secret Handling & Security
 
-**Never commit secrets to git.**
-
-Do not hardcode or commit:
-
-- real IBKR usernames or passwords
-- real IBKR account IDs
-- OAuth certificates or private keys
-- API tokens
-- token caches
-- Google service-account JSON files
-- real Google Sheet IDs
-- `.env` files or `.env` secret values
-- logs or screenshots showing secrets or full account IDs
-
-All documentation and default configurations must use placeholder values, such as:
-
-```yaml
-ibkr_username: "placeholder_user"
-ibkr_password: "placeholder_password"
-ibkr_account_id: "DU1234567"
-google_sheet_id: "your_google_sheet_id_here"
-```
-
-Account IDs must be masked in logs, UI output, docs, and screenshots. Example masked format:
-
-```text
-DU1****567
-```
-
-Home Assistant's Config UI should be used for real runtime secrets. External secrets, certificates, or caches should be mounted externally and never baked into the container image.
+Never commit credentials, real account IDs or other secrets; use placeholders such as `placeholder_user` and `placeholder_password`. Enter real credentials only in the Home Assistant configuration. See `SECURITY.md` in the repository for the full policy.

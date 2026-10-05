@@ -1,175 +1,316 @@
 # v7 HA IBKR Bot Suite
 
-## Purpose
+A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Interactive Brokers (IBKR), driven by a Google Sheet. Each add-on instance is self-contained and bound to exactly one IBKR account and one Google Sheet.
 
-This repository is a Home Assistant add-on repository for running the IBKR TQQQ grid bot as independent, account-scoped add-on instances.
+This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-The v7 project prepares the existing working single-account IBKR bot so it can be safely run against different IBKR accounts without allowing one bot instance to read from, write to, or trade the wrong account.
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.37). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
-## Current Status
+- **[Intended]** — documented project intent that the code or tests do not prove.
+- **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
 
-PR00 through PR05 are complete.
+## Contents
 
-Known completed checkpoints:
+1. [Architecture](#architecture)
+2. [Startup, readiness, maintenance and recovery](#startup-readiness-maintenance-and-recovery)
+3. [Trading lifecycle](#trading-lifecycle)
+4. [Google Sheet](#google-sheet)
+5. [Configuration](#configuration)
+6. [Account isolation and secrets](#account-isolation-and-secrets)
+7. [Notifications](#notifications)
+8. [Development and operations](#development-and-operations)
 
-- The repository is an installable Home Assistant add-on repository.
-- The stable v6 source baseline has been imported into `v6_baseline/`.
-- `ibkr_gateway` and `tqqq_bot` exist as add-on folders.
-- The v6 TQQQ trading bot runtime has been ported into `tqqq_bot`.
-- Account-scoping safety logic has been added for the configured `ibkr_account_id`.
-- The v6 grid strategy behavior, Bridge Anchor behavior, TQQQ-only scope, and Google Sheets behavior are intended to remain preserved unless a later safety task explicitly requires a change.
+## Architecture
 
-Do not rebuild the repository from scratch. Do not rename the repository.
-
-## Stable Source Baseline
-
-The stable source baseline for this project remains the working v6 bot:
-
-- Repository: `Wakeboardsam/v6_IBKR_WebAPI`
-- Tag: `v6.3.1-Single_Account_Stable`
-
-v6 is the proven working runtime pattern. v7 should reuse the working v6 behavior where possible while adding Home Assistant packaging and account-scoping safety.
-
-## June 9, 2026 Architecture Pivot
-
-On 2026-06-09, Phase 1 pivoted away from treating a shared `ibkr_gateway` add-on as the primary deployment path.
-
-The primary Phase 1 target is now a bundled add-on architecture, starting with `tqqq_bot`.
-
-Core Phase 1 rule:
+### One instance, one account
 
 ```text
-one bundled add-on instance = one IBKR Gateway session = one trading bot = one IBKR account = one Google Sheet
+one add-on instance = one IBKR Gateway session = one trading bot = one IBKR account = one Google Sheet
 ```
 
-The bundled model is intended to preserve the proven v6 same-container shape while keeping the new v7 account-scoping safety changes.
+Each add-on bundles the IBKR Gateway (run through IBC), an optional VNC server for manual login, and the Python bot, all in one container. The bot connects to the Gateway on `127.0.0.1`. This is deliberately not a central supervisor: one bot process never trades more than one account.
 
-The target bundled add-on contains:
+The bundled design replaced an earlier shared-Gateway design because trusted-IP and container-networking friction in Home Assistant made the shared Gateway impractical, while the proven v6 bot already ran Gateway and bot together in one container (see the 2026-06-09 entry in the decision log).
 
-1. IBKR Gateway runtime
-2. IBC / Gateway startup configuration
-3. optional VNC troubleshooting access
-4. Python trading bot runtime
-5. IBKR account configuration
-6. Google Sheet configuration
-7. account ID masking and account-scoping guardrails
+### Folders
 
-This is intentionally not a centralized multi-account supervisor.
+| Folder | Role |
+|---|---|
+| `tqqq_bot/` | **Account 1**, the stable baseline add-on. Source of truth for bot code and canonical tests. |
+| `tqqq_bot_account_2/` | **Account 2**, an independent copy of the Account 1 runtime. Committed defaults are the safe ones: `boot: manual`, `dry_run: true`, `readonly_api: true`, paper mode. |
+| `ibkr_gateway/` | Standalone Gateway add-on from the abandoned shared-Gateway design. Kept in the repository but **not usable with the current bots** (see below). |
+| `v6_baseline/` | Imported source of the stable v6 release (`Wakeboardsam/v6_IBKR_WebAPI`, tag `v6.3.1-Single_Account_Stable`). Reference only; it is not built, tested or deployed from here. |
+| `scripts/` | CI helper scripts (parity and configuration validation). |
 
-## Phase 1 Target Model
+Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_for_gateway.py`, `Dockerfile`, `run.sh` (modulo add-on names) and the other non-test files must be byte-identical, which CI enforces. Only `config.yaml` (name, slug, boot mode, safe defaults), `README.md` and `tests/` differ.
 
-Correct Phase 1 model:
+**`ibkr_gateway` status.** Both bundled bots force `ibkr_host` to `127.0.0.1` at startup (in `run.sh` and `main.py`), so they cannot connect to a Gateway in a different add-on. The shared-Gateway mode described in earlier project documents therefore does not work with the current code. The folder is retained until a decision removes it.
 
-```text
-Bundled add-on 1 -> Gateway 1 -> Bot 1 -> IBKR Account A -> Google Sheet A
-Bundled add-on 2 -> Gateway 2 -> Bot 2 -> IBKR Account B -> Google Sheet B
-Bundled add-on 3 -> Gateway 3 -> Bot 3 -> IBKR Account C -> Google Sheet C
+### Scope and strategy constraints
+
+- The strategy is the v6 grid strategy: the grid logic, Bridge Anchor behavior, TQQQ-only scope and Google Sheets behavior come from the stable v6 baseline. Do not change them unless a safety requirement or Home Assistant packaging need explicitly requires it.
+- The traded symbol is hard-coded to `TQQQ`.
+- `active_broker` accepts only `ibkr`. A Schwab adapter exists only as a stub.
+- The repository is public and its name does not change.
+
+## Startup, readiness, maintenance and recovery
+
+### Container startup (`run.sh`)
+
+1. Read Home Assistant options from `/data/options.json`, log the account ID in masked form and force `ibkr_host` to `127.0.0.1`.
+2. Restore saved Gateway settings and Java preferences from `/data/ibgateway/persist` into `/root/Jts` and `/root/.java`, so first-run Gateway choices (such as the SSL reconnect prompt) survive restarts.
+3. Render the IBC configuration from `gateway/ibc_config.ini.template` (credentials, trading mode, read-only API flag, API port, auto and cold restart times) and set `BypassOrderPrecautions` and `BypassRedirectOrderWarning` in `jts.ini`.
+4. Start Xvfb, then `x11vnc` only if `enable_vnc` is true.
+5. Check that the Java runtime bundled with IB Gateway (`/opt/ibgateway_jre`) exists, then start Gateway through IBC.
+6. Run `wait_for_gateway.py` until the API port opens or the timeout expires (3600 s for `live`, 300 s for `paper`). On timeout the container prints sanitized IBC logs and exits with an error.
+7. Copy the Gateway settings back to `/data` once, then every `300` seconds in the background. The interval is a `run.sh` default; it is not exposed as an add-on option.
+8. Start the Python bot (`python -m main`). When the bot exits, `run.sh` stops the other processes and exits with the bot's exit code.
+
+**Login problems.** If IBC reports the Gateway as `LOGGED_OUT` for five minutes while the port is still closed, `wait_for_gateway.py` prints a loud warning and, when notifications are enabled with `notify_on_halts`, sends a Home Assistant alert every five minutes asking the operator to open VNC and sign in. Live accounts may need IBKR Mobile two-factor approval after a cold restart, host reboot, full add-on restart or session expiry. VNC has no password; enable it only for troubleshooting and do not expose its port to untrusted networks.
+
+### Bot startup (`main.py`, then the engine)
+
+1. Load configuration and install the account-ID masking filter on all logging.
+2. Warn loudly if `trading_mode`, `paper_trading` and `ibkr_port` disagree (paper expects 7497, live expects 7496).
+3. Refuse to start when `dry_run` is false and `ibkr_account_id` is empty.
+4. Connect to IBKR and Google Sheets; load the 50 most recent execution IDs from the Fills tab to avoid logging duplicates; subscribe to executions.
+5. Wait up to 30 seconds for a non-zero `TQQQ` price, otherwise shut down.
+6. Start the heartbeat and Health tasks and begin the tick loop (every `poll_interval_seconds`).
+7. The first tick that passes reconciliation sends one "TQQQ Bot Started" notification (`notify_on_startup_ok`).
+
+### Readiness and the connection watchdog
+
+A tick runs only when the broker connection is up and broker state is **READY**: account values are populated and a live positions request has completed. If the connection drops, the watchdog reconnects on the existing connection object, then on a fresh one. If the Gateway stays disconnected for more than 15 minutes, or the connection is up but account state stays not ready through two successive waits of about two minutes (the second after a fresh reconnect), the bot signals the container to restart (`SIGTERM` to PID 1). **[Unverified]** whether Home Assistant restarts the add-on after that exit: `config.yaml` defines no `watchdog` option.
+
+### Nightly maintenance and restarts
+
+IBKR restarts or disconnects Gateway around 23:50 (user-observed, America/Denver). The settings below cooperate:
+
+- **Gateway auto restart** (`gateway_auto_restart_time`, default `11:48 PM`) has IBC restart the Gateway just before the observed disruption.
+- **Gateway cold restart** (`gateway_cold_restart_time`, default `06:00 PM`) is a weekly full restart. **[Intended]** IBC runs it on Sundays; live accounts may then need two-factor approval.
+- **Bot maintenance window** (`maintenance_start_local`–`maintenance_end_local`, default `23:44`–`00:00`, in `timezone`): on entering the window the bot cancels its open orders (when `maintenance_cancel_open_orders` is true), forgets its order tracking and trades nothing until the window ends.
+- **Reconnect grace** (`maintenance_reconnect_grace_minutes`, default 30) extends the period after the window in which a disconnected Gateway does not trigger a container restart, avoiding a restart loop that would keep demanding two-factor approval. Trading stays paused while disconnected and resumes only when broker state is READY again.
+
+### Shutdown
+
+On `SIGTERM` the engine stops its loop, drains the fill-logging queue, cancels the orders it tracks (skipped in dry-run mode) and disconnects.
+
+## Trading lifecycle
+
+### Who computes what
+
+The **Google Sheet decides the grid; the bot executes it.** The bot reads, for rows 7–100 of the `TQQQ_Tracker` tab, the status (column C), the owned flag `Y` (column D), the sell price (F), the buy price (G) and the share count (H). It does not compute prices or quantities. **[Unverified]** How the Sheet derives these values: the Sheet and its formulas are not in this repository.
+
+The bot writes only: row status (column C, rows 7–100), the heartbeat (`C1`), the cash value (`C2`) and the anchor ask price (`G7`). The Sheet interface rejects writes to any other cell.
+
+### Row statuses
+
+Column C holds one status per row, and several parts can be combined with `|` (for example `OWNED:123|BRIDGE_BUY:456`).
+
+| Status | Meaning |
+|---|---|
+| `IDLE` | Nothing owned or working. |
+| `OWNED:<id>` | Shares are held for this row (`<id>` is the order that bought them, or `0`). |
+| `WORKING_BUY:<id>` / `WORKING_SELL:<id>` | A BUY or SELL limit order is live at the broker. |
+| `BRIDGE_BUY:<id>` | A Bridge Anchor stop-limit BUY is armed on row 7. |
+| `TRIM_SELL:<id>` | A Bridge Anchor trim SELL is working on row 7. |
+| `ERROR_RECONCILE_REQUIRED:<code>` | The bot stopped on this row; an operator must reconcile it. |
+| `FAILED` | The bot skips the row. |
+
+**Owned flag (`has_y`).** When the bot reads the Sheet, a row counts as owned when column D is `Y`, with one exception: a row whose status begins `ERROR_RECONCILE_REQUIRED` is also treated as owned. Once the bot changes a row's status itself, or overlays a status that has not yet been written to the Sheet, it recomputes the flag from the status text (`OWNED:` or `WORKING_SELL:`, plus `ERROR_RECONCILE_REQUIRED` for its own updates). The owned flag drives `distal_y`, the grid window, the Bridge Anchor's "only owned row" test and the Sheet-shares total in the share-mismatch check. The reconciliation share requirement is computed separately from status text (`OWNED:`, `WORKING_SELL:`, `BRIDGE_BUY:` and `TRIM_SELL:` rows).
+
+### The tick
+
+Each tick, in this order (any step can end the tick early):
+
+1. Skip everything if the engine is halted.
+2. Ensure the broker connection is up and READY (watchdog).
+3. Handle the maintenance window.
+4. Read the grid from the Sheet and overlay status updates not yet written back.
+5. Read the position snapshot and open orders. If the snapshot is not READY, skip the tick.
+6. Wait for any session-boundary cancellations to settle (see [Cancellations](#cancellations-and-sessions)).
+7. Repair clerical Tracker mismatches for orders the running bot already owns.
+8. Run reconciliation checks and halt if they fail (see [Reconciliation and halts](#reconciliation-and-halts)).
+9. At the 16:00 and 20:00 ET boundaries, regenerate the session (cancel all bot orders, clear order tracking) and end the tick.
+10. Write the account's total cash to `C2`.
+11. If shares went from above zero to zero, a full sell cycle has completed: write a fresh ask to `G7` (resetting the anchor) and end the tick.
+12. Cancel stale session orders and untracked or duplicate Bridge Anchor orders; run the share-mismatch checks; then handle Bridge Anchor states and evaluate the grid.
+13. Write pending status updates to the Sheet and record the share count.
+
+### Grid evaluation
+
+Let `distal_y` be the highest row number whose status is owned. The **active window** runs from `max(7, distal_y − 3)` to `max(7, distal_y + 3)`.
+
+- **Owned rows in the window** need a working SELL at the row's sell price for the row's share count. The bot places a missing one after the pre-SELL guard passes.
+- **Rows beyond `distal_y` in the window** need a working BUY at the row's buy price.
+- **Row 7 with nothing owned** is the anchor acquisition: the BUY price is the Sheet's buy price plus `anchor_buy_offset`, and the order is skipped while the bid/ask spread exceeds `max_spread_pct`.
+- **Rows outside the window** have their working orders cancelled and their status reset to `OWNED:<id>` or `IDLE`.
+- **Failed placements.** A BUY error returns the row to `IDLE` with a five-minute cooldown. A SELL error halts the engine.
+- **Weekend gap.** From Friday 20:00 ET to Sunday 20:00 ET no new orders are placed.
+- **Dry run.** With `dry_run`, the bot logs every order it would have placed or cancelled and sends none.
+
+### Cancellations and sessions
+
+Orders use the exchange and time-in-force for the current session: `OVERNIGHT` with `DAY` orders from 20:00 to 03:50 ET (Sunday evening through Friday morning), `SMART` with `GTC` orders otherwise. When the session changes, the bot cancels its own stale-session orders and places new ones on the next tick.
+
+IBKR cancels overnight orders around 03:50 ET. A cancelled SELL between 03:45 and 04:05 ET is treated as expected only if a fresh position snapshot reports `OK` with a position above zero; the bot then removes the working SELL and keeps ownership. Any other result halts. After such a cancellation the bot waits for the cancellation callbacks, skips one further tick to let state settle, and halts if a callback does not arrive within 15 minutes.
+
+Any other SELL that errors, is rejected or is cancelled with zero fill, and was not cancelled by the bot itself, halts the engine. Cancellations the bot starts (maintenance, session change, leaving the window) are recorded as intentional and preserve ownership.
+
+### Bridge Anchor
+
+The Bridge Anchor protects against a fast rally after row 7, the last owned row, sells. It arms only when all of these hold: the feature is enabled (`enable_bridge_anchor`), row 7 is the only owned row, row 7 has a working SELL, broker shares equal row 7's share count, the session is not `OVERNIGHT`, it is not the weekend gap, and no share mismatch is active. It then places a GTC stop-limit BUY for row 7's share count with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`. It cancels the order when those conditions stop holding, and a separate check cancels a live Bridge order whenever no row 7 SELL is found at the broker. These checks run on each tick, so they reduce but do not eliminate the time a Bridge order can be live without its SELL.
+
+When the Bridge BUY fills:
+
+1. The bot writes the fill price to `G7` and marks row 7 owned, then waits for the Sheet to recalculate (row 7's buy price must match the fill price).
+2. It compares broker shares with the recalculated row 7 share count. Equal means normal operation resumes.
+3. Excess shares, up to `bridge_max_auto_trim_shares`, are sold with a trim SELL at the current bid minus `anchor_buy_offset`; the bot waits for it to fill.
+4. More excess than the limit, fewer shares than expected, an unusable bid, or a failed cancel moves the bridge flow to `BRIDGE_HALTED`, which stops all grid evaluation. These halts need operator attention.
+
+### Fills and partial fills
+
+Every execution reported by IBKR for the configured account and `TQQQ` stock is queued and appended to the Fills tab, de-duplicated by execution ID, with up to three retries. Executions on orders the bot does not track are logged with row `UNKNOWN`.
+
+The engine changes a row's status on a fill only when the order is completely filled: a BUY becomes `OWNED:<id>`, a SELL becomes `IDLE`, a trim returns row 7 to `OWNED`. Partial fills are handled only through reconciliation: a working SELL that is partly filled counts for its remaining quantity (taken from the broker's remaining quantity), and a missing or invalid remaining quantity halts. **[Unverified]** There is no dedicated handling or test for a partially filled working BUY, whose shares appear at the broker before its row changes status.
+
+### Reconciliation and halts
+
+Before the bot trades, and again each tick, it compares the Sheet with the broker:
+
+- Any open `TQQQ` order that is not tracked and does not strictly match a Sheet row's order ID, side, quantity and price (or the Bridge stop-limit shape) stops the bot (`EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`).
+- Any row already in `ERROR_RECONCILE_REQUIRED` stops the bot (`TRACKER_ERROR_RECONCILE_REQUIRED`).
+- The shares the Sheet claims for owned and working rows, adjusted for partial fills, must not exceed broker shares, and every `WORKING_SELL` must be live at the broker with a valid remaining quantity (`SELL_POSITION_MISMATCH_HALT`).
+- If a Tracker `WORKING_SELL` is missing at the broker but broker shares exactly match the Tracker with no partial fills, and the running bot is not tracking that order, the bot waits for a **second consecutive snapshot** before treating it as stale and allowing the SELL to be replaced. That case is not a halt. A missing `WORKING_BUY` is not repaired automatically.
+- A **pre-SELL guard** runs immediately before every SELL and trim: broker shares minus working SELL quantity must cover the order, otherwise the bot halts instead of risking a short sale.
+- A **share-mismatch check** compares broker shares with the Sheet's owned shares (partial-fill adjusted). A mismatch that exactly one combination of working-order rows explains, where those orders are gone from the broker, is repaired (rows set to `OWNED` or `IDLE`) and the tick ends. Any other mismatch is logged to the Errors tab as a circuit-breaker event. With `share_mismatch_mode: halt` the bot skips the tick and repeats the check on the next tick; with `warn` it continues but places no BUYs and arms no Bridge Anchor. In `halt` mode the bot does not set the persistent halted state and sends no notification, unlike the reconciliation halts below. **[Unverified]** Whether this difference is intended is not recorded in the decision log.
+
+A **reconciliation halt** sets `HALTED_RECONCILIATION`: the bot places and cancels nothing, writes the Errors and Health tabs (retrying in the background if the Sheet is unreachable), and sends the `HALT_RECONCILIATION` notification. Halts latch until the add-on restarts, and restarting with an unresolved `ERROR_RECONCILE_REQUIRED` row halts again. The operator must compare the Sheet with the broker, correct the Tracker, then restart.
+
+| Halt code | Meaning |
+|---|---|
+| `SELL_POSITION_MISMATCH_HALT` | Sheet claims more shares than the broker holds, a working SELL is missing or invalid, or the pre-SELL guard would oversell. |
+| `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED` | An open `TQQQ` order is neither tracked nor matched to the Sheet. |
+| `TRACKER_ERROR_RECONCILE_REQUIRED` | A row is already marked `ERROR_RECONCILE_REQUIRED`. |
+| `SELL_CANCELLED_NO_FILL_HALT` | A SELL was dropped without a fill and cancellation was not expected. |
+| `IBKR_SHORT_REJECTION_HALT` | IBKR rejected a SELL as a short sale. |
+| `SELL_ORDER_ERROR_RECONCILE_REQUIRED` / `TRIM_SELL_ORDER_ERROR_RECONCILE_REQUIRED` | A SELL or trim failed on placement. |
+| `BRIDGE_POSITION_MISMATCH_HALT` | Fewer broker shares than row 7 claims when arming the Bridge. |
+| `BRIDGE_CANCEL_FAILED_HALT` | A Bridge order could not be cancelled and may still be live. |
+| `SESSION_BOUNDARY_CANCEL_TIMEOUT_HALT` | A session-boundary cancellation was not confirmed within 15 minutes. |
+
+### Sheet synchronization
+
+The bot keeps row statuses in memory first. Each change is numbered, and writes to the Sheet go through a single lock that skips a write if a newer status for that row was queued in the meantime. Failed writes are retried by later ticks. The next tick re-reads the Sheet, but pending local statuses override the Sheet's value until they have been written. This is intended to keep the bot from acting on an older Sheet value while a write is in flight; it does not rule out every timing gap between the Sheet, the broker and the bot.
+
+## Google Sheet
+
+The service account in `google_credentials_json` must have edit access to the Sheet named by `google_sheet_id`. The Sheet needs four tabs:
+
+| Tab | Role |
+|---|---|
+| `TQQQ_Tracker` | The grid. Rows 7–100 are grid levels (status in C, owned flag in D, sell price F, buy price G, shares H). `C1` is the heartbeat, `C2` the account's total cash, `G7` the anchor ask. |
+| `Fills` | One row per execution: timestamp, execution ID, row, type, price, quantity, order and perm IDs, symbol, then `LEVEL` and `PROFIT` formulas added by the bot. `PROFIT` refers to `TQQQ_Tracker!H3`. |
+| `Health` | A periodic account-scoped snapshot every `health_log_interval_seconds`: last price, position, broker-sourced market price, value and average cost, net liquidation, snapshot status, open-order counts, and how broker orders match the Tracker. |
+| `Errors` | Timestamp, severity, code, symbol, row, action, bot status and details for circuit breakers, halts and errors. |
+
+The bot appends to `Fills`, `Health` and `Errors` and never edits their existing rows. Fills write with `USER_ENTERED` so the formulas evaluate; Health and Errors write raw values.
+
+## Configuration
+
+Options are set in the Home Assistant add-on UI. The defaults and schema live in each add-on's `config.yaml`, and the committed values must be placeholders. The runtime schema is `tqqq_bot/app/config/schema.py`.
+
+| Group | Options | Role |
+|---|---|---|
+| Broker and account | `active_broker`, `paper_trading`, `trading_mode`, `ibkr_host`, `ibkr_port`, `ibkr_client_id`, `ibkr_account_id`, `ibkr_username`, `ibkr_password` | Which account the instance trades. `trading_mode` configures Gateway; `paper_trading` configures the bot; they should agree. `ibkr_host` is forced to `127.0.0.1`. `ibkr_port` defaults to 7497 (paper) and is also the port Gateway opens. |
+| Safety | `dry_run`, `readonly_api`, `mask_account_ids_in_logs` | `dry_run` connects and reads real state but places, cancels and modifies no orders; it does not simulate fills. `readonly_api` makes IBC start the Gateway API read-only. Masking defaults to true. |
+| Sheet | `google_sheet_id`, `google_credentials_json` | Target Sheet and service-account JSON. Enter the JSON as a single line; multi-line values may not round-trip through the Home Assistant password field. |
+| Loop | `poll_interval_seconds` (60), `heartbeat_interval_seconds` (60), `health_log_interval_seconds` (300) | Tick, `C1` heartbeat and Health tab cadence. |
+| Strategy | `anchor_buy_offset` (1.5), `max_spread_pct` (0.5), `enable_bridge_anchor` (true), `bridge_max_auto_trim_shares` (5), `share_mismatch_mode` (`halt` or `warn`) | Anchor price offset, spread limit for the anchor BUY, Bridge Anchor controls and mismatch behavior. |
+| Maintenance | `maintenance_enabled`, `maintenance_start_local`, `maintenance_end_local`, `maintenance_reconnect_grace_minutes`, `maintenance_cancel_open_orders`, `timezone` | The nightly pause (see above). `timezone` also sets the container's `TZ`. |
+| Gateway | `gateway_auto_restart_enabled`, `gateway_auto_restart_time`, `gateway_cold_restart_enabled`, `gateway_cold_restart_time`, `gateway_live_wait_timeout_seconds`, `gateway_paper_wait_timeout_seconds`, `enable_vnc`, `vnc_port` | IBC restart schedule, readiness timeouts and optional VNC. VNC is disabled by default and its port is unmapped. |
+| Notifications | `notifications.*` | See [Notifications](#notifications). |
+
+Account 2's committed defaults (manual boot, paper, `dry_run`, read-only API, VNC off, placeholder credentials) are checked by `scripts/validate_account_addons.py`.
+
+## Account isolation and secrets
+
+**Isolation.** Each bot may act only on its configured account:
+
+- Orders carry the configured `ibkr_account_id`. The bot refuses to place orders when no account is configured outside dry-run mode, or when several accounts are visible and none is configured.
+- Positions, portfolio items, open orders, executions and order-status callbacks are filtered to the configured account; events without an account are ignored. Only stock contracts count, so same-symbol options do not affect reconciliation.
+- Account IDs are masked (for example `DU1****567`) in application logs, error messages, `run.sh` output and IBC log excerpts, unless `mask_account_ids_in_logs` is disabled; do not share logs if it is.
+- Each instance has its own Gateway session, persisted settings directory under `/data`, credentials and Sheet.
+
+**Secrets.** The repository is public. Never commit credentials, real account IDs, Google Sheet IDs, service-account files, OAuth certificates, private keys, API tokens, `.env` files, token caches, or logs and screenshots that show them. Use the placeholders `DU1234567`, `placeholder_user`, `placeholder_password` and `your_google_sheet_id_here`. Real values belong only in the Home Assistant add-on configuration. `SECURITY.md` lists what to do after an accidental commit.
+
+## Notifications
+
+When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSON to a Home Assistant webhook. Sends run off the event loop, network and HTTP send errors are caught and logged rather than raised, and identical messages inside `dedupe_window_seconds` are dropped.
+
+| Event | When | Controlled by |
+|---|---|---|
+| `FILL_BUY` / `FILL_SELL` | A tracked order fills. | `notify_on_fills` |
+| `HALT_RECONCILIATION` | A reconciliation halt. | `notify_on_halts` |
+| `BOT_STARTED` | The first tick passes reconciliation. | `notify_on_startup_ok` |
+| `GATEWAY_AUTH_REQUIRED` | Gateway stays logged out while its port is closed (sent by the startup script). | `notify_on_halts` |
+
+`notify_on_errors` and `notify_on_order_submit` exist as options but no code reads them. The webhook URL is stored as a password-type option because it contains a secret.
+
+## Development and operations
+
+### Workflow
+
+- Work on a feature branch from `main`. Keep each pull request small and focused, and do not mix refactors with fixes or features.
+- Do not rebuild the project from scratch or reorganize the add-on folders without an explicit decision.
+- Pull requests use `.github/pull_request_template.md`. The repository owner reviews and merges. Home Assistant testing happens from `main` after merge.
+- Record significant behavior changes in `DECISION_LOG.md`. Changes to halt, circuit-breaker or reconciliation behavior always need an entry. Routine wording edits do not.
+
+### Running the tests
+
+The suites run from inside each add-on directory. Install dependencies, then run:
+
+```bash
+# Account 1: includes tests for wait_for_gateway.py, which import `tqqq_bot`
+cd tqqq_bot
+pip install -r requirements.txt -r requirements-test.txt
+PYTHONPATH=app:.. python -m pytest -q
+
+# Account 2
+cd ../tqqq_bot_account_2
+pip install -r requirements.txt -r requirements-test.txt
+PYTHONPATH=app python -m pytest -q
 ```
 
-Incorrect Phase 1 model:
+`PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-```text
-One bot process -> multiple IBKR accounts -> multiple Google Sheets
+**Current baseline.** At add-on version 0.1.37, Account 1 runs 224 tests with 3 failures, and Account 2 runs 215 with the same 3 failures (221 and 212 pass). The failures are `test_cancel_outside_window_working_buy`, `test_cancel_outside_window_working_sell` and `test_owned_fallback_enforcement` in `tests/test_status_strings.py`. Their cause is not established and they are tracked separately.
+
+### Continuous integration
+
+`.github/workflows/account-addon-ci.yml` runs on pushes and pull requests to `main`. It compiles the Python (`python -m compileall -q app tests wait_for_gateway.py`), syntax-checks `run.sh` (`bash -n`), runs the parity and configuration scripts below, and checks whitespace with `git diff --check`. **It does not run pytest**; pytest was removed from CI on 2026-07-16 because of baseline failures.
+
+### Parity between accounts
+
+A production-code change belongs in both add-ons in the same pull request, with Account 1 as the reference. Verify with:
+
+```bash
+python scripts/check_addon_parity.py        # app/, scripts and non-test files identical
+python scripts/validate_account_addons.py   # Account 2 safe defaults, placeholders, matching option keys (needs PyYAML)
 ```
 
-Account 2 has been created as the `tqqq_bot_account_2` folder, copying the stable `tqqq_bot` baseline.
+### Version bumps
 
-## Add-on Folders
+Any change that Home Assistant must detect and install requires a version bump in the affected add-on's `config.yaml`: option or config changes, `Dockerfile` or `run.sh` changes, Python runtime changes, dependency changes, and bundled Gateway or bot behavior changes. Documentation-only pull requests need no bump unless they also change add-on files. The version is how Home Assistant recognizes an update.
 
-- `tqqq_bot`: Primary Phase 1 target. This is the first bundled Gateway + trading bot add-on target. The current implementation may still be staged across PRs; documentation should not imply bundled runtime behavior is complete until the code implements it.
-- `ibkr_gateway`: Retained as optional/experimental shared-Gateway mode. It is not the recommended primary Phase 1 production path after the June 9 architecture pivot.
+### Before merging a code change
 
-Shared Gateway mode can be revisited later if Home Assistant container networking and IBKR trusted-IP behavior are solved cleanly.
+Run the tests for the code you changed and the full suites for both add-ons (compare with the baseline above, so a new failure stands out), then the parity script and the validation script.
 
-## Trading Strategy Scope
+### Deployment and rollback
 
-Phase 1 must preserve current v6 strategy behavior.
+There is no separate deployment pipeline: merging to `main` publishes the add-on version, and Home Assistant installs it when the operator updates the add-on. Keep `boot` for Account 2 as `manual` and test new behavior in `dry_run` or paper mode first. To roll back, revert the pull request and bump the add-on version, as for any runtime change, so Home Assistant detects the reverted code, then update the add-on. The pull request template asks each change to state its rollback impact.
 
-Keep:
+## Imported v6 baseline
 
-- current grid logic
-- current Bridge Anchor behavior
-- current order behavior unless account scoping requires a safety change
-- TQQQ as the only traded symbol for now
-- current Google Sheets behavior unless safe account separation requires adjustment
-
-Strategy changes are out of scope unless they are directly required for account scoping, safe runtime separation, or Home Assistant packaging.
-
-## Gateway Auto-Restart and Maintenance Recovery
-
-The add-on uses IBC AutoRestartTime to handle IBKR’s nightly Gateway/TWS restart requirement. The default is 11:48 PM America/Denver, just before the user-observed 11:50 PM maintenance disruption.
-
-The bot already prepares for the maintenance window by cancelling orders. During Gateway downtime, trading is paused and no new orders should be placed. The bot should reconnect after Gateway returns and only resume after broker state is READY.
-
-ColdRestartTime is 06:00 PM America/Denver on Sundays. IBC treats ColdRestartTime as the Sunday cold restart time. Live accounts may still require IBKR Mobile 2FA after cold restart, host reboot, full add-on restart, or session expiration.
-
-VNC remains manual and should only be enabled for troubleshooting or manual 2FA approval.
-
-## Required Account-Scoping Safety
-
-Each bot instance must only operate on its configured IBKR account.
-
-When `ibkr_account_id` is configured, order placement must explicitly target that account.
-
-Broker reads should be account-scoped when IBKR exposes account information, including:
-
-- positions
-- portfolio
-- open orders
-- wallet/cash
-- net liquidation
-- fills/executions
-
-Account IDs must be masked in logs, UI output, docs, and screenshots. Example masked format:
-
-```text
-DU1****567
-```
-
-By default, `mask_account_ids_in_logs` is `true`. Do not share logs or debug output if this has been disabled.
-
-If multiple IBKR accounts are visible and no `ibkr_account_id` is configured, the bot should warn loudly or refuse unsafe trading.
-
-## Placeholder Configuration Only
-
-Use placeholder values in source-controlled examples:
-
-```yaml
-active_broker: "ibkr"
-paper_trading: true
-ibkr_host: "127.0.0.1"
-ibkr_port: 7497
-ibkr_client_id: 1
-ibkr_account_id: "DU1234567"
-google_sheet_id: "your_google_sheet_id_here"
-google_credentials_json: ""
-mask_account_ids_in_logs: true
-enable_vnc: false
-```
-
-Do not commit real values.
-
-## Home Assistant Testing and Versioning Policy
-
-Home Assistant testing occurs from the `main` branch after Sam reviews and merges a PR.
-
-Every future HA-testable add-on/config/runtime merge must bump the affected add-on version so Home Assistant can detect and install the updated add-on.
-
-Examples of changes that require a version bump:
-
-- `config.yaml` changes
-- Dockerfile changes
-- `run.sh` changes
-- Python runtime changes
-- dependency changes
-- bundled Gateway/bot runtime behavior changes
-
-Docs-only PRs do not need an add-on version bump unless they also change add-on/config/runtime files.
-
-Keep PRs small, focused, and easy to revert.
-
-## Security Warning
-
-This repository is public. No secrets, credentials, real account IDs, OAuth certificates, private keys, API tokens, Google service-account files, `.env` secrets, token caches, real Google Sheet IDs, or logs/screenshots containing sensitive data belong in the repo.
-
-Use placeholders only. Refer to `SECURITY.md` for details.
+`v6_baseline/` contains the v6 source exactly as imported, with secrets and local state removed and no intentional behavior changes. It was the staging source for the v7 add-ons and remains as reference.
