@@ -111,3 +111,79 @@ Outcome:
 Decision:
 - Current behavior is documented in `README.md`; this log keeps the historical reasons for decisions. Earlier entries are unchanged, including those that describe superseded plans (for example the staged shared-Gateway implementation and the instruction not to create account copies).
 - Changes to halt, circuit-breaker or reconciliation behavior require a decision log entry. Other significant behavior changes continue to be recorded here; routine wording edits are not.
+
+## 2026-10-04 — Bridge Anchor re-anchor flushes the old grid
+
+Outcome:
+- On 2026-10-02 a Bridge Anchor fill re-anchored the grid (row 7 went from 65 to 64 shares, row 8 from 62 @ 80.39 to 61 @ 81.70), but the BUY orders already working on rows 8 to 10 stayed at the broker with the old prices and sizes. An hour later the old row 8 BUY filled for 62 shares against a Sheet value of 61, and the share-mismatch check repeated every minute with the Bridge Anchor still armed and no SELL on row 8.
+- Cause: a normal full sell-out cancels the lower BUYs because the active window collapses to row 7 when nothing is owned. The bridge path takes row 7 straight from sold to owned, so that flush never ran.
+
+Decision:
+- After a Bridge Anchor fill the bot cancels every working BUY from the old grid and places nothing until the broker no longer shows them and the old row 7 SELL has finished. The wait is bounded: a cancel with no callback after 60 seconds is sent again, an old BUY absent from the broker on two consecutive ticks is released, and a re-anchor still unsettled after five minutes is reported to the Errors tab and by a `BRIDGE_REANCHOR_STALLED` notification.
+- The Sheet counts as recalculated only when row 7's buy price matches the fill price and row 7 reads the same on two consecutive ticks. The bot writes `G7` again if the fill price has not appeared.
+- The tick that places the trim SELL ends there. The new row 7 SELL, window BUYs and bridge order follow on later ticks.
+- Standing check: a working BUY on row 8 or below that does not match its Sheet row on two consecutive ticks is cancelled and placed again. Row 7's anchor BUY keeps its existing warn-only check, because cancelling it rewrites `G7`.
+- Share-mismatch behavior change: in both `halt` and `warn` modes an unexplained mismatch now cancels a Bridge Anchor order that is still armed and sends one `SHARE_MISMATCH` notification per distinct pair of share counts. It still does not set the persistent halted state.
+- Six existing tests that set `ANCHOR_RECALC_PENDING` directly now run one extra tick before their unchanged assertions, because of the two-read rule.
+- Not changed: the bridge phase is still held in memory only, and `_cancel_bridge_anchor` still releases order tracking before the broker confirms the cancel.
+
+## 2026-10-05 — Health reports the real trading state; re-anchor survives a restart
+
+Outcome:
+- Health showed "Running" while the share-mismatch check blocked trading, because it looked only at the reconciliation-halt flag. Its order comparison also flagged every valid Bridge Anchor order, by comparing the internal action `BRIDGE_BUY` with the broker's `BUY`.
+- A restart between a Bridge Anchor fill and its trim lost the bridge phase: the bot reported broker 65 against Tracker 64 every minute and placed no SELL.
+
+Decision:
+- One function describes the engine's current state, and Health, Errors rows and notifications use it. The states are listed in `README.md`. A share mismatch is reported as a pause (`halt` mode) or limited trading (`warn` mode); it does not set the persistent halted state and clears only when a tick verifies fresh broker and Tracker counts agree. Recovery writes a `SHARE_MISMATCH_CLEARED` Errors row and notification.
+- `BRIDGE_HALTED` now records its reason and is reported once by notification. The one reconciliation latch that had no notification (missing or invalid `WORKING_SELL` in the share check) now sends `HALT_RECONCILIATION`.
+- Health validates a bridge order against its stop and limit and a trim against its trim quantity.
+- Restart recovery uses a small record in the add-on's `/data` folder rather than a Tracker status marker, because row 7's status after a bridge fill must stay exactly `OWNED:<id>`. The record is account-fingerprinted and is honoured only when row 7 and the broker still agree with it. A re-anchor that halted leaves no record and is never resumed automatically. No trim is ever inferred from a share difference alone.
+- The share comparison after a re-anchor counts every row the Tracker shows as owned, so an old-grid BUY that fills before its cancel lands stays accounted for; excess within `bridge_max_auto_trim_shares` is trimmed. Shares that may come from an old BUY whose outcome the bot never saw are not trimmed: the bridge flow halts.
+- Not changed: the share-mismatch comparison itself and its tolerance, the trim limit, the per-tick Errors row while a mismatch persists, and `BRIDGE_HALTED` being held in memory only.
+
+## 2026-10-05 — Re-anchor record carries unknown BUYs and the trim
+
+Outcome:
+- A review of `375c33f` reproduced a restart safety bug: an old-grid BUY that left the broker without a report was remembered as unknown only in memory. With three unexplained shares plus the bridge's one, a running bot halted and sold nothing, but a restarted bot sold four shares and reported Running.
+- The same review found that a bridge halt's first Errors row had code `ERROR` and no status, that a restart while a trim was working ended in a reconciliation halt, and that Health accepted a plain stop order as a valid bridge.
+
+Decision:
+- The record now names unreported old-grid BUYs, and is written before their Tracker rows are cleared. A restart restores that uncertainty, so shares the bridge fill does not explain are still not trimmed.
+- The record also carries the trim SELL's order ID, quantity and limit price, written before the order is sent. A restart restores the wait for the trim only on an exact match of those terms and of the remaining excess. A saved trim that is gone with excess remaining halts the bridge flow; it is not replaced.
+- A bridge halt enters the halt state before it writes its Errors row, through one helper, so the row has code `BRIDGE_HALTED` and the status Health shows. Other Errors rows written by the engine now carry the status as well.
+- The share comparison does not place a trim while one this process already sent is working. This closes an older case where a placement call that failed after reaching the broker led to two trims for one excess share.
+- Health requires the bridge order type to be exactly `STP LMT`.
+- Not changed: the trim limit, the share-mismatch comparison and its tolerance, and the looser stop-order test reconciliation uses when it matches an untracked bridge order to the Tracker.
+
+## 2026-10-05 — A saved trim that cannot be resumed is cancelled
+
+Outcome:
+- A review of `2c37e76` showed that when a restart refused to resume the saved trim because the broker's excess was already gone, the bot halted but left the SELL working at IBKR. It later filled, leaving 63 broker shares against 64 in the Tracker. Halting the engine does not stop an order already at the broker.
+- The same review found that a bridge-halt Errors row whose first write failed was never written, and that startup reconciliation still accepted a plain stop order as a bridge while Health rejected it.
+
+Decision:
+- A trim that strictly matches the saved record but no longer matches the broker's excess is tracked and cancelled, with the cancel repeated until the broker no longer has the order. The bridge flow halts either way. The record is kept until the cancel is confirmed. A fill during the cancel is handled as the bot's own trim, and a trim fill no longer lifts a bridge halt.
+- An order with the saved ID but different terms is still left alone: it is not verifiably the bot's order.
+- The bridge-halt Errors row is marked written only when the Sheet accepts it, and is retried each tick until then. The notification is still sent once.
+- Reconciliation halt behavior change: an untracked bridge order is matched to the Tracker only if it passes the strict stop-limit check Health uses. A plain stop order with the bridge's prices now halts with `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`.
+
+## 2026-10-05 — Owed cancels and reports continue during a reconciliation halt
+
+Outcome:
+- A review of `86e2fb4` showed that once a reconciliation halt was set, the tick returned before the trim cancellation and bridge-halt reporting retries. A trim whose cancel the broker had refused stayed live after the broker recovered and sold another share (60 to 59), and a failed `BRIDGE_HALTED` Errors row was never written.
+- It also showed that the saved record did not say the trim had to be cancelled. After an unconfirmed cancel, a second restart with the position back at 65 resumed the trim as a normal working order and the bot returned to Running without the operator.
+
+Decision:
+- Reconciliation halt behavior change: while halted the bot still places nothing, but it keeps cancelling orders it already owes a cancel for (a saved trim that must not run, and old-grid BUYs of a re-anchor in progress) and keeps retrying a bridge-halt Errors row that failed to write. The halt itself stays latched.
+- The record carries the cancel requirement and the halt reason, written before the cancel is requested. A later restart cancels the trim and halts with that reason whatever the position is.
+- The bot's own cancel of a saved trim is not treated as an IBKR session-boundary cancellation, even between 03:45 and 04:05 ET.
+- Not changed: once the trim is confirmed gone, the record is removed and `BRIDGE_HALTED` is held in memory only, as before.
+
+## 2026-10-05 — Halted cancels wait for a ready broker snapshot
+
+Outcome:
+- A review of `f4aee5c` showed that the cancel loop that runs during a reconciliation halt read open orders without checking that broker state was ready. In a simulated reconnect, two empty reads made the bot forget a trim that was still live and delete its record; the trim then sold a share (60 to 59). This was a simulation, not an observed IBKR reconnect.
+
+Decision:
+- While reconciliation-halted, the bot counts an order as absent only on a ready broker snapshot. Without one it keeps the order's tracking, the cancel requirement and the saved record, and starts its consecutive-absence counts over. The Errors row retry still runs.
+- Ticks that are not halted were already skipped on an unready snapshot before any of this logic.
