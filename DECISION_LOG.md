@@ -154,3 +154,15 @@ Decision:
 - The share comparison does not place a trim while one this process already sent is working. This closes an older case where a placement call that failed after reaching the broker led to two trims for one excess share.
 - Health requires the bridge order type to be exactly `STP LMT`.
 - Not changed: the trim limit, the share-mismatch comparison and its tolerance, and the looser stop-order test reconciliation uses when it matches an untracked bridge order to the Tracker.
+
+## 2026-10-05 — A saved trim that cannot be resumed is cancelled
+
+Outcome:
+- A review of `2c37e76` showed that when a restart refused to resume the saved trim because the broker's excess was already gone, the bot halted but left the SELL working at IBKR. It later filled, leaving 63 broker shares against 64 in the Tracker. Halting the engine does not stop an order already at the broker.
+- The same review found that a bridge-halt Errors row whose first write failed was never written, and that startup reconciliation still accepted a plain stop order as a bridge while Health rejected it.
+
+Decision:
+- A trim that strictly matches the saved record but no longer matches the broker's excess is tracked and cancelled, with the cancel repeated until the broker no longer has the order. The bridge flow halts either way. The record is kept until the cancel is confirmed. A fill during the cancel is handled as the bot's own trim, and a trim fill no longer lifts a bridge halt.
+- An order with the saved ID but different terms is still left alone: it is not verifiably the bot's order.
+- The bridge-halt Errors row is marked written only when the Sheet accepts it, and is retried each tick until then. The notification is still sent once.
+- Reconciliation halt behavior change: an untracked bridge order is matched to the Tracker only if it passes the strict stop-limit check Health uses. A plain stop order with the bridge's prices now halts with `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`.

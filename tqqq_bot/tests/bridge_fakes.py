@@ -45,6 +45,8 @@ class FakeBroker:
         self.fill_marketable_sells = True
         # Order ids whose next cancel request is accepted but then lost.
         self.lose_next_cancel: set[str] = set()
+        # Order ids whose cancel requests the broker refuses outright.
+        self.refuse_cancel: set[str] = set()
         # The next SELL placement reaches the broker, then the call raises.
         self.raise_after_next_sell_placement = False
 
@@ -177,6 +179,9 @@ class FakeBroker:
         oid = str(order_id)
         if oid not in self.orders:
             return False
+        if oid in self.refuse_cancel:
+            self.events.append(("cancel_refused", oid))
+            return False
         if oid in self.lose_next_cancel:
             # The adapter returns True once the request is sent; nothing else happens.
             self.lose_next_cancel.discard(oid)
@@ -200,6 +205,8 @@ class FakeSheet:
         self.anchor_writes: list[float] = []
         self.errors: list[str] = []
         self.error_rows: list[dict] = []
+        # Number of upcoming Errors-tab writes that fail (the real call returns False).
+        self.fail_error_writes = 0
         self.health: list[dict] = []
         self.fetches_since_anchor_write = None
         # Number of reads the "formulas" need before the new values show up.
@@ -236,6 +243,9 @@ class FakeSheet:
 
     async def log_error(self, msg=None, *args, **kwargs):
         text = str(kwargs.get("details") or msg)
+        if self.fail_error_writes > 0:
+            self.fail_error_writes -= 1
+            return False
         self.errors.append(text)
         self.error_rows.append({"details": text, "code": kwargs.get("code", "ERROR"),
                                 "severity": kwargs.get("severity", "ERROR"),

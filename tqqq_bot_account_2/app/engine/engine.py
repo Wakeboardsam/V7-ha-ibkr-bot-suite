@@ -222,6 +222,10 @@ class GridEngine:
         self._bridge_halt_reason = ""
         self._bridge_halt_reported = True
         self._bridge_halt_error_logged = True
+        self._bridge_halt_details = ""
+        # A saved trim SELL found at restart that must not run; cancelled until gone
+        self._restart_trim_cancel_id: Optional[str] = None
+        self._restart_trim_absent_ticks = 0
 
         # Restart recovery of an in-progress re-anchor
         self._bridge_state_path = BRIDGE_REANCHOR_STATE_PATH
@@ -302,53 +306,64 @@ class GridEngine:
             )
         )
 
-    def _enter_bridge_halt(self, reason: str):
+    def _enter_bridge_halt(self, reason: str, keep_record: bool = False):
         """
         Moves the bridge flow to BRIDGE_HALTED and records why. The next tick
         reports it once (see _report_bridge_halt), unless a reconciliation halt
-        has already reported the same event.
+        has already reported the same event. A flow that is already halted
+        keeps its first reason.
         """
         if self._bridge_state != 'BRIDGE_HALTED':
             self._bridge_halt_reported = False
             self._bridge_halt_error_logged = False
+            self._bridge_halt_details = ""
+            self._bridge_halt_reason = reason
         self._bridge_state = 'BRIDGE_HALTED'
-        self._bridge_halt_reason = reason
         # A halted re-anchor needs the operator. It must not resume by itself
-        # after a restart, so the saved record goes with it.
-        self._clear_bridge_reanchor_state()
+        # after a restart, so the saved record goes with it. The one exception
+        # is a saved trim that is still being cancelled: its record stays until
+        # the broker confirms, so another restart can find the order again.
+        if not keep_record:
+            self._clear_bridge_reanchor_state()
 
-    async def _halt_bridge_flow(self, reason: str, details: str):
-        """
-        Halts the bridge flow and writes its Errors row. The halt state is
-        entered first, so the row carries the BRIDGE_HALTED code, the reason and
-        the same status text Health shows.
-        """
-        self._enter_bridge_halt(reason)
-        self._bridge_halt_error_logged = True
-        logger.error(details)
+    async def _write_bridge_halt_row(self):
+        """Writes the bridge halt's Errors row. Marked written only when the Sheet accepted it."""
+        details = self._bridge_halt_details or f"Bridge flow halted: {self._bridge_halt_reason}. Manual review required."
         try:
-            await self.sheet.log_error(
+            written = await self.sheet.log_error(
                 details, severity="CRITICAL", code="BRIDGE_HALTED", symbol=TICKER, row="7",
                 action="NO ACTION (HALT)", bot_status=self._execution_status(),
             )
         except Exception as e:
             logger.error(f"Failed to log bridge halt to sheet: {e}")
+            written = False
+        if written:
+            self._bridge_halt_error_logged = True
+        else:
+            logger.error("Bridge halt Errors row was not written. It will be retried on the next tick.")
+
+    async def _halt_bridge_flow(self, reason: str, details: str):
+        """
+        Halts the bridge flow and writes its Errors row. The halt state is
+        entered first, so the row carries the BRIDGE_HALTED code, the reason and
+        the same status text Health shows. A failed write is retried by later ticks.
+        """
+        self._enter_bridge_halt(reason)
+        self._bridge_halt_details = details
+        logger.error(details)
+        await self._write_bridge_halt_row()
 
     async def _report_bridge_halt(self):
-        """Tells the operator once that the bridge flow has halted."""
-        self._bridge_halt_reported = True
-        status = self._execution_status()
-        logger.critical(f"Bridge flow halted: {self._bridge_halt_reason}. Manual review required.")
+        """
+        Tells the operator that the bridge flow has halted: the Errors row is
+        retried until the Sheet accepts it, the notification is sent once.
+        """
         if not self._bridge_halt_error_logged:
-            self._bridge_halt_error_logged = True
-            try:
-                await self.sheet.log_error(
-                    f"Bridge flow halted: {self._bridge_halt_reason}. Manual review required.",
-                    severity="CRITICAL", code="BRIDGE_HALTED", symbol=TICKER, row="7",
-                    action="NO ACTION (HALT)", bot_status=status,
-                )
-            except Exception as e:
-                logger.error(f"Failed to log bridge halt to sheet: {e}")
+            await self._write_bridge_halt_row()
+        if self._bridge_halt_reported:
+            return
+        self._bridge_halt_reported = True
+        logger.critical(f"Bridge flow halted: {self._bridge_halt_reason}. Manual review required.")
         self._send_status_notification(
             title="TQQQ bridge flow HALTED",
             message=f"Bridge flow halted: {self._bridge_halt_reason}. No orders are being placed. Manual review required.",
@@ -356,6 +371,55 @@ class GridEngine:
             tag="tqqq_bridge_halted",
             extra={"reason": self._bridge_halt_reason},
         )
+
+    async def _cancel_unresumable_restart_trim(self, open_orders: List[dict]) -> bool:
+        """
+        Keeps cancelling a saved trim SELL that a restart found but could not
+        resume, until the broker no longer has it. Halting the engine does not
+        stop an order that is already at the broker.
+
+        Returns True when a cancel was accepted. The caller then ends the tick: the
+        open-orders list it holds may still show the order after the broker has
+        confirmed the cancel, and reconciliation must not judge that stale list.
+        """
+        oid = self._restart_trim_cancel_id
+        if not oid:
+            return False
+        if not self.order_manager.is_tracked(oid):
+            self._restart_trim_cancel_id = None     # the cancel or fill callback dealt with it
+            return False
+        if oid not in {str(o.get('order_id')) for o in open_orders}:
+            self._restart_trim_absent_ticks += 1
+            if self._restart_trim_absent_ticks >= 2:
+                logger.warning(f"Saved trim SELL {oid} is no longer at the broker and sent no callback. Releasing it; reconciliation compares shares.")
+                self.order_manager.mark_cancelled(oid)
+                self._bot_initiated_cancel_ids.pop(str(oid), None)
+                self._restart_trim_cancel_id = None
+                self._bridge_trim_record = None
+                self._clear_bridge_reanchor_state()
+                if self.grid_state and 7 in self.grid_state.rows:
+                    row7_status = self.grid_state.rows[7].status
+                    stripped = '|'.join(p for p in row7_status.split('|') if p != f"TRIM_SELL:{oid}")
+                    if stripped and stripped != row7_status:
+                        self._update_row_status_in_memory(7, stripped)
+                        asyncio.create_task(self._sync_to_sheet())
+            return False
+        self._restart_trim_absent_ticks = 0
+        if self._cancel_in_flight(oid):
+            return False
+        if self.config.dry_run:
+            logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=saved trim does not match the excess")
+            return False
+        try:
+            sent = await self._cancel_order_with_intent(oid, reason="restart_trim_excess_mismatch")
+        except Exception as e:
+            logger.error(f"Failed to cancel saved trim SELL {oid}; it will be retried: {e}")
+            sent = False
+        if not sent:
+            # Nothing went out, so the order list is not stale. Let the tick
+            # carry on: reconciliation must still be able to halt.
+            logger.error(f"Cancel of saved trim SELL {oid} was not accepted. It will be retried on the next tick.")
+        return bool(sent)
 
     # --- Bridge re-anchor persistence (restart recovery) -------------------
 
@@ -436,7 +500,7 @@ class GridEngine:
             return False
         return abs(qty - saved_qty) < 0.01 and abs(limit_price - saved_limit) < 0.011
 
-    def _recover_bridge_reanchor_after_restart(self, open_orders: List[dict], broker_shares: int) -> bool:
+    async def _recover_bridge_reanchor_after_restart(self, open_orders: List[dict], broker_shares: int) -> bool:
         """
         Runs at startup, on the first ticks with a usable broker snapshot.
         Resumes a Bridge Anchor re-anchor that a restart interrupted, but only
@@ -509,9 +573,24 @@ class GridEngine:
                 excess_now = broker_shares - sum(r.shares for r in self._rows_holding_shares())
                 if excess_now != trim_remaining:
                     # The position changed while the bot was down. Letting this
-                    # trim run would sell shares the Tracker says are owned.
-                    logger.error(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} would sell {trim_remaining} shares but the broker now holds {excess_now} above the Tracker. Not adopting it; reconciliation decides.")
-                    return False
+                    # trim run would sell shares the Tracker says are owned, and
+                    # halting alone does not stop an order already at the broker.
+                    # It is verifiably this bot's order (id and terms match the
+                    # record), so it is tracked and cancelled. Tracking it means a
+                    # fill that beats the cancel still reaches the engine.
+                    logger.error(f"Bridge re-anchor recovery: trim SELL {saved_trim_id} would sell {trim_remaining} shares but the broker now holds {excess_now} above the Tracker. Cancelling it.")
+                    self._bridge_order_id = bridge_order_id
+                    self._bridge_trim_record = dict(trim)
+                    self.order_manager.track(7, OrderResult(order_id=saved_trim_id, status='submitted'), 'TRIM_SELL',
+                                             broker=self.broker, on_update=self._handle_order_update)
+                    self._restart_trim_cancel_id = saved_trim_id
+                    self._restart_trim_absent_ticks = 0
+                    self._enter_bridge_halt(
+                        f"saved trim SELL {saved_trim_id} for {trim_remaining} shares does not match the broker's excess of {excess_now}; trim not resumed",
+                        keep_record=True,
+                    )
+                    await self._cancel_unresumable_restart_trim(open_orders)
+                    return True
                 # The trim this bot placed is still working, exactly as saved.
                 self._bridge_order_id = bridge_order_id
                 self._bridge_fill_price = float(record.get("fill_price") or 0.0)
@@ -1672,16 +1751,11 @@ class GridEngine:
                                     if expected_action == o.get('action') and abs(expected_qty - o.get('qty', 0)) < 0.01 and abs(row.sell_price - o.get('limit_price', 0)) < 0.01:
                                         sheet_matched = True
                                 elif prefix == "BRIDGE_BUY":
-                                    expected_action = "BUY"
-                                    expected_qty = row.shares
-                                    order_type = str(o.get('order_type', '')).upper()
-                                    # Bridge must match qty exactly, be a STOP LMT, aux_price match sell target, and limit_price match buy offset
-                                    if expected_action == o.get('action') and ('STP' in order_type or 'STOP' in order_type) and abs(expected_qty - o.get('qty', 0)) < 0.01:
-                                        aux_price = o.get('aux_price')
-                                        limit_price = o.get('limit_price')
-                                        expected_limit = row.sell_price + self.config.anchor_buy_offset
-                                        if aux_price is not None and abs(aux_price - row.sell_price) < 0.02 and limit_price is not None and abs(limit_price - expected_limit) < 0.02:
-                                            sheet_matched = True
+                                    # One validator for Health and reconciliation: a BUY stop-limit
+                                    # ("STP LMT") for the row's shares, stop at the sell target,
+                                    # limit at the sell target plus the offset.
+                                    if o.get('action') == "BUY" and self._bridge_order_terms_match(o, row):
+                                        sheet_matched = True
                                 elif prefix == "TRIM_SELL":
                                     # Trim sell cannot be easily validated completely due to lost expected state qty,
                                     # so strictly speaking, we cannot blindly adopt it safely.
@@ -2001,7 +2075,7 @@ class GridEngine:
             logger.debug("Tick skipped because engine is HALTED_RECONCILIATION.")
             return
 
-        if self._bridge_state == 'BRIDGE_HALTED' and not self._bridge_halt_reported:
+        if self._bridge_state == 'BRIDGE_HALTED' and not (self._bridge_halt_reported and self._bridge_halt_error_logged):
             await self._report_bridge_halt()
 
         # A stale-BUY sighting only counts if the very next tick sees it again.
@@ -2098,7 +2172,9 @@ class GridEngine:
 
         # A restart may have interrupted a Bridge Anchor re-anchor. Resume it from
         # the saved record before reconciliation judges the half-finished state.
-        if self._recover_bridge_reanchor_after_restart(open_orders, broker_shares):
+        if await self._recover_bridge_reanchor_after_restart(open_orders, broker_shares):
+            return
+        if await self._cancel_unresumable_restart_trim(open_orders):
             return
 
         # Repair only a clerical Tracker mismatch for an order this running
@@ -3081,7 +3157,8 @@ class GridEngine:
                             if "OWNED:" in status_str:
                                 owned_id = _extract_order_id_from_status(status_str, "OWNED:") or "0"
                         new_status = f"OWNED:{owned_id}"
-                        self._bridge_state = None
+                        if self._bridge_state != 'BRIDGE_HALTED':
+                            self._bridge_state = None
                         self._pending_trim_qty = 0
                         self._bridge_trim_record = None
                         self._clear_bridge_reanchor_state()
