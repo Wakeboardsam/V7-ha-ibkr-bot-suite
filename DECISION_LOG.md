@@ -126,3 +126,17 @@ Decision:
 - Share-mismatch behavior change: in both `halt` and `warn` modes an unexplained mismatch now cancels a Bridge Anchor order that is still armed and sends one `SHARE_MISMATCH` notification per distinct pair of share counts. It still does not set the persistent halted state.
 - Six existing tests that set `ANCHOR_RECALC_PENDING` directly now run one extra tick before their unchanged assertions, because of the two-read rule.
 - Not changed: the bridge phase is still held in memory only, and `_cancel_bridge_anchor` still releases order tracking before the broker confirms the cancel.
+
+## 2026-10-05 — Health reports the real trading state; re-anchor survives a restart
+
+Outcome:
+- Health showed "Running" while the share-mismatch check blocked trading, because it looked only at the reconciliation-halt flag. Its order comparison also flagged every valid Bridge Anchor order, by comparing the internal action `BRIDGE_BUY` with the broker's `BUY`.
+- A restart between a Bridge Anchor fill and its trim lost the bridge phase: the bot reported broker 65 against Tracker 64 every minute and placed no SELL.
+
+Decision:
+- One function describes the engine's current state, and Health, Errors rows and notifications use it. The states are listed in `README.md`. A share mismatch is reported as a pause (`halt` mode) or limited trading (`warn` mode); it does not set the persistent halted state and clears only when a tick verifies fresh broker and Tracker counts agree. Recovery writes a `SHARE_MISMATCH_CLEARED` Errors row and notification.
+- `BRIDGE_HALTED` now records its reason and is reported once by notification. The one reconciliation latch that had no notification (missing or invalid `WORKING_SELL` in the share check) now sends `HALT_RECONCILIATION`.
+- Health validates a bridge order against its stop and limit and a trim against its trim quantity.
+- Restart recovery uses a small record in the add-on's `/data` folder rather than a Tracker status marker, because row 7's status after a bridge fill must stay exactly `OWNED:<id>`. The record is account-fingerprinted and is honoured only when row 7 and the broker still agree with it. A re-anchor that halted leaves no record and is never resumed automatically. No trim is ever inferred from a share difference alone.
+- The share comparison after a re-anchor counts every row the Tracker shows as owned, so an old-grid BUY that fills before its cancel lands stays accounted for; excess within `bridge_max_auto_trim_shares` is trimmed. Shares that may come from an old BUY whose outcome the bot never saw are not trimmed: the bridge flow halts.
+- Not changed: the share-mismatch comparison itself and its tolerance, the trim limit, the per-tick Errors row while a mismatch persists, and `BRIDGE_HALTED` being held in memory only.

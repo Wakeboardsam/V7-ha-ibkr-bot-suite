@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.38). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.39). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -166,17 +166,21 @@ When the Bridge BUY fills, the anchor moves and every level is recalculated, so 
 1. It writes the fill price to `G7`, marks row 7 owned, and cancels every working BUY left from the old grid. A normal full sell-out gets this flush when the active window collapses to row 7; the bridge path skips that state, so it is done explicitly.
 2. On each tick it waits until the broker shows no old-grid BUY and the old row 7 SELL is no longer working. Order tracking is normally released by the broker's cancel or fill callback. To keep the wait bounded, a cancel with no callback after 60 seconds is sent again, and an old-grid BUY that the broker has not shown on two consecutive ticks is released without a callback; if that order had in fact filled, the share comparison in step 4 sees the extra shares.
 3. It waits for the Sheet to recalculate: row 7's buy price must match the fill price, and row 7's sell price, buy price and share count must be identical on two consecutive reads. If the fill price has not appeared, the bot writes `G7` again.
-4. It compares broker shares with the recalculated row 7 share count. Equal means normal operation resumes.
+4. It compares broker shares with the recalculated share count of every row the Tracker shows as owned. Normally that is row 7 alone; if an old-grid BUY filled before its cancel landed, that row is owned too and its shares are counted. Equal means normal operation resumes.
 5. Excess shares, up to `bridge_max_auto_trim_shares`, are sold with a trim SELL at the current bid minus `anchor_buy_offset`. That tick ends there; the new row 7 SELL, the window BUYs and the next bridge order are placed on later ticks from a fresh broker read.
-6. More excess than the limit, fewer shares than expected, an unusable bid, or a failed cancel moves the bridge flow to `BRIDGE_HALTED`, which stops all grid evaluation. These halts need operator attention.
+6. More excess than the limit, fewer shares than expected, an unusable bid, or a failed cancel moves the bridge flow to `BRIDGE_HALTED`, which stops all grid evaluation. The reason is shown in the Health status and sent once as a `BRIDGE_HALTED` notification. These halts need operator attention.
 
-A re-anchor that has not settled after five minutes is reported once to the Errors tab and by a `BRIDGE_REANCHOR_STALLED` notification; the bot keeps waiting and places nothing. An old-grid BUY that was partly filled is cancelled like the others, so its filled shares count as excess in step 5. The bridge phase is held in memory only, so a restart during a re-anchor loses it. **[Unverified]** How the bot behaves after such a restart is not covered by a test.
+A re-anchor that has not settled after five minutes is reported once to the Errors tab and by a `BRIDGE_REANCHOR_STALLED` notification; the bot keeps waiting and places nothing.
+
+**Fills that race the cancel.** An old-grid BUY that fills completely before its cancel lands marks its row owned, and the shares above the recalculated Tracker counts are trimmed in step 5 if they are within the limit. An old-grid BUY that was partly filled is cancelled like the others and its row returns to `IDLE`, so its filled shares count as excess: within the limit they are trimmed, above it the bridge flow halts and the operator reconciles. An old-grid BUY that left the broker without any cancel or fill report is treated as unknown: the bot then trims only the shares the bridge fill itself explains, and halts on anything more, whatever the trim limit.
+
+**Restart during a re-anchor.** On a Bridge BUY fill the bot saves a small record (bridge order ID, fill price, filled quantity and a fingerprint of the configured account) to `/data/bridge_reanchor_state.json`. At startup it resumes the re-anchor only if that record matches the configured account, row 7 still reads `OWNED:<bridge order ID>` with no trim placed, and the broker holds shares; old-grid BUYs still at the broker are picked up by the order IDs in the Tracker and cancelled. The record is removed when the shares match, when the trim SELL is placed, or when the bridge flow halts. Without a matching record the bot does not trim: a share difference alone is handled as an ordinary share mismatch. A restart while the old row 7 SELL is still working ends in `EXTERNAL_OPEN_ORDER_RECONCILE_REQUIRED`, and `BRIDGE_HALTED` itself is held in memory only, so after a restart an unresolved bridge halt shows as a share mismatch.
 
 ### Fills and partial fills
 
 Every execution reported by IBKR for the configured account and `TQQQ` stock is queued and appended to the Fills tab, de-duplicated by execution ID, with up to three retries. Executions on orders the bot does not track are logged with row `UNKNOWN`.
 
-The engine changes a row's status on a fill only when the order is completely filled: a BUY becomes `OWNED:<id>`, a SELL becomes `IDLE`, a trim returns row 7 to `OWNED`. Partial fills are handled only through reconciliation: a working SELL that is partly filled counts for its remaining quantity (taken from the broker's remaining quantity), and a missing or invalid remaining quantity halts. **[Unverified]** There is no dedicated handling or test for a partially filled working BUY, whose shares appear at the broker before its row changes status.
+The engine changes a row's status on a fill only when the order is completely filled: a BUY becomes `OWNED:<id>`, a SELL becomes `IDLE`, a trim returns row 7 to `OWNED`. Partial fills are handled only through reconciliation: a working SELL that is partly filled counts for its remaining quantity (taken from the broker's remaining quantity), and a missing or invalid remaining quantity halts. **[Unverified]** Outside a Bridge Anchor re-anchor there is no dedicated handling or test for a partially filled working BUY, whose shares appear at the broker before its row changes status.
 
 ### Reconciliation and halts
 
@@ -187,9 +191,25 @@ Before the bot trades, and again each tick, it compares the Sheet with the broke
 - The shares the Sheet claims for owned and working rows, adjusted for partial fills, must not exceed broker shares, and every `WORKING_SELL` must be live at the broker with a valid remaining quantity (`SELL_POSITION_MISMATCH_HALT`).
 - If a Tracker `WORKING_SELL` is missing at the broker but broker shares exactly match the Tracker with no partial fills, and the running bot is not tracking that order, the bot waits for a **second consecutive snapshot** before treating it as stale and allowing the SELL to be replaced. That case is not a halt. A missing `WORKING_BUY` is not repaired automatically.
 - A **pre-SELL guard** runs immediately before every SELL and trim: broker shares minus working SELL quantity must cover the order, otherwise the bot halts instead of risking a short sale.
-- A **share-mismatch check** compares broker shares with the Sheet's owned shares (partial-fill adjusted). A mismatch that exactly one combination of working-order rows explains, where those orders are gone from the broker, is repaired (rows set to `OWNED` or `IDLE`) and the tick ends. Any other mismatch is logged to the Errors tab as a circuit-breaker event. With `share_mismatch_mode: halt` the bot skips the tick and repeats the check on the next tick; with `warn` it continues but places no BUYs and arms no Bridge Anchor. In both modes an unexplained mismatch cancels a Bridge Anchor order that is still armed and sends one `SHARE_MISMATCH` notification per distinct pair of broker and Sheet share counts. The mismatch does not set the persistent halted state: it clears by itself once the counts agree.
+- A **share-mismatch check** compares broker shares with the Sheet's owned shares (partial-fill adjusted). A mismatch that exactly one combination of working-order rows explains, where those orders are gone from the broker, is repaired (rows set to `OWNED` or `IDLE`) and the tick ends. Any other mismatch is logged to the Errors tab as a circuit-breaker event. With `share_mismatch_mode: halt` the bot skips the tick and repeats the check on the next tick; with `warn` it continues but places no BUYs and arms no Bridge Anchor. In both modes an unexplained mismatch cancels a Bridge Anchor order that is still armed and sends one `SHARE_MISMATCH` notification per distinct pair of broker and Sheet share counts. The mismatch does not set the persistent halted state. It clears only when a later tick compares a fresh broker snapshot with the Tracker and the counts agree; the bot then writes a `SHARE_MISMATCH_CLEARED` row to the Errors tab and sends a notification. A trim SELL that is partly filled when a tick runs is reported as a mismatch until it completes.
 
 A **reconciliation halt** sets `HALTED_RECONCILIATION`: the bot places and cancels nothing, writes the Errors and Health tabs (retrying in the background if the Sheet is unreachable), and sends the `HALT_RECONCILIATION` notification. Halts latch until the add-on restarts, and restarting with an unresolved `ERROR_RECONCILE_REQUIRED` row halts again. The operator must compare the Sheet with the broker, correct the Tracker, then restart.
+
+**Health status.** The Health tab's status column, the status column of Errors rows and the notifications all take their text from one description of what the engine is currently allowed to do. It is separate from the snapshot status: a snapshot marked `OK` means broker data is available, not that trading is permitted.
+
+| Status | Meaning |
+|---|---|
+| `Running` / `Running (Mode=DRY_RUN)` | Normal operation. |
+| `HALTED_RECONCILIATION` | Reconciliation halt. Latched until the add-on restarts. |
+| `BRIDGE_HALTED: <reason>` | The bridge flow stopped. No orders are placed until the operator reconciles and restarts. |
+| `PAUSED_MAINTENANCE` | Inside the maintenance window. |
+| `PAUSED_SHARE_MISMATCH: broker N, tracker M` | Unexplained share mismatch in `halt` mode: nothing is placed. Rechecked every tick. |
+| `LIMITED_SHARE_MISMATCH: broker N, tracker M` | Unexplained share mismatch in `warn` mode: SELLs continue, no BUYs, no Bridge Anchor. |
+| `WAITING_BRIDGE_RECALC` | A re-anchor is waiting for old orders to clear or the Sheet to recalculate. |
+| `WAITING_TRIM` | A trim SELL is working. |
+| `PAUSED_WEEKEND_GAP` | Friday 20:00 ET to Sunday 20:00 ET: no new orders. |
+
+The Health order comparison treats a Bridge Anchor order as a BUY and a trim as a SELL. A bridge order matches when it is a stop-limit for row 7's shares with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`; a trim matches on its trim quantity, not row 7's share count.
 
 | Halt code | Meaning |
 |---|---|
@@ -258,6 +278,8 @@ When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSO
 | `HALT_RECONCILIATION` | A reconciliation halt. | `notify_on_halts` |
 | `BOT_STARTED` | The first tick passes reconciliation. | `notify_on_startup_ok` |
 | `SHARE_MISMATCH` | Broker and Sheet share counts disagree and no missed fill explains it. Sent once per distinct pair of counts. | `notify_on_halts` |
+| `SHARE_MISMATCH_CLEARED` | A tick verified that broker and Sheet share counts agree again. | `notify_on_halts` |
+| `BRIDGE_HALTED` | The bridge flow halted. Sent once, with the reason. | `notify_on_halts` |
 | `BRIDGE_REANCHOR_STALLED` | A Bridge Anchor re-anchor has not settled after five minutes. Sent once per re-anchor. | `notify_on_halts` |
 | `GATEWAY_AUTH_REQUIRED` | Gateway stays logged out while its port is closed (sent by the startup script). | `notify_on_halts` |
 
@@ -290,7 +312,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.38, Account 1 runs 235 tests with 3 failures, and Account 2 runs 226 with the same 3 failures (232 and 223 pass). The failures are `test_cancel_outside_window_working_buy`, `test_cancel_outside_window_working_sell` and `test_owned_fallback_enforcement` in `tests/test_status_strings.py`. Their cause is not established and they are tracked separately.
+**Current baseline.** At add-on version 0.1.39, Account 1 runs 262 tests with 3 failures, and Account 2 runs 253 with the same 3 failures (259 and 250 pass). The failures are `test_cancel_outside_window_working_buy`, `test_cancel_outside_window_working_sell` and `test_owned_fallback_enforcement` in `tests/test_status_strings.py`. Their cause is not established and they are tracked separately.
 
 ### Continuous integration
 
