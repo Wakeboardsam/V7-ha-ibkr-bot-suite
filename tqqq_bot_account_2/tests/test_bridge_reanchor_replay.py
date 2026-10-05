@@ -70,6 +70,8 @@ class FakeBroker:
         self._next_id = 900
         # Marketable SELLs fill inside place_limit_order, as the trim did.
         self.fill_marketable_sells = True
+        # Order ids whose next cancel request is accepted but then lost.
+        self.lose_next_cancel: set[str] = set()
 
     # --- test helpers -------------------------------------------------
     def seed_order(self, order_id, action, qty, limit_price, order_type="LMT", aux_price=None):
@@ -161,11 +163,17 @@ class FakeBroker:
         oid = str(order_id)
         if oid not in self.orders:
             return False
+        if oid in self.lose_next_cancel:
+            # The adapter returns True once the request is sent; nothing else happens.
+            self.lose_next_cancel.discard(oid)
+            self.events.append(("cancel_lost", oid))
+            return True
         self.orders.pop(oid)
         self.events.append(("cancel", oid))
         callback = self.callbacks.get(oid)
         if callback:
-            callback(OrderResult(order_id=oid, status="cancelled", filled_qty=0, reason="Cancelled"))
+            # The adapter reports filled_qty only on a fill.
+            callback(OrderResult(order_id=oid, status="cancelled", filled_qty=None, reason="Cancelled"))
         return True
 
 
@@ -413,6 +421,79 @@ async def test_reanchor_waits_for_old_row7_sell_before_reconciling_shares(config
     assert engine._bridge_state != "BRIDGE_HALTED"
     assert broker.position == 64
     assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]
+
+
+@pytest.mark.asyncio
+async def test_reanchor_resends_a_cancel_whose_confirmation_was_lost(config):
+    """A cancel the broker never confirms must be sent again, not waited on forever."""
+    broker, sheet, engine = friday_state(config)
+    engine._cancel_resend_seconds = 0
+    broker.lose_next_cancel = {"820"}
+    await run_ticks(engine, 1)
+    await bridge_fires(broker)
+    await run_ticks(engine, 10)
+
+    assert broker.event_index("cancel_lost", lambda e: e[1] == "820") is not None
+    assert "820" not in broker.orders
+    assert broker.position == 64
+    assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]
+    assert buys_match_sheet(broker, NEW_GRID) == []
+
+
+@pytest.mark.asyncio
+async def test_reanchor_does_not_resend_a_recent_cancel(config):
+    """Within the resend window a pending cancel is left alone."""
+    broker, sheet, engine = friday_state(config)
+    broker.lose_next_cancel = {"820"}
+    await run_ticks(engine, 1)
+    await bridge_fires(broker)
+    await run_ticks(engine, 5)
+
+    assert "820" in broker.orders
+    assert len([e for e in broker.events if e[0] in ("cancel", "cancel_lost") and e[1] == "820"]) == 1
+    assert engine._bridge_state == "ANCHOR_RECALC_PENDING"
+    assert broker.event_index("place") is None
+
+
+@pytest.mark.asyncio
+async def test_reanchor_releases_old_buy_that_vanished_without_a_callback(config):
+    """An old BUY the broker no longer shows, with no callback, must not block the row 7 SELL."""
+    broker, sheet, engine = friday_state(config)
+    await run_ticks(engine, 1)
+    broker.orders.pop("820")              # gone at the broker, no cancel or fill callback
+    await bridge_fires(broker)
+    await run_ticks(engine, 10)
+
+    assert not engine.order_manager.is_tracked("820")
+    assert broker.position == 64
+    assert [(o["qty"], o["limit_price"]) for o in broker.live(action="SELL")] == [(64, 83.87)]
+    assert buys_match_sheet(broker, NEW_GRID) == []
+    assert engine._bridge_state != "BRIDGE_HALTED"
+
+
+@pytest.mark.asyncio
+async def test_stale_grid_buy_needs_two_consecutive_ticks(config):
+    """A sighting followed by a tick that does not evaluate the grid does not count."""
+    broker = FakeBroker(position=64)
+    broker.seed_order("986", "SELL", 64, 83.87)
+    broker.seed_order("820", "BUY", 62, 80.39)
+    sheet = FakeSheet({7: "WORKING_SELL:986", 8: "WORKING_BUY:820"})
+    sheet.grid = NEW_GRID
+    engine = GridEngine(broker, sheet, config)
+    engine.last_broker_shares = 64
+    engine.order_manager.track(7, OrderResult(order_id="986", status="submitted"), "SELL",
+                               broker=broker, on_update=engine._handle_order_update)
+    engine.order_manager.track(8, OrderResult(order_id="820", status="submitted"), "BUY",
+                               broker=broker, on_update=engine._handle_order_update)
+
+    await run_ticks(engine, 1)                         # first sighting
+    engine._session_cancel_settlement_required = True  # next tick ends before grid evaluation
+    await run_ticks(engine, 1)
+    await run_ticks(engine, 1)                         # sighting again: still only the first in a row
+    assert "820" in broker.orders
+
+    await run_ticks(engine, 1)
+    assert "820" not in broker.orders
 
 
 @pytest.mark.asyncio

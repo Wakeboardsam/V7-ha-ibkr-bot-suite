@@ -288,6 +288,8 @@ async def test_immediate_generic_trim_sell_error_halt(engine, mock_broker, mock_
             7: GridRow(row_index=7, status="WORKING_SELL:100", has_y=True, sell_price=78.70, buy_price=78.00, shares=136)
         })
 
+        # The re-anchor gate needs two identical consecutive Sheet reads before reconciling shares.
+        await engine._tick()
         await engine._tick()
 
     assert engine._halted_reconciliation is True
