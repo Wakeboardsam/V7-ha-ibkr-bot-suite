@@ -187,3 +187,13 @@ Outcome:
 Decision:
 - While reconciliation-halted, the bot counts an order as absent only on a ready broker snapshot. Without one it keeps the order's tracking, the cancel requirement and the saved record, and starts its consecutive-absence counts over. The Errors row retry still runs.
 - Ticks that are not halted were already skipped on an unready snapshot before any of this logic.
+
+## 2026-10-06 — Cancelling an unfilled bridge no longer marks row 7 owned
+
+Outcome:
+- On 2026-10-06 at 04:12 the row 7 SELL filled for 64 shares and the Bridge Anchor order did not fill. Row 7 was correctly set to `IDLE`. One tick later the bot cancelled the bridge, and the helper that removes the `BRIDGE_BUY` part from a status added `OWNED:0` to a row that held nothing, writing `OWNED:0|IDLE`. The Tracker then claimed 63 shares against a broker position of 0 and the bot halted with `SELL_POSITION_MISMATCH_HALT`, leaving three old-grid BUYs working.
+- The helper predates the re-anchor work. The case needs the bridge to stay unfilled after row 7 sells, which had not happened before.
+
+Decision:
+- Removing a part from a status keeps ownership only for a row that was owned before the removal. A row that held no shares stays `IDLE`. Nothing else changes: with row 7 `IDLE` and no shares, the existing full sell-out path cancels the lower BUYs and places the new anchor BUY.
+- Not investigated here: why the Bridge order did not trigger when row 7 sold at its stop price before the regular session.

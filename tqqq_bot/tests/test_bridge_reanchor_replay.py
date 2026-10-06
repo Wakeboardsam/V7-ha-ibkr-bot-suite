@@ -302,3 +302,46 @@ async def test_share_mismatch_cancels_live_bridge_and_notifies_once(config):
     assert len(mismatch_calls) == 1
     assert mismatch_calls[0].kwargs["extra"]["broker_shares"] == 126
     assert mismatch_calls[0].kwargs["extra"]["sheet_shares"] == 125
+
+
+@pytest.mark.asyncio
+async def test_replay_2026_10_06_row7_sells_and_bridge_does_not_fill(config):
+    """
+    2026-10-06 04:12: the row 7 SELL filled and the Bridge Anchor did not. With
+    no shares left this is an ordinary full sell-out: cancel the bridge, cancel
+    the old buys, re-anchor, buy the new anchor. Row 7 was instead written as
+    'OWNED:0|IDLE', which claimed 63 shares the broker did not hold and halted
+    the bot.
+    """
+    broker, sheet, engine = friday_state(config)
+    await run_ticks(engine, 1)
+
+    broker.fill("223", price=82.52)             # row 7 sells; bridge 818 stays untriggered
+    await asyncio.sleep(0.01)
+    assert sheet.statuses[7] == "IDLE"
+
+    await run_ticks(engine, 6)
+
+    assert engine._halted_reconciliation is False
+    assert "OWNED" not in sheet.statuses[7], f"row 7 must not claim shares: {sheet.statuses[7]}"
+    assert not [e for e in sheet.errors if "halt" in e.lower()]
+    assert "818" not in broker.orders, "the unfilled bridge is cancelled"
+    assert not {"820", "762", "253"} & set(broker.orders), "old-grid buys are cancelled"
+    assert sheet.anchor_writes, "G7 is re-anchored"
+    assert broker.position == 0
+    # The only order left is the new anchor BUY for row 7, from the recalculated grid.
+    assert [(o["action"], o["qty"], o["limit_price"]) for o in broker.orders.values()] == \
+        [("BUY", NEW_GRID[7][2], round(NEW_GRID[7][1] + 1.5, 2))]
+    assert sheet.statuses[7].startswith("WORKING_BUY:")
+
+
+def test_removing_a_part_never_invents_ownership():
+    from engine.engine import _remove_status_part
+    assert _remove_status_part("IDLE", "BRIDGE_BUY:") == "IDLE"
+    assert _remove_status_part("BRIDGE_BUY:217", "BRIDGE_BUY:") == "IDLE"
+    assert _remove_status_part("IDLE|BRIDGE_BUY:217", "BRIDGE_BUY:") == "IDLE"
+    assert _remove_status_part("WORKING_BUY:209", "WORKING_BUY:") == "IDLE"
+    # A row that held shares keeps them.
+    assert _remove_status_part("WORKING_SELL:7", "WORKING_SELL:") == "OWNED:0"
+    assert _remove_status_part("WORKING_SELL:7|BRIDGE_BUY:221", "BRIDGE_BUY:") == "WORKING_SELL:7"
+    assert _remove_status_part("OWNED:5|BRIDGE_BUY:221", "BRIDGE_BUY:") == "OWNED:5"

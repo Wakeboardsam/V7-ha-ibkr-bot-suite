@@ -151,11 +151,21 @@ def _find_unique_combination(target_sum: int, candidates: List[GridRow]) -> Opti
 
 
 def _remove_status_part(status: str, prefix: str) -> str:
-    parts = status.split('|')
+    """
+    Removes one part (for example 'BRIDGE_BUY:') from a pipe-delimited status.
+    A row that held shares before the removal still holds them afterwards, so
+    'WORKING_SELL:7' becomes 'OWNED:0'. A row that held none must never gain
+    them: 'IDLE' stays 'IDLE'.
+    """
+    parts = [p for p in status.split('|') if p]
     kept = [p for p in parts if not p.startswith(prefix)]
-    if not any(p.startswith('OWNED:') for p in kept) and not any(p.startswith('WORKING_SELL:') for p in kept):
+    held_shares = any(p.startswith('OWNED:') or p.startswith('WORKING_SELL:') for p in parts)
+    still_marked = any(p.startswith('OWNED:') or p.startswith('WORKING_SELL:') for p in kept)
+    if held_shares and not still_marked:
         kept.insert(0, "OWNED:0")
-    return '|'.join(kept)
+    if not held_shares:
+        kept = [p for p in kept if p != "IDLE"]
+    return '|'.join(kept) or "IDLE"
 
 class GridEngine:
 
