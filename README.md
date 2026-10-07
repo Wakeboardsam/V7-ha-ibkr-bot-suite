@@ -324,7 +324,7 @@ PYTHONPATH=app python -m pytest -q
 
 ### Continuous integration
 
-`.github/workflows/account-addon-ci.yml` runs on pushes and pull requests to `main`. It compiles the Python (`python -m compileall -q app tests wait_for_gateway.py`), syntax-checks `run.sh` (`bash -n`), runs the parity and configuration scripts below, and checks whitespace with `git diff --check`. **It does not run pytest**; pytest was removed from CI on 2026-07-16 because of baseline failures.
+`.github/workflows/account-addon-ci.yml` runs on pushes and pull requests to `main`. It compiles the Python (`python -m compileall -q app tests wait_for_gateway.py`), syntax-checks `run.sh` (`bash -n`), runs the parity and configuration scripts below, runs both pytest suites with the `PYTHONPATH` shown above, and checks whitespace with `git diff --check`. Pytest was removed from CI on 2026-07-16 because of baseline failures and restored on 2026-10-07 once the baseline was green.
 
 ### Parity between accounts
 

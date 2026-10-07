@@ -18,6 +18,12 @@ jobs:
     strategy:
       matrix:
         addon_dir: ["tqqq_bot", "tqqq_bot_account_2"]
+        include:
+          # Account 1's test_wait_for_gateway.py imports `tqqq_bot`, so it also needs the repository root.
+          - addon_dir: tqqq_bot
+            pythonpath: "app:.."
+          - addon_dir: tqqq_bot_account_2
+            pythonpath: "app"
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -36,6 +42,11 @@ jobs:
       - name: Check run.sh syntax
         working-directory: ${{ matrix.addon_dir }}
         run: bash -n run.sh
+      - name: Run Pytest
+        working-directory: ${{ matrix.addon_dir }}
+        env:
+          PYTHONPATH: ${{ matrix.pythonpath }}
+        run: python -m pytest -q
 
   validate-addons:
     name: Validate Add-on Parity and Config
