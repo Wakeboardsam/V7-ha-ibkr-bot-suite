@@ -224,3 +224,14 @@ Outcome:
 Decision:
 - Just before the stop, the bot sends a critical `WATCHDOG_RESTART` notification with the reason, controlled by `notify_on_halts`. The send is synchronous so it completes before the process exits. A failed send is logged and the stop still happens.
 - The owner turns on Watchdog for both add-ons in Home Assistant. The restart conditions and the stop itself are unchanged.
+
+## 2026-10-07 — Every notification has its own switch, all off by default
+
+Outcome:
+- `notify_on_halts` controlled seven different alerts, from reconciliation halts to Gateway login and watchdog restarts, so they could only be turned on or off together. `notify_on_errors` and `notify_on_order_submit` were offered as options but no code read them.
+
+Decision:
+- Each alert has its own switch: fills, bot started, order placed, reconciliation halt, Bridge halt, re-anchor not settling, share mismatch, share mismatch cleared, Gateway login needed, watchdog restart and other errors. Existing option names are kept so saved choices carry over.
+- The owner chose that every switch is off by default, so an installation sends nothing until the operator turns on the alerts they want. Home Assistant shows a name and description for each switch from `translations/en.yaml`.
+- "Other errors" covers only Errors-tab rows without an alert of their own, so a halt or a watchdog restart sends one alert through its own switch. Each automatic share repair alerts; any other repeated error alerts once until it clears. "Order placed" covers grid BUYs and SELLs, the Bridge Anchor BUY and trim SELLs.
+- Switches change only what is sent to the phone. Errors-tab rows, Health and trading behaviour are unchanged.

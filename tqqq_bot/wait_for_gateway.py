@@ -77,11 +77,11 @@ def load_notification_config(options_path="/data/options.json"):
             options = json.load(f)
             notif_opts = options.get("notifications", {})
             enabled = notif_opts.get("enabled", False)
-            notify_on_halts = notif_opts.get("notify_on_halts", False)
+            notify_on_gateway_login = notif_opts.get("notify_on_gateway_login", False)
             webhook_url = notif_opts.get("webhook_url", "")
             timeout_seconds = notif_opts.get("timeout_seconds", 3.0)
             dedupe_window_seconds = notif_opts.get("dedupe_window_seconds", 300)
-            return enabled, notify_on_halts, webhook_url, timeout_seconds, dedupe_window_seconds
+            return enabled, notify_on_gateway_login, webhook_url, timeout_seconds, dedupe_window_seconds
     except Exception:
         return False, False, "", 3.0, 300
 
@@ -89,9 +89,9 @@ def send_auth_notification(port):
     if not HomeAssistantNotifier or not NotificationConfig:
         return
 
-    enabled, notify_on_halts, webhook_url, timeout_seconds, dedupe_window_seconds = load_notification_config()
+    enabled, notify_on_gateway_login, webhook_url, timeout_seconds, dedupe_window_seconds = load_notification_config()
 
-    if not enabled or not notify_on_halts or not webhook_url:
+    if not enabled or not notify_on_gateway_login or not webhook_url:
         return
 
     config = NotificationConfig(

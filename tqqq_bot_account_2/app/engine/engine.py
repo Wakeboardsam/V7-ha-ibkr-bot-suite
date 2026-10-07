@@ -228,6 +228,11 @@ class GridEngine:
         self._is_weekend_gap = False
         self._maintenance_cancel_done = False
         self._snapshot_error_logged = False
+        # Last details alerted per Errors-tab code, so a repeated error alerts once.
+        self._error_alerts_sent: dict[str, str] = {}
+        # Set once the connection watchdog has asked for a restart; the tick
+        # error that follows is already covered by the WATCHDOG_RESTART alert.
+        self._watchdog_restart_requested = False
         self._recent_session_cancels: dict[str, datetime] = {}
         self._inflight_session_cancels = 0
         self._missing_sell_confirmations: set[str] = set()
@@ -339,7 +344,8 @@ class GridEngine:
         could be lost. Home Assistant restarts the add-on only when its
         Watchdog setting is on.
         """
-        if not (self.config.notifications.enabled and self.config.notifications.notify_on_halts and self.notifier):
+        self._watchdog_restart_requested = True
+        if not self._notification_enabled("notify_on_watchdog_restart"):
             return
         self.notifier.send(
             title="TQQQ bot restarting",
@@ -353,10 +359,15 @@ class GridEngine:
             extra={"symbol": TICKER, "reason": reason},
         )
 
-    def _send_status_notification(self, *, title: str, message: str, event_type: str, tag: str,
+    def _notification_enabled(self, setting: str) -> bool:
+        """True when notifications are on and the named per-alert switch is on."""
+        notifications = self.config.notifications
+        return bool(notifications.enabled and getattr(notifications, setting, False) and self.notifier)
+
+    def _send_status_notification(self, *, setting: str, title: str, message: str, event_type: str, tag: str,
                                   severity: str = "critical", extra: Optional[dict] = None):
-        """Sends an operator notification off the event loop, gated by notify_on_halts."""
-        if not (self.config.notifications.enabled and self.config.notifications.notify_on_halts and self.notifier):
+        """Sends an operator notification off the event loop, gated by the named per-alert switch."""
+        if not self._notification_enabled(setting):
             return
         payload = {"symbol": TICKER, "bot_status": self._execution_status()}
         payload.update(extra or {})
@@ -371,6 +382,42 @@ class GridEngine:
                 group="trading_bot_status",
                 extra=payload,
             )
+        )
+
+    def _notify_error_row(self, code: str, details: str, repeat_once: bool = True):
+        """
+        Alerts on an Errors-tab row that has no alert of its own, gated by
+        notify_on_errors. With repeat_once, the same code with the same details
+        alerts once and callers clear the code when the condition recovers.
+        Without it, every call is a new event (only the notifier's duplicate
+        window applies).
+        """
+        if not self._notification_enabled("notify_on_errors"):
+            return
+        if repeat_once:
+            if self._error_alerts_sent.get(code) == details:
+                return
+            self._error_alerts_sent[code] = details
+        self._send_status_notification(
+            setting="notify_on_errors",
+            title=f"TQQQ bot error: {code}",
+            message=mask_account_ids_in_text(details),
+            severity="error",
+            event_type="BOT_ERROR",
+            tag="tqqq_bot_error",
+            extra={"code": code},
+        )
+
+    def _notify_order_placed(self, *, kind: str, action: str, row: int, qty, price: float, order_id):
+        """Alerts that the bot placed an order at the broker, gated by notify_on_order_submit."""
+        self._send_status_notification(
+            setting="notify_on_order_submit",
+            title=f"TQQQ {kind} placed",
+            message=f"{action} {qty} {TICKER} at {price} for row {row} (order {order_id}).",
+            severity="info",
+            event_type="ORDER_PLACED",
+            tag="tqqq_bot_order",
+            extra={"kind": kind, "action": action, "row": row, "qty": qty, "price": price, "order_id": str(order_id)},
         )
 
     def _enter_bridge_halt(self, reason: str, keep_record: bool = False):
@@ -435,6 +482,7 @@ class GridEngine:
         self._bridge_halt_reported = True
         logger.critical(f"Bridge flow halted: {self._bridge_halt_reason}. Manual review required.")
         self._send_status_notification(
+            setting="notify_on_bridge_halt",
             title="TQQQ bridge flow HALTED",
             message=f"Bridge flow halted: {self._bridge_halt_reason}. No orders are being placed. Manual review required.",
             event_type="BRIDGE_HALTED",
@@ -844,7 +892,7 @@ class GridEngine:
         }
         self._last_reconciliation_halt = payload
 
-        if self.config.notifications.enabled and self.config.notifications.notify_on_halts and self.notifier:
+        if self._notification_enabled("notify_on_halts"):
             # We must mask details, but payload details are often already somewhat masked if
             # _halt_for_reconciliation_error builds them string by string, however let's be safe:
             sanitized_details = mask_account_ids_in_text(details)
@@ -1011,9 +1059,10 @@ class GridEngine:
             while not self._shutdown_event.is_set():
                 try:
                     await self._tick()
+                    # A later tick error alerts again even if its text repeats.
+                    self._error_alerts_sent.pop("ENGINE_TICK_ERROR", None)
                 except Exception as e:
-                    logger.error(f"Error in engine tick: {e}", exc_info=True)
-                    await self.sheet.log_error(f"Engine tick error: {str(e)}", bot_status=self._execution_status())
+                    await self._handle_tick_error(e)
 
                 # Wait for poll interval or shutdown signal
                 try:
@@ -1038,6 +1087,14 @@ class GridEngine:
             # 3. Disconnect broker
             await self.broker.disconnect()
             logger.info("Graceful shutdown complete.")
+
+    async def _handle_tick_error(self, e: Exception):
+        """Records a failed tick in the Errors tab and alerts through notify_on_errors."""
+        logger.error(f"Error in engine tick: {e}", exc_info=True)
+        await self.sheet.log_error(f"Engine tick error: {str(e)}", bot_status=self._execution_status())
+        # A watchdog restart has its own alert, so its tick error is not sent again.
+        if not self._watchdog_restart_requested:
+            self._notify_error_row("ENGINE_TICK_ERROR", f"Engine tick error: {str(e)}")
 
     def _handle_shutdown_signal(self):
         logger.info("Shutdown signal received.")
@@ -1228,10 +1285,12 @@ class GridEngine:
                             details=error_details
                         )
                         self._snapshot_error_logged = True
+                        self._notify_error_row("POSITION_SNAPSHOT_UNAVAILABLE", error_details)
                 elif snapshot.snapshot_status == "OK":
                     if self._snapshot_error_logged:
                         # Recovered
                         self._snapshot_error_logged = False
+                        self._error_alerts_sent.pop("POSITION_SNAPSHOT_UNAVAILABLE", None)
 
                 # Trading state comes from one place. It is independent of
                 # snapshot_status: an OK snapshot does not mean trading is permitted.
@@ -1708,6 +1767,7 @@ class GridEngine:
             except Exception as e:
                 logger.error(f"Failed to log bridge re-anchor stall to sheet: {e}")
             self._send_status_notification(
+                setting="notify_on_reanchor_stalled",
                 title="TQQQ bridge re-anchor not settling",
                 message=msg,
                 event_type="BRIDGE_REANCHOR_STALLED",
@@ -1764,6 +1824,7 @@ class GridEngine:
         except Exception as e:
             logger.error(f"Failed to log share mismatch recovery to sheet: {e}")
         self._send_status_notification(
+            setting="notify_on_share_mismatch_cleared",
             title="TQQQ share mismatch cleared",
             message=msg,
             severity="info",
@@ -1783,6 +1844,7 @@ class GridEngine:
         else:
             effect = "SELLs continue; no BUYs and no Bridge Anchor until this is reconciled."
         self._send_status_notification(
+            setting="notify_on_share_mismatch",
             title="TQQQ share mismatch",
             message=f"Broker holds {broker_shares} shares, Tracker expects {sheet_shares}. {effect}",
             event_type="SHARE_MISMATCH",
@@ -2199,6 +2261,8 @@ class GridEngine:
             self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
         else:
             logger.info(f"Bridge Anchor order {bridge_order_id} placed. Stop: {stop_price}, Limit: {limit_price}")
+            self._notify_order_placed(kind="Bridge Anchor BUY", action="BUY", row=7, qty=row7.shares,
+                                      price=limit_price, order_id=bridge_order_id)
 
             # Update sheet status with pipe-delimited status
             current_status = row7.status
@@ -2570,6 +2634,7 @@ class GridEngine:
             except Exception as e:
                 logger.error(f"Failed to log missing/invalid WORKING_SELL discrepancy to sheet: {e}")
             self._send_status_notification(
+                setting="notify_on_halts",
                 title="TQQQ Bot HALTED",
                 message="Reconciliation halt: missing or invalid WORKING_SELL order. Manual review required.",
                 event_type="HALT_RECONCILIATION",
@@ -2646,6 +2711,8 @@ class GridEngine:
                             await self.sheet.log_error(msg, severity="INFO", code="SHARE_RECONCILED", symbol=TICKER, bot_status=self._execution_status())
                         except Exception as e:
                             pass
+                        # Each completed repair is a new event, not a repeat.
+                        self._notify_error_row("SHARE_RECONCILED", msg, repeat_once=False)
                         return
 
                 msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch} (Raw: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}, Working BUY filled: {working_buy_filled_shares}). Mode: {self.config.share_mismatch_mode}"
@@ -2806,6 +2873,8 @@ class GridEngine:
                                         return
                                     else:
                                         logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
+                                        self._notify_order_placed(kind="trim SELL", action="SELL", row=7, qty=excess,
+                                                                  price=trim_limit_price, order_id=trim_order_id)
                                         if self.order_manager.has_open_action(7, 'TRIM_SELL'):
                                             self._bridge_state = 'TRIM_PENDING'
                                             self._pending_trim_qty = excess
@@ -2961,6 +3030,9 @@ class GridEngine:
                                         limit_price=row.sell_price, on_update=self._handle_order_update,
                                         order_id=order_id
                                     )
+                                    if result.status != 'error':
+                                        self._notify_order_placed(kind="grid SELL", action="SELL", row=row.row_index,
+                                                                  qty=row.shares, price=row.sell_price, order_id=order_id)
                                     if result.status == 'filled':
                                         self._update_row_status_in_memory(row.row_index, "IDLE")
                                         continue
@@ -3049,6 +3121,9 @@ class GridEngine:
                                         limit_price=buy_price, on_update=self._handle_order_update,
                                         order_id=order_id
                                     )
+                                    if result.status != 'error':
+                                        self._notify_order_placed(kind="grid BUY", action="BUY", row=row.row_index,
+                                                                  qty=row.shares, price=buy_price, order_id=order_id)
                                     if result.status == 'filled':
                                         self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
                                         continue

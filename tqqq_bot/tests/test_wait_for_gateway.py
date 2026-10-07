@@ -126,7 +126,7 @@ def test_persistent_logged_out(mock_is_logged_out, mock_time, mock_socket, mock_
 
 @patch('tqqq_bot.wait_for_gateway.HomeAssistantNotifier')
 def test_notification_conditions(mock_notifier_class):
-    """4. Notifications disabled or "notify_on_halts" false."""
+    """4. Notifications disabled or "notify_on_gateway_login" false."""
     mock_notifier_instance = MagicMock()
     mock_notifier_class.return_value = mock_notifier_instance
 
@@ -136,7 +136,7 @@ def test_notification_conditions(mock_notifier_class):
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_not_called()
 
-        # notify_on_halts=False
+        # notify_on_gateway_login=False
         mock_load.return_value = (True, False, "http://localhost", 3.0, 300)
         wait_for_gateway.send_auth_notification(7497)
         mock_notifier_instance.send.assert_not_called()
@@ -223,3 +223,20 @@ def test_is_gateway_logged_out_no_state(mock_glob, mock_getctime):
         m.return_value.read.return_value = log_content
 
         assert wait_for_gateway.is_gateway_logged_out() is False
+
+
+@pytest.mark.parametrize("saved,expected", [
+    ({"enabled": True, "notify_on_gateway_login": True}, True),
+    ({"enabled": True, "notify_on_gateway_login": False}, False),
+    # The old shared switch no longer controls the Gateway login alert.
+    ({"enabled": True, "notify_on_halts": True}, False),
+])
+def test_gateway_login_alert_uses_its_own_switch(tmp_path, saved, expected):
+    import json
+    options = tmp_path / "options.json"
+    options.write_text(json.dumps({"notifications": {"webhook_url": "http://localhost", **saved}}))
+
+    enabled, notify_on_gateway_login, *_ = wait_for_gateway.load_notification_config(str(options))
+
+    assert enabled is True
+    assert notify_on_gateway_login is expected

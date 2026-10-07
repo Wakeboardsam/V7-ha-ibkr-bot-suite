@@ -28,7 +28,9 @@ pytestmark = pytest.mark.usefixtures("regular_session")
 @pytest.fixture
 def config(bridge_config):
     bridge_config.notifications = NotificationSettings(
-        enabled=True, webhook_url="http://example.invalid/hook", notify_on_halts=True)
+        # The switches that notify_on_halts alone covered before each alert had its own.
+        enabled=True, webhook_url="http://example.invalid/hook", notify_on_halts=True, notify_on_bridge_halt=True, notify_on_reanchor_stalled=True,
+        notify_on_share_mismatch=True, notify_on_share_mismatch_cleared=True)
     return bridge_config
 
 
@@ -1108,3 +1110,39 @@ async def test_halted_reanchor_buy_cancel_survives_unsynchronized_broker_reads(c
     assert len(placements(broker)) == placed_before
     assert engine._halted_reconciliation is True
     assert (await health_row(engine, sheet))["status"] == "HALTED_RECONCILIATION"
+
+
+# --------------------------------------------------------------------------
+# Other-errors alerts: each completed share repair is a new event
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_each_automatic_share_repair_alerts_even_with_identical_text(config):
+    config.notifications.notify_on_errors = True
+    notifier = MagicMock()
+    # Rows 7 and 8 hold 125 shares; row 9's BUY filled while its fill report was lost.
+    broker = FakeBroker(position=125 + 59)
+    broker.seed_order("986", "SELL", 64, 83.87)
+    sheet = FakeSheet({7: "WORKING_SELL:986", 8: "OWNED:820", 9: "WORKING_BUY:777"})
+    sheet.grid = NEW_GRID
+    engine = GridEngine(broker, sheet, config, notifier=notifier)
+    engine._startup_ok_notification_sent = True
+    engine.last_broker_shares = broker.position
+    track_all(engine, broker, [(7, "986", "SELL")])
+
+    await run_ticks(engine, 1)
+    assert sheet.statuses[9].startswith("OWNED:")
+    await run_ticks(engine, 2)  # normal ticks in between
+
+    # Row 10's new BUY also fills with its fill report lost: a second, separate
+    # repair of the same share count, so its Errors row has the same text.
+    row10_id = sheet.statuses[10].split(":")[1]
+    broker.orders.pop(row10_id)
+    broker.position += 59
+    await run_ticks(engine, 1)
+    assert sheet.statuses[10].startswith("OWNED:")
+
+    repairs = [r for r in sheet.error_rows if r["code"] == "SHARE_RECONCILED"]
+    alerts = [c for c in events(notifier, "BOT_ERROR") if c.kwargs["extra"]["code"] == "SHARE_RECONCILED"]
+    assert len(repairs) == 2
+    assert len(alerts) == 2, "each repair is its own event"

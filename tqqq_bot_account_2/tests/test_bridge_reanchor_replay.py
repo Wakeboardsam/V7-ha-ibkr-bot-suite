@@ -274,7 +274,7 @@ async def test_share_mismatch_cancels_live_bridge_and_notifies_once(config):
     not leave the bridge live, and must tell the operator once, not every minute.
     """
     config.notifications = NotificationSettings(enabled=True, webhook_url="http://example.invalid/hook",
-                                                notify_on_halts=True)
+                                                notify_on_share_mismatch=True)
     notifier = MagicMock()
 
     broker = FakeBroker(position=126)
