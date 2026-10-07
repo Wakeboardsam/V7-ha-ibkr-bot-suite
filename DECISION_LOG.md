@@ -197,3 +197,12 @@ Outcome:
 Decision:
 - Removing a part from a status keeps ownership only for a row that was owned before the removal. A row that held no shares stays `IDLE`. Nothing else changes: with row 7 `IDLE` and no shares, the existing full sell-out path cancels the lower BUYs and places the new anchor BUY.
 - Not investigated here: why the Bridge order did not trigger when row 7 sold at its stop price before the regular session.
+
+## 2026-10-07 — A share mismatch writes one Errors row per distinct mismatch
+
+Outcome:
+- With `share_mismatch_mode: halt`, an unexplained share mismatch pauses trading and recovers on its own once a fresh broker snapshot matches the Tracker. The notification was already sent once per distinct pair of broker and Sheet share counts, but the same `SHARE_MISMATCH` Errors row was written on every tick.
+
+Decision:
+- The owner chose to keep the pause and the automatic resume (no latch until restart), so a temporary difference does not need a restart, and to rely on the `SHARE_MISMATCH` notification to prompt a manual fix.
+- The Errors row is now written once per distinct pair of counts, like the notification. A failed write is retried on the next tick. A different pair of counts, or the same pair again after a verified recovery, writes a new row. Both `halt` and `warn` modes behave this way.
