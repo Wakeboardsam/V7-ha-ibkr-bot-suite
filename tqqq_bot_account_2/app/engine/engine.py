@@ -206,6 +206,8 @@ class GridEngine:
         self.sheet = sheet
         self.config = config
         self.notifier = notifier
+        if hasattr(broker, "on_restart_requested"):
+            broker.on_restart_requested = self._notify_watchdog_restart
         self.order_manager = OrderManager()
         self.spread_guard = SpreadGuard(config.max_spread_pct)
         self.grid_state: Optional[GridState] = None
@@ -329,6 +331,26 @@ class GridEngine:
         if self._is_weekend_gap:
             return "PAUSED_WEEKEND_GAP"
         return "Running (Mode=DRY_RUN)" if self.config.dry_run else "Running"
+
+    def _notify_watchdog_restart(self, reason: str):
+        """
+        Alerts the operator that the connection watchdog is stopping the add-on.
+        Sent synchronously: the process exits right after, so a background send
+        could be lost. Home Assistant restarts the add-on only when its
+        Watchdog setting is on.
+        """
+        if not (self.config.notifications.enabled and self.config.notifications.notify_on_halts and self.notifier):
+            return
+        self.notifier.send(
+            title="TQQQ bot restarting",
+            message=f"{reason} The add-on is stopping so Home Assistant can restart it. "
+                    "Orders already at IBKR stay live. If the add-on does not come back, start it manually.",
+            severity="critical",
+            event_type="WATCHDOG_RESTART",
+            tag="tqqq_bot_critical",
+            group="trading_bot_status",
+            extra={"symbol": TICKER, "reason": reason},
+        )
 
     def _send_status_notification(self, *, title: str, message: str, event_type: str, tag: str,
                                   severity: str = "critical", extra: Optional[dict] = None):

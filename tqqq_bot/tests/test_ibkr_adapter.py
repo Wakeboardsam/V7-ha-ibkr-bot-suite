@@ -829,3 +829,100 @@ async def test_option_orders_executions_ignored_stock_preserved():
     # This should trigger callback
     adapter._on_exec_details(stk_trade, stk_fill)
     callback.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_degraded_state_restart_alerts_before_sigterm(mock_ib):
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+    adapter.ib = mock_ib
+    adapter.ib.isConnected = MagicMock(return_value=True)
+    adapter.ib.accountValues = MagicMock(return_value=[])
+    adapter._broker_state_ready = False
+    adapter._connected_not_ready_since = datetime.datetime.now() - datetime.timedelta(minutes=3)
+    adapter._degraded_reconnect_attempted = True
+
+    order = []
+    adapter.on_restart_requested = lambda reason: order.append(("alert", reason))
+
+    with patch('os.kill', side_effect=lambda *a: order.append(("kill", a))):
+        with pytest.raises(ConnectionError, match="Degraded state watchdog triggered"):
+            await adapter.ensure_connected()
+
+    import signal
+    assert [step for step, _ in order] == ["alert", "kill"]
+    assert "account data did not load" in order[0][1]
+    assert order[1][1] == (1, signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_over_15_minutes_alerts_then_restarts(mock_ib):
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+    mock_ib.isConnected = MagicMock(return_value=False)
+    mock_ib.connectAsync = AsyncMock(side_effect=ConnectionRefusedError("gateway down"))
+    adapter.ib = mock_ib
+    adapter._disconnect_time = datetime.datetime.now() - datetime.timedelta(minutes=16)
+
+    order = []
+    adapter.on_restart_requested = lambda reason: order.append(("alert", reason))
+
+    with patch('brokers.ibkr.adapter.IB', return_value=mock_ib), \
+         patch('brokers.ibkr.adapter.asyncio.sleep', AsyncMock()), \
+         patch('os.kill', side_effect=lambda *a: order.append(("kill", a))):
+        with pytest.raises(ConnectionError, match="15 minutes of downtime"):
+            await adapter.ensure_connected()
+
+    assert [step for step, _ in order] == ["alert", "kill"]
+    assert "more than 15 minutes" in order[0][1]
+
+
+@pytest.mark.asyncio
+async def test_restart_still_signalled_when_alert_fails(mock_ib):
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+
+    def broken_alert(reason):
+        raise RuntimeError("webhook down")
+
+    adapter.on_restart_requested = broken_alert
+    with patch('os.kill') as mock_kill:
+        adapter._request_container_restart("test")
+
+    import signal
+    mock_kill.assert_called_once_with(1, signal.SIGTERM)
+
+
+def _watchdog_engine(enabled=True, notify_on_halts=True):
+    from config.schema import AppConfig, NotificationSettings
+    from engine.engine import GridEngine
+    config = AppConfig(
+        google_sheet_id="test_sheet",
+        google_credentials_json='{"test": "json"}',
+        notifications=NotificationSettings(enabled=enabled, webhook_url="http://example.invalid/hook",
+                                           notify_on_halts=notify_on_halts),
+    )
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+    notifier = MagicMock()
+    GridEngine(adapter, AsyncMock(), config, notifier=notifier)
+    return adapter, notifier
+
+
+def test_engine_sends_critical_watchdog_restart_alert():
+    adapter, notifier = _watchdog_engine()
+
+    with patch('os.kill'):
+        adapter._request_container_restart("IBKR Gateway disconnected for more than 15 minutes.")
+
+    notifier.send.assert_called_once()
+    kwargs = notifier.send.call_args.kwargs
+    assert kwargs["event_type"] == "WATCHDOG_RESTART"
+    assert kwargs["severity"] == "critical"
+    assert "IBKR Gateway disconnected for more than 15 minutes." in kwargs["message"]
+
+
+@pytest.mark.parametrize("enabled,notify_on_halts", [(False, True), (True, False)])
+def test_watchdog_restart_alert_respects_notification_settings(enabled, notify_on_halts):
+    adapter, notifier = _watchdog_engine(enabled, notify_on_halts)
+
+    with patch('os.kill'):
+        adapter._request_container_restart("test")
+
+    notifier.send.assert_not_called()

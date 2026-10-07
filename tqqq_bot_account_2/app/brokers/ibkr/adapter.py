@@ -71,6 +71,9 @@ class IBKRAdapter(BrokerBase):
         self.timezone = timezone
         self.maintenance_reconnect_grace_minutes = maintenance_reconnect_grace_minutes
         self._maintenance_window_logged = False
+        # Called with the reason just before the watchdog restarts the container,
+        # so the operator can be alerted. Set by the engine.
+        self.on_restart_requested: Optional[Callable[[str], None]] = None
 
         # Subscribe to order status and execution events
         self.ib.orderStatusEvent += self._on_order_status
@@ -224,13 +227,23 @@ class IBKRAdapter(BrokerBase):
                     logger.error(f"Degraded state recovery reconnect exception: {e}")
             else:
                 logger.critical("Degraded state watchdog: reconnect failed to restore account state. Triggering full container restart via SIGTERM to PID 1.")
-                try:
-                    os.kill(1, signal.SIGTERM)
-                except Exception as e:
-                    logger.error(f"Failed to send SIGTERM to PID 1: {e}")
+                self._request_container_restart("IBKR connected but account data did not load after a fresh reconnect.")
                 raise ConnectionError("Degraded state watchdog triggered container restart after failing to recover account state.")
         else:
             logger.info(f"Waiting for account sync (elapsed: {time_waiting})...")
+
+    def _request_container_restart(self, reason: str):
+        """Alerts the operator, then signals the container to stop so Home Assistant can restart it."""
+        if self.on_restart_requested:
+            try:
+                self.on_restart_requested(reason)
+            except Exception as e:
+                logger.error(f"Restart alert failed: {e}")
+        try:
+            # PID 1 is the container's init process; it passes the signal to run.sh
+            os.kill(1, signal.SIGTERM)
+        except Exception as e:
+            logger.error(f"Failed to send SIGTERM to PID 1: {e}")
 
     async def ensure_connected(self):
         if await self.is_connected():
@@ -310,11 +323,7 @@ class IBKRAdapter(BrokerBase):
                 raise ConnectionError("Watchdog failed to reconnect during this tick (maintenance window active).")
             else:
                 logger.critical("Watchdog: IBKR disconnected for > 15 minutes. Triggering full container restart via SIGTERM to PID 1.")
-                try:
-                    # PID 1 is usually supervisord or the init process in Docker
-                    os.kill(1, signal.SIGTERM)
-                except Exception as e:
-                    logger.error(f"Failed to send SIGTERM to PID 1: {e}")
+                self._request_container_restart("IBKR Gateway disconnected for more than 15 minutes.")
                 raise ConnectionError("Watchdog triggered container restart after 15 minutes of downtime.")
         else:
             logger.warning(f"Watchdog reconnect failed. Disconnected for {time_disconnected}. Will try again on next engine tick.")

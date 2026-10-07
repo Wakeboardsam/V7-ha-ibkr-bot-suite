@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.46). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.47). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -80,7 +80,7 @@ Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_f
 
 ### Readiness and the connection watchdog
 
-A tick runs only when the broker connection is up and broker state is **READY**: account values are populated and a live positions request has completed. If the connection drops, the watchdog reconnects on the existing connection object, then on a fresh one. If the Gateway stays disconnected for more than 15 minutes, or the connection is up but account state stays not ready through two successive waits of about two minutes (the second after a fresh reconnect), the bot signals the container to restart (`SIGTERM` to PID 1). **[Unverified]** whether Home Assistant restarts the add-on after that exit: `config.yaml` defines no `watchdog` option.
+A tick runs only when the broker connection is up and broker state is **READY**: account values are populated and a live positions request has completed. If the connection drops, the watchdog reconnects on the existing connection object, then on a fresh one. If the Gateway stays disconnected for more than 15 minutes, or the connection is up but account state stays not ready through two successive waits of about two minutes (the second after a fresh reconnect), the bot signals the container to restart (`SIGTERM` to PID 1). Just before that stop it sends a critical `WATCHDOG_RESTART` notification with the reason. Home Assistant restarts the add-on only when the add-on's **Watchdog** toggle on its Info page is on; it is off by default, and with it off the add-on stays stopped. With it on, Supervisor retries with backoff, up to 10 restarts in 30 minutes. Orders already at IBKR stay live while the add-on is down. On a live account, the restarted Gateway may need approval in IBKR Mobile before it logs in.
 
 ### Nightly maintenance and restarts
 
@@ -289,6 +289,7 @@ When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSO
 | `SHARE_MISMATCH_CLEARED` | A tick verified that broker and Sheet share counts agree again. | `notify_on_halts` |
 | `BRIDGE_HALTED` | The bridge flow halted. Sent once, with the reason. | `notify_on_halts` |
 | `BRIDGE_REANCHOR_STALLED` | A Bridge Anchor re-anchor has not settled after five minutes. Sent once per re-anchor. | `notify_on_halts` |
+| `WATCHDOG_RESTART` | The connection watchdog is stopping the add-on so Home Assistant can restart it. Sent once, just before the stop, with the reason. | `notify_on_halts` |
 | `GATEWAY_AUTH_REQUIRED` | Gateway stays logged out while its port is closed (sent by the startup script). | `notify_on_halts` |
 
 `notify_on_errors` and `notify_on_order_submit` exist as options but no code reads them. The webhook URL is stored as a password-type option because it contains a secret.
@@ -320,7 +321,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.46, Account 1 runs 299 tests and Account 2 runs 290, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.47, Account 1 runs 305 tests and Account 2 runs 296, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 ### Continuous integration
 

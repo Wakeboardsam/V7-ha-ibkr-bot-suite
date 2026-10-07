@@ -215,3 +215,12 @@ Outcome:
 Decision:
 - The owner chose to keep the pause and the automatic resume (no latch until restart), so a temporary difference does not need a restart, and to rely on the `SHARE_MISMATCH` notification to prompt a manual fix.
 - The Errors row is now written once per distinct pair of counts, like the notification. A failed write is retried on the next tick. A different pair of counts, or the same pair again after a verified recovery, writes a new row. Both `halt` and `warn` modes behave this way.
+
+## 2026-10-07 — The connection watchdog alerts before restarting the add-on
+
+Outcome:
+- When the Gateway stays disconnected for more than 15 minutes, or account data does not load after a fresh reconnect, the bot stops its container with `SIGTERM` to PID 1. Home Assistant restarts a stopped add-on only when that add-on's Watchdog toggle is on, and it is off by default. With it off the bot stayed down, and no notification said so.
+
+Decision:
+- Just before the stop, the bot sends a critical `WATCHDOG_RESTART` notification with the reason, controlled by `notify_on_halts`. The send is synchronous so it completes before the process exits. A failed send is logged and the stop still happens.
+- The owner turns on Watchdog for both add-ons in Home Assistant. The restart conditions and the stop itself are unchanged.
