@@ -148,3 +148,65 @@ async def test_share_mismatch_warn_log_error_fails(mock_broker, mock_sheet, conf
     # Bot should NOT crash, but since we added the hard pre-sell guard it will HALT because broker has 0 shares while row wants 10 shares.
     # We should assert that it halted instead of placed the order.
     assert engine._halted_reconciliation is True
+
+
+def _partly_filled_buy_grid():
+    # Row 7 owns 10 shares; row 8 has a working BUY for 10 shares.
+    return GridState(rows={
+        7: GridRow(row_index=7, status="OWNED:B1", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
+        8: GridRow(row_index=8, status="WORKING_BUY:B2", has_y=False, sell_price=100.0, buy_price=95.0, shares=10),
+    })
+
+
+def _open_buy(filled_qty, order_id="B2"):
+    return {'order_id': order_id, 'action': 'BUY', 'ticker': 'TQQQ', 'qty': 10, 'limit_price': 95.0,
+            'remaining_qty': 10 - filled_qty, 'filled_qty': filled_qty, 'status': 'Submitted'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["halt", "warn"])
+async def test_partly_filled_working_buy_is_not_a_share_mismatch(mock_broker, mock_sheet, config, mode):
+    config.share_mismatch_mode = mode
+    mock_sheet.fetch_grid.return_value = _partly_filled_buy_grid()
+    # 3 of row 8's 10 shares have filled; the BUY is still working.
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 13})
+    mock_broker.get_open_orders.return_value = [_open_buy(3)]
+
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    await engine._tick()
+
+    codes = [c.kwargs.get("code") for c in mock_sheet.log_error.call_args_list]
+    assert "SHARE_MISMATCH" not in codes
+    assert engine._share_mismatch is None
+    assert engine._execution_status() == "Running"
+
+
+@pytest.mark.asyncio
+async def test_filled_shares_of_a_buy_gone_from_the_broker_are_still_a_mismatch(mock_broker, mock_sheet, config):
+    config.share_mismatch_mode = "halt"
+    mock_sheet.fetch_grid.return_value = _partly_filled_buy_grid()
+    # Broker holds 3 extra shares but row 8's BUY is no longer live.
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 13})
+    mock_broker.get_open_orders.return_value = []
+
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    await engine._tick()
+
+    codes = [c.kwargs.get("code") for c in mock_sheet.log_error.call_args_list]
+    assert "SHARE_MISMATCH" in codes
+    assert engine._share_mismatch == {"broker_shares": 13, "sheet_shares": 10, "mode": "halt"}
+
+
+@pytest.mark.asyncio
+async def test_shares_beyond_a_partly_filled_buy_are_still_a_mismatch(mock_broker, mock_sheet, config):
+    config.share_mismatch_mode = "halt"
+    mock_sheet.fetch_grid.return_value = _partly_filled_buy_grid()
+    # 3 shares came from row 8's BUY; 2 more are unexplained.
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 15})
+    mock_broker.get_open_orders.return_value = [_open_buy(3)]
+
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    await engine._tick()
+
+    assert engine._share_mismatch == {"broker_shares": 15, "sheet_shares": 13, "mode": "halt"}
+    assert mock_broker.place_limit_order.call_count == 0

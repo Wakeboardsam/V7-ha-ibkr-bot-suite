@@ -112,6 +112,34 @@ def _calculate_partial_fill_adjusted_required_shares(
         missing_working_sell_rows
     )
 
+def _working_buy_filled_shares(
+    rows: dict[int, GridRow],
+    open_orders: list[dict],
+    configured_account: Optional[str] = None
+) -> int:
+    """
+    Shares already bought by WORKING_BUY orders that are still live at the
+    broker. A partly filled BUY puts shares in the account before its row
+    changes status, so the share-mismatch check counts them as expected.
+    Only a live order's own filled quantity, within its row's share count,
+    is counted.
+    """
+    filled_shares = 0
+    for row in rows.values():
+        buy_order_id = _extract_order_id_from_status(row.status, "WORKING_BUY:")
+        if not buy_order_id:
+            continue
+        for o in open_orders:
+            if str(o.get('order_id')) != buy_order_id or o.get('action') != 'BUY' or o.get('ticker') != TICKER:
+                continue
+            if configured_account and o.get('account') and o.get('account') != configured_account:
+                continue
+            filled_qty = o.get('filled_qty')
+            if isinstance(filled_qty, (int, float)) and 0 < filled_qty <= row.shares:
+                filled_shares += int(filled_qty)
+            break
+    return filled_shares
+
 def _extract_order_id_from_status(status: str, prefix: str) -> Optional[str]:
     """
     Parses a pipe-delimited status string to find a specific prefix (e.g., 'WORKING_BUY:')
@@ -2525,8 +2553,9 @@ class GridEngine:
             return
 
         sheet_shares_adjusted = sheet_shares - total_partial_fill_adjustment
+        working_buy_filled_shares = _working_buy_filled_shares(self.grid_state.rows, open_orders, self.config.ibkr_account_id)
 
-        effective_sheet_shares_for_mismatch = sheet_shares_adjusted
+        effective_sheet_shares_for_mismatch = sheet_shares_adjusted + working_buy_filled_shares
 
         if broker_shares != effective_sheet_shares_for_mismatch:
             delta = broker_shares - effective_sheet_shares_for_mismatch
@@ -2592,7 +2621,7 @@ class GridEngine:
                             pass
                         return
 
-                msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch} (Raw: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}). Mode: {self.config.share_mismatch_mode}"
+                msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch} (Raw: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}, Working BUY filled: {working_buy_filled_shares}). Mode: {self.config.share_mismatch_mode}"
 
                 # A Bridge Anchor is only valid while broker shares equal row 7.
                 # Both mismatch modes stop before the arming check that would
