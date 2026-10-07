@@ -230,6 +230,9 @@ class GridEngine:
         self._snapshot_error_logged = False
         # Last details alerted per Errors-tab code, so a repeated error alerts once.
         self._error_alerts_sent: dict[str, str] = {}
+        # Set once the connection watchdog has asked for a restart; the tick
+        # error that follows is already covered by the WATCHDOG_RESTART alert.
+        self._watchdog_restart_requested = False
         self._recent_session_cancels: dict[str, datetime] = {}
         self._inflight_session_cancels = 0
         self._missing_sell_confirmations: set[str] = set()
@@ -341,6 +344,7 @@ class GridEngine:
         could be lost. Home Assistant restarts the add-on only when its
         Watchdog setting is on.
         """
+        self._watchdog_restart_requested = True
         if not self._notification_enabled("notify_on_watchdog_restart"):
             return
         self.notifier.send(
@@ -380,17 +384,20 @@ class GridEngine:
             )
         )
 
-    def _notify_error_row(self, code: str, details: str):
+    def _notify_error_row(self, code: str, details: str, repeat_once: bool = True):
         """
         Alerts on an Errors-tab row that has no alert of its own, gated by
-        notify_on_errors. The same code with the same details alerts once;
-        callers clear the code when the condition recovers.
+        notify_on_errors. With repeat_once, the same code with the same details
+        alerts once and callers clear the code when the condition recovers.
+        Without it, every call is a new event (only the notifier's duplicate
+        window applies).
         """
         if not self._notification_enabled("notify_on_errors"):
             return
-        if self._error_alerts_sent.get(code) == details:
-            return
-        self._error_alerts_sent[code] = details
+        if repeat_once:
+            if self._error_alerts_sent.get(code) == details:
+                return
+            self._error_alerts_sent[code] = details
         self._send_status_notification(
             setting="notify_on_errors",
             title=f"TQQQ bot error: {code}",
@@ -1055,9 +1062,7 @@ class GridEngine:
                     # A later tick error alerts again even if its text repeats.
                     self._error_alerts_sent.pop("ENGINE_TICK_ERROR", None)
                 except Exception as e:
-                    logger.error(f"Error in engine tick: {e}", exc_info=True)
-                    await self.sheet.log_error(f"Engine tick error: {str(e)}", bot_status=self._execution_status())
-                    self._notify_error_row("ENGINE_TICK_ERROR", f"Engine tick error: {str(e)}")
+                    await self._handle_tick_error(e)
 
                 # Wait for poll interval or shutdown signal
                 try:
@@ -1082,6 +1087,14 @@ class GridEngine:
             # 3. Disconnect broker
             await self.broker.disconnect()
             logger.info("Graceful shutdown complete.")
+
+    async def _handle_tick_error(self, e: Exception):
+        """Records a failed tick in the Errors tab and alerts through notify_on_errors."""
+        logger.error(f"Error in engine tick: {e}", exc_info=True)
+        await self.sheet.log_error(f"Engine tick error: {str(e)}", bot_status=self._execution_status())
+        # A watchdog restart has its own alert, so its tick error is not sent again.
+        if not self._watchdog_restart_requested:
+            self._notify_error_row("ENGINE_TICK_ERROR", f"Engine tick error: {str(e)}")
 
     def _handle_shutdown_signal(self):
         logger.info("Shutdown signal received.")
@@ -2698,7 +2711,8 @@ class GridEngine:
                             await self.sheet.log_error(msg, severity="INFO", code="SHARE_RECONCILED", symbol=TICKER, bot_status=self._execution_status())
                         except Exception as e:
                             pass
-                        self._notify_error_row("SHARE_RECONCILED", msg)
+                        # Each completed repair is a new event, not a repeat.
+                        self._notify_error_row("SHARE_RECONCILED", msg, repeat_once=False)
                         return
 
                 msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch} (Raw: {tracker_required_shares_raw}, Adj: {tracker_required_shares_adjusted}, Partial-fill adj: {total_partial_fill_adjustment}, Working BUY filled: {working_buy_filled_shares}). Mode: {self.config.share_mismatch_mode}"

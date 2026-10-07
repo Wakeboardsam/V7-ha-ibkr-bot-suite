@@ -83,5 +83,5 @@ configuration:
         name: Other errors
         description: >-
           Any other row the bot writes to the Errors tab, such as an engine error,
-          missing position data or an automatic share repair. The same error
-          alerts once until it clears.
+          missing position data or an automatic share repair. Each repair alerts;
+          any other repeated error alerts once until it clears.

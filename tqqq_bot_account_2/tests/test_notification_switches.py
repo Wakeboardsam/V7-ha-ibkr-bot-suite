@@ -209,3 +209,37 @@ def test_every_notification_option_has_a_name_and_description():
     for key in addon["schema"]["notifications"]:
         field = section["fields"][key]
         assert field["name"].strip() and field["description"].strip(), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("watchdog_on", [True, False])
+async def test_watchdog_restart_tick_error_is_not_sent_again_as_other_errors(watchdog_on):
+    from unittest.mock import patch
+    from brokers.ibkr.adapter import IBKRAdapter
+    config = AppConfig(
+        google_sheet_id="test_sheet",
+        google_credentials_json='{"test": "json"}',
+        notifications=NotificationSettings(enabled=True, webhook_url="http://example.invalid/hook",
+                                           notify_on_errors=True, notify_on_watchdog_restart=watchdog_on),
+    )
+    notifier = MagicMock()
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+    engine = GridEngine(adapter, AsyncMock(), config, notifier=notifier)
+
+    # The adapter alerts, signals PID 1, then raises out of the tick.
+    with patch("os.kill"):
+        adapter._request_container_restart("IBKR Gateway disconnected for more than 15 minutes.")
+    await engine._handle_tick_error(ConnectionError("Watchdog triggered container restart after 15 minutes of downtime."))
+    await _drain()
+
+    assert engine.sheet.log_error.call_count == 1, "the Errors row is still written"
+    assert _sent(notifier) == ({"WATCHDOG_RESTART"} if watchdog_on else set())
+
+
+@pytest.mark.asyncio
+async def test_ordinary_tick_error_still_alerts_as_other_errors():
+    engine, notifier = _engine(notify_on_errors=True)
+    await engine._handle_tick_error(RuntimeError("boom"))
+    await _drain()
+    assert _sent(notifier) == {"BOT_ERROR"}
+    engine.sheet.log_error.assert_called_once()

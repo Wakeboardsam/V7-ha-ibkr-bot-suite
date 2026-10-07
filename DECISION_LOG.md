@@ -233,5 +233,5 @@ Outcome:
 Decision:
 - Each alert has its own switch: fills, bot started, order placed, reconciliation halt, Bridge halt, re-anchor not settling, share mismatch, share mismatch cleared, Gateway login needed, watchdog restart and other errors. Existing option names are kept so saved choices carry over.
 - The owner chose that every switch is off by default, so an installation sends nothing until the operator turns on the alerts they want. Home Assistant shows a name and description for each switch from `translations/en.yaml`.
-- "Other errors" covers only Errors-tab rows without an alert of their own, so a halt sends one alert, and the same error alerts once until it clears. "Order placed" covers grid BUYs and SELLs, the Bridge Anchor BUY and trim SELLs.
+- "Other errors" covers only Errors-tab rows without an alert of their own, so a halt or a watchdog restart sends one alert through its own switch. Each automatic share repair alerts; any other repeated error alerts once until it clears. "Order placed" covers grid BUYs and SELLs, the Bridge Anchor BUY and trim SELLs.
 - Switches change only what is sent to the phone. Errors-tab rows, Health and trading behaviour are unchanged.

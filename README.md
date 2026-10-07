@@ -292,7 +292,7 @@ When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSO
 | `SHARE_MISMATCH_CLEARED` | A tick verified that broker and Sheet share counts agree again. | `notify_on_share_mismatch_cleared` |
 | `GATEWAY_AUTH_REQUIRED` | Gateway stays logged out while its port is closed (sent by the startup script every five minutes). | `notify_on_gateway_login` |
 | `WATCHDOG_RESTART` | The connection watchdog is stopping the add-on so Home Assistant can restart it. Sent once, just before the stop, with the reason. | `notify_on_watchdog_restart` |
-| `BOT_ERROR` | An Errors-tab row that has no alert of its own: an engine tick error, missing position data (`POSITION_SNAPSHOT_UNAVAILABLE`) or an automatic share repair (`SHARE_RECONCILED`). The same code with the same details alerts once; a tick error alerts again after a successful tick, and missing position data after it recovers. | `notify_on_errors` |
+| `BOT_ERROR` | An Errors-tab row that has no alert of its own: an engine tick error, missing position data (`POSITION_SNAPSHOT_UNAVAILABLE`) or an automatic share repair (`SHARE_RECONCILED`). Each share repair alerts. Any other error with the same code and details alerts once; a tick error alerts again after a successful tick, and missing position data after it recovers. The tick error that follows a watchdog restart is not sent, because `WATCHDOG_RESTART` covers it. | `notify_on_errors` |
 
 Home Assistant merges an add-on's saved options with its defaults, including nested ones, so after an upgrade the switches already saved keep their values and new switches appear off. Before 0.1.48, `notify_on_halts` also controlled the share mismatch, Bridge, re-anchor, Gateway login and watchdog alerts, and `notify_on_errors` and `notify_on_order_submit` did nothing.
 
@@ -325,7 +325,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.48, Account 1 runs 327 tests and Account 2 runs 315, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.48, Account 1 runs 331 tests and Account 2 runs 319, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 ### Continuous integration
 
