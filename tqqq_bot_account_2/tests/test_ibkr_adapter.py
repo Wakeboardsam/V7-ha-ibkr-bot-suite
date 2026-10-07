@@ -915,6 +915,9 @@ def test_engine_sends_critical_watchdog_restart_alert():
     assert kwargs["event_type"] == "WATCHDOG_RESTART"
     assert kwargs["severity"] == "critical"
     assert "IBKR Gateway disconnected for more than 15 minutes." in kwargs["message"]
+    # Shutdown cancels tracked orders, so the alert must not claim they stay live.
+    assert "attempts to cancel tracked orders" in kwargs["message"]
+    assert "stay live" not in kwargs["message"]
 
 
 @pytest.mark.parametrize("enabled,notify_on_halts", [(False, True), (True, False)])

@@ -344,7 +344,8 @@ class GridEngine:
         self.notifier.send(
             title="TQQQ bot restarting",
             message=f"{reason} The add-on is stopping so Home Assistant can restart it. "
-                    "Orders already at IBKR stay live. If the add-on does not come back, start it manually.",
+                    "The bot attempts to cancel tracked orders during shutdown. Orders may remain live; check IBKR. "
+                    "If the add-on does not come back, start it manually.",
             severity="critical",
             event_type="WATCHDOG_RESTART",
             tag="tqqq_bot_critical",
