@@ -88,6 +88,49 @@ async def test_health_shows_pause_during_share_mismatch_and_running_after_verifi
 
 
 @pytest.mark.asyncio
+async def test_halt_mode_mismatch_writes_one_errors_row_and_one_alert_per_distinct_mismatch(config):
+    notifier = MagicMock()
+    broker, sheet, engine = mismatch_state(config, notifier)
+
+    def mismatch_rows():
+        return [r for r in sheet.error_rows if r["code"] == "SHARE_MISMATCH"]
+
+    await run_ticks(engine, 5)
+    assert len(mismatch_rows()) == 1, "the same mismatch is written once, not every tick"
+    alerts = events(notifier, "SHARE_MISMATCH")
+    assert len(alerts) == 1
+    assert alerts[0].kwargs["severity"] == "critical", "sent as a high-importance alert"
+    assert "No orders are being placed" in alerts[0].kwargs["message"]
+
+    # A different mismatch is a new event: one more row and one more alert.
+    broker.position = 127
+    await run_ticks(engine, 3)
+    assert len(mismatch_rows()) == 2
+    assert len(events(notifier, "SHARE_MISMATCH")) == 2
+
+    # After a verified recovery, the same counts recurring are reported again.
+    broker.position = 125
+    await run_ticks(engine, 2)
+    broker.position = 126
+    await run_ticks(engine, 3)
+    assert len(mismatch_rows()) == 3
+    assert len(events(notifier, "SHARE_MISMATCH")) == 3
+
+
+@pytest.mark.asyncio
+async def test_halt_mode_mismatch_errors_row_is_retried_after_a_failed_write(config):
+    notifier = MagicMock()
+    broker, sheet, engine = mismatch_state(config, notifier)
+    sheet.fail_error_writes = 1
+
+    await run_ticks(engine, 1)
+    assert [r for r in sheet.error_rows if r["code"] == "SHARE_MISMATCH"] == []
+
+    await run_ticks(engine, 3)
+    assert len([r for r in sheet.error_rows if r["code"] == "SHARE_MISMATCH"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_health_shows_limited_trading_in_warn_mode(config):
     config.share_mismatch_mode = "warn"
     notifier = MagicMock()

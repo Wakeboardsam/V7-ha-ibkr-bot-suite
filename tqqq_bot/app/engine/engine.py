@@ -252,6 +252,8 @@ class GridEngine:
         self._cancel_resend_seconds = 60
         # (broker_shares, sheet_shares) of the last share mismatch notified
         self._share_mismatch_notified_key = None
+        # (broker_shares, sheet_shares) of the last share mismatch written to the Errors tab
+        self._share_mismatch_logged_key = None
         # Current unexplained share mismatch, or None. Set and cleared only by a
         # tick that compared a fresh broker snapshot with the Tracker.
         self._share_mismatch: Optional[dict] = None
@@ -1725,6 +1727,7 @@ class GridEngine:
     async def _clear_share_mismatch(self, broker_shares: int):
         """Called when a tick has verified that broker and Tracker shares agree."""
         self._share_mismatch_notified_key = None
+        self._share_mismatch_logged_key = None
         if not self._share_mismatch:
             return
         previous = self._share_mismatch
@@ -2573,6 +2576,7 @@ class GridEngine:
                 logger.info(f"Allowing share mismatch (Broker: {broker_shares}, Sheet (effective): {effective_sheet_shares_for_mismatch}) due to bridge state {self._bridge_state}.")
                 self._share_mismatch = None
                 self._share_mismatch_notified_key = None
+                self._share_mismatch_logged_key = None
                 # Skip the rest of mismatch handling by continuing down to normal grid execution if allowed
             else:
                 candidates = []
@@ -2640,10 +2644,15 @@ class GridEngine:
                         "mode": self.config.share_mismatch_mode,
                     }
                     self._notify_share_mismatch(broker_shares, effective_sheet_shares_for_mismatch, msg)
-                try:
-                    await self.sheet.log_error(msg, code="SHARE_MISMATCH", symbol=TICKER, bot_status=self._execution_status())
-                except Exception as e:
-                    logger.error(f"Failed to log discrepancy to sheet: {e}")
+                # One Errors row per distinct mismatch, not one per tick. A
+                # failed write is retried on the next tick.
+                mismatch_key = (broker_shares, effective_sheet_shares_for_mismatch)
+                if mismatch_key != self._share_mismatch_logged_key:
+                    try:
+                        if await self.sheet.log_error(msg, code="SHARE_MISMATCH", symbol=TICKER, bot_status=self._execution_status()) is not False:
+                            self._share_mismatch_logged_key = mismatch_key
+                    except Exception as e:
+                        logger.error(f"Failed to log discrepancy to sheet: {e}")
 
                 if self.config.share_mismatch_mode == "halt":
                     logger.critical(msg)

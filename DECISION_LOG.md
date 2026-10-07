@@ -206,3 +206,12 @@ Outcome:
 Decision:
 - The share-mismatch check adds the filled quantity of each `WORKING_BUY` whose order is still live at the broker for the configured account, capped at the row's share count, to the shares it expects.
 - Filled shares of a BUY that is no longer live, and any shares beyond that filled quantity, are still a mismatch. Startup reconciliation and the `SELL_POSITION_MISMATCH_HALT` check are unchanged; they only halt when the broker holds fewer shares than the Tracker requires.
+
+## 2026-10-07 — A share mismatch writes one Errors row per distinct mismatch
+
+Outcome:
+- With `share_mismatch_mode: halt`, an unexplained share mismatch pauses trading and recovers on its own once a fresh broker snapshot matches the Tracker. The notification was already sent once per distinct pair of broker and Sheet share counts, but the same `SHARE_MISMATCH` Errors row was written on every tick.
+
+Decision:
+- The owner chose to keep the pause and the automatic resume (no latch until restart), so a temporary difference does not need a restart, and to rely on the `SHARE_MISMATCH` notification to prompt a manual fix.
+- The Errors row is now written once per distinct pair of counts, like the notification. A failed write is retried on the next tick. A different pair of counts, or the same pair again after a verified recovery, writes a new row. Both `halt` and `warn` modes behave this way.
