@@ -28,7 +28,9 @@ pytestmark = pytest.mark.usefixtures("regular_session")
 @pytest.fixture
 def config(bridge_config):
     bridge_config.notifications = NotificationSettings(
-        enabled=True, webhook_url="http://example.invalid/hook", notify_on_halts=True)
+        # The switches that notify_on_halts alone covered before each alert had its own.
+        enabled=True, webhook_url="http://example.invalid/hook", notify_on_halts=True, notify_on_bridge_halt=True, notify_on_reanchor_stalled=True,
+        notify_on_share_mismatch=True, notify_on_share_mismatch_cleared=True)
     return bridge_config
 
 

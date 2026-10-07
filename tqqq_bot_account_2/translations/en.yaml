@@ -1,0 +1,87 @@
+---
+configuration:
+  notifications:
+    name: Phone notifications
+    description: >-
+      Alerts sent to a Home Assistant webhook, which your automation forwards to
+      your phone. Turn on "Send notifications", set the webhook URL, then turn on
+      each alert you want. Every alert is off by default. Turning an alert off
+      never stops the bot writing to the Google Sheet.
+    fields:
+      enabled:
+        name: Send notifications
+        description: >-
+          Master switch. When off, no alert is sent, whatever the switches below say.
+      provider:
+        name: Provider
+        description: >-
+          How alerts are delivered. Only home_assistant_webhook is supported.
+      webhook_url:
+        name: Webhook URL
+        description: >-
+          The URL of the Home Assistant webhook trigger in your automation, for
+          example http://homeassistant.local:8123/api/webhook/<your-webhook-id>.
+          Keep it private: anyone with it can send you alerts.
+      timeout_seconds:
+        name: Send timeout (seconds)
+        description: >-
+          How long to wait for Home Assistant to accept an alert. 3 is normal.
+      dedupe_window_seconds:
+        name: Duplicate window (seconds)
+        description: >-
+          An identical alert inside this many seconds is dropped. 300 is normal.
+      notify_on_fills:
+        name: Fills
+        description: >-
+          A BUY or SELL order filled at IBKR. One alert per filled order.
+      notify_on_startup_ok:
+        name: Bot started
+        description: >-
+          The bot started and its first check against IBKR and the Sheet passed.
+          Once per start.
+      notify_on_order_submit:
+        name: Order placed
+        description: >-
+          The bot placed an order at IBKR: a grid BUY or SELL, the Bridge Anchor BUY
+          or a trim SELL. One alert per order, so this can be frequent.
+      notify_on_halts:
+        name: Reconciliation halt
+        description: >-
+          Trading stopped because IBKR and the Sheet disagree in a way the bot will
+          not fix itself. Needs you. Once per halt.
+      notify_on_bridge_halt:
+        name: Bridge halt
+        description: >-
+          The Bridge Anchor re-anchor stopped and needs you. Once per halt.
+      notify_on_reanchor_stalled:
+        name: Re-anchor not settling
+        description: >-
+          A Bridge Anchor re-anchor has not settled after five minutes, and no
+          orders are being placed. Once per re-anchor.
+      notify_on_share_mismatch:
+        name: Share mismatch
+        description: >-
+          IBKR and the Sheet show different share counts and no missed fill
+          explains it. Once per distinct pair of counts.
+      notify_on_share_mismatch_cleared:
+        name: Share mismatch cleared
+        description: >-
+          IBKR and the Sheet share counts agree again after a mismatch. Once per
+          recovery.
+      notify_on_gateway_login:
+        name: Gateway login needed
+        description: >-
+          IB Gateway stays logged out while its API port is closed, so the bot
+          cannot start. Repeats every five minutes until resolved.
+      notify_on_watchdog_restart:
+        name: Watchdog restart
+        description: >-
+          The bot lost IBKR for too long and is stopping the add-on so Home
+          Assistant can restart it (the add-on's Watchdog switch must be on).
+          Once per restart.
+      notify_on_errors:
+        name: Other errors
+        description: >-
+          Any other row the bot writes to the Errors tab, such as an engine error,
+          missing position data or an automatic share repair. The same error
+          alerts once until it clears.

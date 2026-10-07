@@ -889,14 +889,14 @@ async def test_restart_still_signalled_when_alert_fails(mock_ib):
     mock_kill.assert_called_once_with(1, signal.SIGTERM)
 
 
-def _watchdog_engine(enabled=True, notify_on_halts=True):
+def _watchdog_engine(enabled=True, notify_on_watchdog_restart=True):
     from config.schema import AppConfig, NotificationSettings
     from engine.engine import GridEngine
     config = AppConfig(
         google_sheet_id="test_sheet",
         google_credentials_json='{"test": "json"}',
         notifications=NotificationSettings(enabled=enabled, webhook_url="http://example.invalid/hook",
-                                           notify_on_halts=notify_on_halts),
+                                           notify_on_watchdog_restart=notify_on_watchdog_restart),
     )
     adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
     notifier = MagicMock()
@@ -920,9 +920,9 @@ def test_engine_sends_critical_watchdog_restart_alert():
     assert "stay live" not in kwargs["message"]
 
 
-@pytest.mark.parametrize("enabled,notify_on_halts", [(False, True), (True, False)])
-def test_watchdog_restart_alert_respects_notification_settings(enabled, notify_on_halts):
-    adapter, notifier = _watchdog_engine(enabled, notify_on_halts)
+@pytest.mark.parametrize("enabled,notify_on_watchdog_restart", [(False, True), (True, False)])
+def test_watchdog_restart_alert_respects_notification_settings(enabled, notify_on_watchdog_restart):
+    adapter, notifier = _watchdog_engine(enabled, notify_on_watchdog_restart)
 
     with patch('os.kill'):
         adapter._request_container_restart("test")

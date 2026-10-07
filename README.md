@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.47). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.48). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -66,7 +66,7 @@ Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_f
 7. Copy the Gateway settings back to `/data` once, then every `300` seconds in the background. The interval is a `run.sh` default; it is not exposed as an add-on option.
 8. Start the Python bot (`python -m main`). When the bot exits, `run.sh` stops the other processes and exits with the bot's exit code.
 
-**Login problems.** If IBC reports the Gateway as `LOGGED_OUT` for five minutes while the port is still closed, `wait_for_gateway.py` prints a loud warning and, when notifications are enabled with `notify_on_halts`, sends a Home Assistant alert every five minutes asking the operator to open VNC and sign in. Live accounts may need IBKR Mobile two-factor approval after a cold restart, host reboot, full add-on restart or session expiry. VNC has no password; enable it only for troubleshooting and do not expose its port to untrusted networks.
+**Login problems.** If IBC reports the Gateway as `LOGGED_OUT` for five minutes while the port is still closed, `wait_for_gateway.py` prints a loud warning and, when notifications are enabled with `notify_on_gateway_login`, sends a Home Assistant alert every five minutes asking the operator to open VNC and sign in. Live accounts may need IBKR Mobile two-factor approval after a cold restart, host reboot, full add-on restart or session expiry. VNC has no password; enable it only for troubleshooting and do not expose its port to untrusted networks.
 
 ### Bot startup (`main.py`, then the engine)
 
@@ -278,21 +278,25 @@ Account 2's committed defaults (manual boot, paper, `dry_run`, read-only API, VN
 
 ## Notifications
 
-When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSON to a Home Assistant webhook. Sends run off the event loop, network and HTTP send errors are caught and logged rather than raised, and identical messages inside `dedupe_window_seconds` are dropped.
+When `notifications.enabled` is true and `webhook_url` is set, the bot posts JSON to a Home Assistant webhook. Each alert also has its own switch under `notifications`, and every switch is off by default, so nothing is sent until the operator turns on the alerts they want. The add-on's Configuration page shows a plain-English name and a one-line description for each switch, from `translations/en.yaml`. Most sends run off the event loop; the reconciliation halt and watchdog restart alerts are sent directly, the latter so it completes before the process exits. Network and HTTP send errors are caught and logged rather than raised, and identical messages inside `dedupe_window_seconds` are dropped. Turning an alert off never stops the matching Errors-tab row or Health update.
 
 | Event | When | Controlled by |
 |---|---|---|
 | `FILL_BUY` / `FILL_SELL` | A tracked order fills. | `notify_on_fills` |
-| `HALT_RECONCILIATION` | A reconciliation halt. | `notify_on_halts` |
 | `BOT_STARTED` | The first tick passes reconciliation. | `notify_on_startup_ok` |
-| `SHARE_MISMATCH` | Broker and Sheet share counts disagree and no missed fill explains it. Sent once per distinct pair of counts. | `notify_on_halts` |
-| `SHARE_MISMATCH_CLEARED` | A tick verified that broker and Sheet share counts agree again. | `notify_on_halts` |
-| `BRIDGE_HALTED` | The bridge flow halted. Sent once, with the reason. | `notify_on_halts` |
-| `BRIDGE_REANCHOR_STALLED` | A Bridge Anchor re-anchor has not settled after five minutes. Sent once per re-anchor. | `notify_on_halts` |
-| `WATCHDOG_RESTART` | The connection watchdog is stopping the add-on so Home Assistant can restart it. Sent once, just before the stop, with the reason. | `notify_on_halts` |
-| `GATEWAY_AUTH_REQUIRED` | Gateway stays logged out while its port is closed (sent by the startup script). | `notify_on_halts` |
+| `ORDER_PLACED` | The bot placed an order at IBKR: a grid BUY or SELL, the Bridge Anchor BUY or a trim SELL. One per order. | `notify_on_order_submit` |
+| `HALT_RECONCILIATION` | A reconciliation halt. | `notify_on_halts` |
+| `BRIDGE_HALTED` | The bridge flow halted. Sent once, with the reason. | `notify_on_bridge_halt` |
+| `BRIDGE_REANCHOR_STALLED` | A Bridge Anchor re-anchor has not settled after five minutes. Sent once per re-anchor. | `notify_on_reanchor_stalled` |
+| `SHARE_MISMATCH` | Broker and Sheet share counts disagree and no missed fill explains it. Sent once per distinct pair of counts. | `notify_on_share_mismatch` |
+| `SHARE_MISMATCH_CLEARED` | A tick verified that broker and Sheet share counts agree again. | `notify_on_share_mismatch_cleared` |
+| `GATEWAY_AUTH_REQUIRED` | Gateway stays logged out while its port is closed (sent by the startup script every five minutes). | `notify_on_gateway_login` |
+| `WATCHDOG_RESTART` | The connection watchdog is stopping the add-on so Home Assistant can restart it. Sent once, just before the stop, with the reason. | `notify_on_watchdog_restart` |
+| `BOT_ERROR` | An Errors-tab row that has no alert of its own: an engine tick error, missing position data (`POSITION_SNAPSHOT_UNAVAILABLE`) or an automatic share repair (`SHARE_RECONCILED`). The same code with the same details alerts once; a tick error alerts again after a successful tick, and missing position data after it recovers. | `notify_on_errors` |
 
-`notify_on_errors` and `notify_on_order_submit` exist as options but no code reads them. The webhook URL is stored as a password-type option because it contains a secret.
+Home Assistant merges an add-on's saved options with its defaults, including nested ones, so after an upgrade the switches already saved keep their values and new switches appear off. Before 0.1.48, `notify_on_halts` also controlled the share mismatch, Bridge, re-anchor, Gateway login and watchdog alerts, and `notify_on_errors` and `notify_on_order_submit` did nothing.
+
+The webhook URL is stored as a password-type option because it contains a secret.
 
 ## Development and operations
 
@@ -321,7 +325,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.47, Account 1 runs 305 tests and Account 2 runs 296, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.48, Account 1 runs 327 tests and Account 2 runs 315, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 ### Continuous integration
 
