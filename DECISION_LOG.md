@@ -198,6 +198,15 @@ Decision:
 - Removing a part from a status keeps ownership only for a row that was owned before the removal. A row that held no shares stays `IDLE`. Nothing else changes: with row 7 `IDLE` and no shares, the existing full sell-out path cancels the lower BUYs and places the new anchor BUY.
 - Not investigated here: why the Bridge order did not trigger when row 7 sold at its stop price before the regular session.
 
+## 2026-10-07 — A partly filled working BUY is not a share mismatch
+
+Outcome:
+- A test confirmed that a grid BUY still working at the broker with part of its quantity filled tripped the share-mismatch breaker. The broker already held the filled shares while the row stayed `WORKING_BUY`, and only partly filled SELLs were adjusted for. In `halt` mode the bot stopped placing all orders, including SELLs, until the BUY finished; in `warn` mode it stopped BUYs and the Bridge Anchor. It wrote an Errors row every tick and sent a notification for each new fill count.
+
+Decision:
+- The share-mismatch check adds the filled quantity of each `WORKING_BUY` whose order is still live at the broker for the configured account, capped at the row's share count, to the shares it expects.
+- Filled shares of a BUY that is no longer live, and any shares beyond that filled quantity, are still a mismatch. Startup reconciliation and the `SELL_POSITION_MISMATCH_HALT` check are unchanged; they only halt when the broker holds fewer shares than the Tracker requires.
+
 ## 2026-10-07 — A share mismatch writes one Errors row per distinct mismatch
 
 Outcome:
