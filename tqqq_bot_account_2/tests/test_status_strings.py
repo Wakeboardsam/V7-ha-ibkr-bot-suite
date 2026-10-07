@@ -120,8 +120,13 @@ async def test_cancel_outside_window_working_buy(mock_broker, mock_sheet, config
     with patch.object(GridState, 'distal_y_row', 7):
         await engine._tick()
 
-    # Should cancel and update to IDLE
+    # Should cancel, but leave the status until IBKR confirms the cancel
     mock_broker.cancel_order.assert_called_with("BUY-123")
+    mock_sheet.update_row_status.assert_not_called()
+
+    # The cancel confirmation updates to IDLE
+    engine._handle_order_update(OrderResult(order_id="BUY-123", status="cancelled", filled_qty=0))
+    await asyncio.sleep(0.1)
     mock_sheet.update_row_status.assert_called_with(15, "IDLE")
 
 @pytest.mark.asyncio
@@ -138,8 +143,13 @@ async def test_cancel_outside_window_working_sell(mock_broker, mock_sheet, confi
     with patch.object(GridState, 'distal_y_row', 15):
         await engine._tick()
 
-    # Should cancel and update to OWNED:BUY-123
+    # Should cancel, but leave the status until IBKR confirms the cancel
     mock_broker.cancel_order.assert_called_with("SELL-456")
+    mock_sheet.update_row_status.assert_not_called()
+
+    # The cancel confirmation updates to OWNED:BUY-123
+    engine._handle_order_update(OrderResult(order_id="SELL-456", status="cancelled", filled_qty=0))
+    await asyncio.sleep(0.1)
     mock_sheet.update_row_status.assert_called_with(7, "OWNED:BUY-123")
 
 @pytest.mark.asyncio
@@ -156,6 +166,13 @@ async def test_owned_fallback_enforcement(mock_broker, mock_sheet, config):
     # distal_y = 15, window [12, 18]. Row 7 is outside.
     with patch.object(GridState, 'distal_y_row', 15):
         await engine._tick()
+
+    # Should cancel, but leave the status until IBKR confirms the cancel
+    mock_broker.cancel_order.assert_called_with("SELL-456")
+    mock_sheet.update_row_status.assert_not_called()
+
+    engine._handle_order_update(OrderResult(order_id="SELL-456", status="cancelled", filled_qty=0))
+    await asyncio.sleep(0.1)
 
     # Current behavior might be "OWNED", but we want to enforce "OWNED:0" or similar if ID is missing.
     # The requirement says "Confirm the bot only writes these status patterns to C7:C100: WORKING_BUY:12345, WORKING_SELL:12345, OWNED:12345, IDLE"
