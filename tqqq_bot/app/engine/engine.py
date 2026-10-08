@@ -1524,6 +1524,10 @@ class GridEngine:
 
         return correction_queued
 
+    def _now_et(self) -> datetime:
+        """Current time in New York, the clock the session boundaries are defined in."""
+        return datetime.now(zoneinfo.ZoneInfo("America/New_York"))
+
     async def _check_daily_grid_regeneration(self) -> bool:
         """
         Check if we have crossed 4:00 PM ET or 8:00 PM ET to regenerate the grid.
@@ -1531,7 +1535,7 @@ class GridEngine:
         Returns True if a boundary was crossed and state was reset, False otherwise.
         """
         tz = zoneinfo.ZoneInfo("America/New_York")
-        now_et = datetime.now(tz)
+        now_et = self._now_et()
 
         # We need to define two intervals:
         # 1. Day Session: 20:00 previous day to 16:00 current day (OND active)
@@ -2419,17 +2423,11 @@ class GridEngine:
 
         # 2. Daily Grid Regeneration Check
         # Run AFTER safety reconciliation guarantees we don't have mismatch or unknown orders
-        # We wrap this in a try-except to prevent tests from sporadically failing if mocked time is unexpected
         try:
-            # Check if this is a test environment
-            import sys
-            if 'pytest' in sys.modules:
-                self._is_weekend_gap = False
-            else:
-                regenerated = await self._check_daily_grid_regeneration()
-                if regenerated:
-                    logger.info("Daily/session grid regeneration changed order state. Returning early to let broker state settle.")
-                    return
+            regenerated = await self._check_daily_grid_regeneration()
+            if regenerated:
+                logger.info("Daily/session grid regeneration changed order state. Returning early to let broker state settle.")
+                return
         except Exception as e:
             logger.error(f"Error checking daily grid regeneration: {e}")
             self._is_weekend_gap = False

@@ -248,6 +248,7 @@ async def test_no_anchor_write_if_owned(mock_broker, mock_sheet, config):
     mock_sheet.write_anchor_ask.assert_not_called()
 
 @pytest.mark.asyncio
+@pytest.mark.real_session_clock
 async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
 
