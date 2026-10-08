@@ -102,6 +102,157 @@ Account 1 is declared the stable baseline and Account 2 duplication is authorize
 Decision:
 The `tqqq_bot_account_2` add-on provides a second independent bot copy. It must be created using manual boot, paper mode, dry-run enabled, read-only API enabled, VNC disabled, and placeholders for credentials to maintain a strict safe default posture. Stale documentation forbidding the creation of Account 2 has been updated.
 
+## 2026-06-28 — Pre-SELL guard waits out a recent session-boundary cancel
+
+Backfilled on 2026-10-08 from PR #23 (Account 1 0.1.22 at merge).
+
+Outcome:
+- After an overnight session-boundary cancel, the bot tried to replace the missing SELL while the broker's open-order list still showed the cancelled order as working. The pre-SELL guard then counted 0 shares available and raised a false `SELL_POSITION_MISMATCH_HALT`.
+
+Decision:
+- For 10 seconds after a session-boundary cancel, the pre-SELL guard fetches open orders again and skips the SELL placement cycle while any recently cancelled order still shows a non-terminal status. It counts only active orders and uses their remaining quantity.
+
+## 2026-07-14 — Reconciliation counts only TQQQ stock
+
+Backfilled on 2026-10-08 from PR #24 (Account 1 0.1.23 at merge).
+
+Outcome:
+- TQQQ option positions, such as short puts, were counted as TQQQ shares during reconciliation and execution syncs, which could raise false short-mismatch halts.
+
+Decision:
+- The IBKR adapter considers only stock contracts (`secType == "STK"`) for positions, open orders and executions, and the position snapshot reads only the configured ticker's stock. Same-symbol options are ignored.
+
+## 2026-07-16 — Account 2 add-on created; parity enforced in CI
+
+Backfilled on 2026-10-08 from PR #25 (both add-ons 0.1.24).
+
+Outcome:
+- `tqqq_bot_account_2` was created as a copy of the Account 1 runtime, as authorized on 2026-06-25, with safe committed defaults: `boot: manual`, paper mode, `dry_run: true`, `readonly_api: true`, VNC off and placeholder credentials.
+- CI was added: `scripts/check_addon_parity.py` keeps the runtime files of the two add-ons identical, and `scripts/validate_account_addons.py` enforces Account 2's safe defaults and placeholders.
+
+Decision:
+- Account 1 stays the reference; every runtime change is made in both add-ons.
+- Pytest was removed from CI in this pull request because the baseline had 3 failing tests. It was restored on 2026-10-07.
+
+## 2026-07-24 — Ticks wait while session-boundary cancels are verified
+
+Backfilled on 2026-10-08 from PR #26 (both add-ons 0.1.24 at merge).
+
+Outcome:
+- Reconciliation could run while the asynchronous check of a session-boundary SELL cancel was still in flight, before the row was confirmed `OWNED`, and raise a false `SELL_POSITION_MISMATCH_HALT`.
+
+Decision:
+- While any such check is in flight, ticks skip reconciliation and order placement. One further tick is skipped after the checks finish, so the Sheet sync and reconciliation see the verified status.
+
+## 2026-07-28 — Startup warns when Gateway is stuck logged out
+
+Backfilled on 2026-10-08 from PR #27 (Account 1 0.1.26).
+
+Outcome:
+- Gateway could sit at an expired-token or locked login screen while the startup log only repeated that it was waiting for the API port.
+
+Decision:
+- `wait_for_gateway.py` reads the IBC logs. When the latest login state stays `LOGGED_OUT` for five minutes, it prints a loud warning and sends a `GATEWAY_AUTH_REQUIRED` notification asking the operator to finish the login over VNC. The existing 1-hour live and 5-minute paper timeouts are unchanged.
+
+## 2026-07-29 — Automatic dismissal of the expired-token dialog tried
+
+Backfilled on 2026-10-08 from PR #28 (Account 1 0.1.27, Account 2 0.1.25 at merge) and PR #29 (both add-ons 0.1.28).
+
+Outcome:
+- PR #28 patched IBC with a `GatewayDialogHandler.java` to dismiss the expired-token dialog and log in again, in Account 1 only. It did not detect the dialog.
+- PR #29 reverted it and re-implemented the handler in both add-ons, detecting the dialog from its full window structure.
+
+Decision:
+- Superseded on 2026-08-04, when the automation was removed.
+
+## 2026-08-04 — Expired-token login automation removed
+
+Backfilled on 2026-10-08 from PR #30 (both add-ons 0.1.29).
+
+Outcome:
+- The IBC patch was deleted from both add-ons, and the Dockerfiles went back to `default-jre` with no Java compile step.
+
+Decision:
+- Expired-token logins are handled by the operator over VNC, prompted by the 2026-07-28 warning and notification.
+- The pull request itself did not record the reason. Recovered from the owner's 2026-07-29 and 2026-08-03 project discussion and backfilled on 2026-10-08: the patch still did not dismiss the expired-token dialog; manual recovery required clicking OK, entering the password and approving phone two-factor authentication. The owner requested removing the ineffective bypass while retaining the manual-login notification.
+
+## 2026-08-05 — Missing working orders self-healed at startup
+
+Backfilled on 2026-10-08 from PR #31 (both add-ons 0.1.30).
+
+Outcome:
+- After a start or restart, `WORKING_SELL` or `WORKING_BUY` order IDs kept in the Tracker but missing at the broker raised a false `SELL_POSITION_MISMATCH_HALT`, even when broker shares matched the Tracker.
+
+Decision:
+- When broker shares exactly matched the Tracker and nothing else was ambiguous, a missing `WORKING_SELL` became `OWNED` and a missing `WORKING_BUY` became `IDLE`. Superseded the next day.
+
+## 2026-08-06 — A missing SELL must be missing on two ticks
+
+Backfilled on 2026-10-08 from PR #32 (both add-ons 0.1.31).
+
+Outcome:
+- The 2026-08-05 self-healing was judged unsafe and removed, including the `WORKING_BUY` repair.
+
+Decision:
+- A tracked `WORKING_SELL` that is missing at the broker, and not tracked by the running engine, must be missing on two consecutive ticks before the halt is bypassed and the normal logic places the SELL again. This applies only when broker shares match the Tracker exactly, with no partial fills and no open SELL whose remaining quantity is unclear. The first missing tick is skipped. An order that reappears resets the count. In every other case the halt stays.
+
+## 2026-09-01 — Tracker status writes are serialized
+
+Backfilled on 2026-10-08 from PR #34 (both add-ons 0.1.32). PR #33, an earlier version of the same change, was not merged.
+
+Outcome:
+- Concurrent Tracker status writes could overwrite a `WORKING` cell with an older `IDLE` or `OWNED` value.
+
+Decision:
+- Status writes go through one lock, and the latest write wins.
+- When a Tracker cell disagrees with a live broker order that the running engine already tracks, the bot corrects the cell, writes it and ends the tick before reconciliation. An unknown or manual broker order is never adopted; it stays under the existing halt rules.
+
+## 2026-09-02 — Fills rows get Level and Profit formulas
+
+Backfilled on 2026-10-08 from PR #35 (both add-ons 0.1.33).
+
+Decision:
+- Each new Fills row is written with Level and Profit formulas in columns J and K, built with `INDEX` and `ROW()`. Fills rows are written as `USER_ENTERED` so the formulas evaluate. Errors and Health rows are still written `RAW`.
+
+## 2026-09-11 — Ticks wait for session-boundary cancel callbacks
+
+Backfilled on 2026-10-08 from PR #36 (both add-ons 0.1.34).
+
+Outcome:
+- IBKR could remove an order from the open-order list before sending its cancel callback. Reconciliation in that gap missed the `WORKING_SELL` and raised a false `SELL_POSITION_MISMATCH_HALT`.
+
+Decision:
+- While a session-boundary cancel the bot sent has no callback yet, ticks skip reconciliation and order placement.
+- If a callback is still missing after 15 minutes, the bot halts with `SESSION_BOUNDARY_CANCEL_TIMEOUT_HALT`.
+
+## 2026-09-23 — The Tracker shows total cash instead of settled cash
+
+Backfilled on 2026-10-08 from PR #37 (both add-ons 0.1.35).
+
+Outcome:
+- Settled cash dropped for a while after each trade, which made the Sheet's profit and loss figures misleading.
+
+Decision:
+- At the owner's request, the cash cell `C2` shows `TotalCashValue`, falling back to `TotalCashBalance`. `SettledCash` is ignored. If neither value is valid, the cell is left unchanged for that tick.
+
+## 2026-09-26 — Gateway runs on its bundled Java runtime
+
+Backfilled on 2026-10-08 from PR #38 (both add-ons 0.1.36). PR #39, an alternative fix, was closed unmerged.
+
+Outcome:
+- IB Gateway could fail to open, leaving a black VNC screen and the bot waiting, because IBC chose Java through `which java` and stale installer paths (as described in PR #39).
+
+Decision:
+- The image keeps Gateway's bundled JRE at `/opt/ibgateway_jre`, IBC is pointed at it, and the build checks that it runs.
+- `run.sh` checks that this Java exists and runs before starting IBC, and exits with an error if not.
+
+## 2026-09-28 — Notification when startup reconciliation passes
+
+Backfilled on 2026-10-08 from PR #40 (both add-ons 0.1.37).
+
+Decision:
+- A new `notify_on_startup_ok` option sends one notification per start once the first reconciliation passes without a halt.
+
 ## 2026-10-04 — Consolidate repository documentation
 
 Outcome:
