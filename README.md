@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.50). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.51). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -63,7 +63,7 @@ Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_f
 4. Start Xvfb, then `x11vnc` only if `enable_vnc` is true.
 5. Check that the Java runtime bundled with IB Gateway (`/opt/ibgateway_jre`) exists, then start Gateway through IBC.
 6. Run `wait_for_gateway.py` until the API port opens or the timeout expires (3600 s for `live`, 300 s for `paper`). On timeout the container prints sanitized IBC logs and exits with an error.
-7. Copy the Gateway settings back to `/data` once, then every `300` seconds in the background. The interval is a `run.sh` default; it is not exposed as an add-on option.
+7. Copy the Gateway settings back to `/data` once, then every `300` seconds in the background. The interval is a fixed `run.sh` constant, not an add-on option.
 8. Start the Python bot (`python -m main`). When the bot exits, `run.sh` stops the other processes and exits with the bot's exit code.
 
 **Login problems.** If IBC reports the Gateway as `LOGGED_OUT` for five minutes while the port is still closed, `wait_for_gateway.py` prints a loud warning and, when notifications are enabled with `notify_on_gateway_login`, sends a Home Assistant alert every five minutes asking the operator to open VNC and sign in. Live accounts may need IBKR Mobile two-factor approval after a cold restart, host reboot, full add-on restart or session expiry. VNC has no password; enable it only for troubleshooting and do not expose its port to untrusted networks.
@@ -325,7 +325,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.50, Account 1 runs 336 tests and Account 2 runs 324, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.51, Account 1 runs 336 tests and Account 2 runs 324, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 **Session clock in tests.** Every tick in the tests runs the real 16:00 and 20:00 ET session check, as live trading does. `tests/conftest.py` pins its clock to a Wednesday at 11:00 ET and starts each engine with that session already set up, so ordinary tests do not regenerate on their first tick. `tests/test_session_regeneration_ticks.py` moves that clock across the boundaries, the weekend gap and a fresh start. A test marked `real_session_clock` uses the real clock and a fresh engine instead.
 
