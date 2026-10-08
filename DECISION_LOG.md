@@ -104,7 +104,7 @@ The `tqqq_bot_account_2` add-on provides a second independent bot copy. It must 
 
 ## 2026-06-28 — Pre-SELL guard waits out a recent session-boundary cancel
 
-Backfilled on 2026-10-08 from PR #23 (Account 1 0.1.23).
+Backfilled on 2026-10-08 from PR #23 (Account 1 0.1.22 at merge).
 
 Outcome:
 - After an overnight session-boundary cancel, the bot tried to replace the missing SELL while the broker's open-order list still showed the cancelled order as working. The pre-SELL guard then counted 0 shares available and raised a false `SELL_POSITION_MISMATCH_HALT`.
@@ -114,7 +114,7 @@ Decision:
 
 ## 2026-07-14 — Reconciliation counts only TQQQ stock
 
-Backfilled on 2026-10-08 from PR #24 (Account 1 0.1.24).
+Backfilled on 2026-10-08 from PR #24 (Account 1 0.1.23 at merge).
 
 Outcome:
 - TQQQ option positions, such as short puts, were counted as TQQQ shares during reconciliation and execution syncs, which could raise false short-mismatch halts.
@@ -136,7 +136,7 @@ Decision:
 
 ## 2026-07-24 — Ticks wait while session-boundary cancels are verified
 
-Backfilled on 2026-10-08 from PR #26 (Account 1 0.1.25).
+Backfilled on 2026-10-08 from PR #26 (both add-ons 0.1.24 at merge).
 
 Outcome:
 - Reconciliation could run while the asynchronous check of a session-boundary SELL cancel was still in flight, before the row was confirmed `OWNED`, and raise a false `SELL_POSITION_MISMATCH_HALT`.
@@ -156,7 +156,7 @@ Decision:
 
 ## 2026-07-29 — Automatic dismissal of the expired-token dialog tried
 
-Backfilled on 2026-10-08 from PRs #28 and #29 (both add-ons 0.1.28).
+Backfilled on 2026-10-08 from PR #28 (Account 1 0.1.27, Account 2 0.1.25 at merge) and PR #29 (both add-ons 0.1.28).
 
 Outcome:
 - PR #28 patched IBC with a `GatewayDialogHandler.java` to dismiss the expired-token dialog and log in again, in Account 1 only. It did not detect the dialog.
@@ -173,7 +173,8 @@ Outcome:
 - The IBC patch was deleted from both add-ons, and the Dockerfiles went back to `default-jre` with no Java compile step.
 
 Decision:
-- Expired-token logins are handled by the operator over VNC, prompted by the 2026-07-28 warning and notification. The pull request does not record why the automation was dropped.
+- Expired-token logins are handled by the operator over VNC, prompted by the 2026-07-28 warning and notification.
+- The pull request itself did not record the reason. Recovered from the owner's 2026-07-29 and 2026-08-03 project discussion and backfilled on 2026-10-08: the patch still did not dismiss the expired-token dialog; manual recovery required clicking OK, entering the password and approving phone two-factor authentication. The owner requested removing the ineffective bypass while retaining the manual-login notification.
 
 ## 2026-08-05 — Missing working orders self-healed at startup
 
