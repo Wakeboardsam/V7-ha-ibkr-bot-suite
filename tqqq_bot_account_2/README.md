@@ -50,7 +50,3 @@ VNC is for troubleshooting and manual login or two-factor approval only.
 1. Set `enable_vnc: true`.
 2. The VNC server has **no password**. Port `5900` is unmapped by default; map it in the add-on's Network settings only if you need it, and only on a trusted network.
 3. Turn VNC off and remove the port mapping afterwards.
-
-## Shared Gateway add-on
-
-The separate `ibkr_gateway` add-on is not used by this add-on, which always uses its own bundled Gateway.
