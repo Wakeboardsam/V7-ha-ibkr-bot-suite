@@ -38,13 +38,10 @@ The bundled design replaced an earlier shared-Gateway design because trusted-IP 
 |---|---|
 | `tqqq_bot/` | **Account 1**, the stable baseline add-on. Source of truth for bot code and canonical tests. |
 | `tqqq_bot_account_2/` | **Account 2**, an independent copy of the Account 1 runtime. Committed defaults are the safe ones: `boot: manual`, `dry_run: true`, `readonly_api: true`, paper mode. |
-| `ibkr_gateway/` | Standalone Gateway add-on from the abandoned shared-Gateway design. Kept in the repository but **not usable with the current bots** (see below). |
 | `v6_baseline/` | Imported source of the stable v6 release (`Wakeboardsam/v6_IBKR_WebAPI`, tag `v6.3.1-Single_Account_Stable`). Reference only; it is not built, tested or deployed from here. |
 | `scripts/` | CI helper scripts (parity and configuration validation). |
 
 Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_for_gateway.py`, `Dockerfile`, `run.sh` (modulo add-on names) and the other non-test files must be byte-identical, which CI enforces. Only `config.yaml` (name, slug, boot mode, safe defaults), `README.md` and `tests/` differ.
-
-**`ibkr_gateway` status.** Both bundled bots force `ibkr_host` to `127.0.0.1` at startup (in `run.sh` and `main.py`), so they cannot connect to a Gateway in a different add-on. The shared-Gateway mode described in earlier project documents therefore does not work with the current code. The folder is retained until a decision removes it.
 
 ### Scope and strategy constraints
 

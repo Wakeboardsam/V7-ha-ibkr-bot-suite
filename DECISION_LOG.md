@@ -235,3 +235,14 @@ Decision:
 - The owner chose that every switch is off by default, so an installation sends nothing until the operator turns on the alerts they want. Home Assistant shows a name and description for each switch from `translations/en.yaml`.
 - "Other errors" covers only Errors-tab rows without an alert of their own, so a halt or a watchdog restart sends one alert through its own switch. Each automatic share repair alerts; any other repeated error alerts once until it clears. "Order placed" covers grid BUYs and SELLs, the Bridge Anchor BUY and trim SELLs.
 - Switches change only what is sent to the phone. Errors-tab rows, Health and trading behaviour are unchanged.
+
+## 2026-10-08 — Remove the unused standalone Gateway add-on
+
+Outcome:
+- The shared-Gateway design was intended to let multiple account bots use one Gateway. Trusted-IP and container-networking friction prevented that deployment from working, so each account now runs an independent add-on with its own bundled Gateway.
+- Both current bots enforce a local Gateway connection at `127.0.0.1`. No script or CI job depends on the standalone `ibkr_gateway` add-on.
+
+Decision:
+- The owner approved deleting `ibkr_gateway/` and removing its current add-on references from the three READMEs. This supersedes the retention decisions of 2026-06-09 and 2026-06-10; earlier entries remain as history.
+- Keep the one-add-on, one-Gateway, one-bot, one-account, one-Sheet architecture. Neither bot's runtime, configuration, trading behavior or version changes; removal of an unused add-on requires no update to either installed bot.
+- Before merging, check Home Assistant Settings > Add-ons and uninstall `V7_ibkr_gateway` if it is still installed. Repository removal does not stop or uninstall an existing container, and that add-on will no longer be available for updates or rebuilds from this repository. Do not uninstall either bundled bot add-on.
