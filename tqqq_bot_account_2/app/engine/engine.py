@@ -1590,6 +1590,50 @@ class GridEngine:
 
         return regenerated
 
+    def _sheet_bridge_anchor_ids(self) -> List[str]:
+        """Order IDs of the BRIDGE_BUY parts in row 7's Tracker status."""
+        if not self.grid_state or 7 not in self.grid_state.rows:
+            return []
+        return [part.split(":", 1)[1] for part in self.grid_state.rows[7].status.split("|")
+                if part.startswith("BRIDGE_BUY:") and part.split(":", 1)[1]]
+
+    def _adopt_sheet_bridge_anchor(self, open_orders: List[dict]) -> Optional[str]:
+        """
+        Returns the ID of the Bridge Anchor this engine keeps, if any.
+
+        After a restart nothing is tracked yet. A Bridge Anchor that row 7 of the
+        Tracker names, that is still live at the broker with row 7's intended
+        terms and that the bot is not already cancelling, is the bot's own order:
+        it is kept instead of being cancelled and placed anew. It is tracked
+        again here once row 7's SELL is tracked; until then the Tracker
+        re-tracking later in the tick picks up both. During the OVERNIGHT
+        session, when the bot places no Bridge Anchor, none is kept.
+        """
+        sheet_ids = self._sheet_bridge_anchor_ids()
+        for oid in sheet_ids:
+            if self.order_manager.is_tracked(oid):
+                return oid
+        if not sheet_ids:
+            return None
+
+        from brokers.ibkr.order_builder import get_dynamic_exchange
+        if get_dynamic_exchange() == "OVERNIGHT":
+            return None
+
+        row7 = self.grid_state.rows[7]
+        live = {str(o.get('order_id')): o for o in open_orders}
+        for oid in sheet_ids:
+            order = live.get(oid)
+            if order is None or oid in self._bot_initiated_cancel_ids:
+                continue
+            if order.get('action') == 'BUY' and self._bridge_order_terms_match(order, row7):
+                logger.info(f"Keeping live Bridge Anchor order {oid} named in row 7 of the Tracker.")
+                if self.order_manager.has_open_sell(7):
+                    self.order_manager.track(7, OrderResult(order_id=oid, status='submitted'), 'BRIDGE_BUY',
+                                             broker=self.broker, on_update=self._handle_order_update)
+                return oid
+        return None
+
     async def _cancel_bridge_anchor(self, reason: str):
         """Helper to attempt to cancel the Bridge Anchor order and clear tracking safely."""
         logger.info(f"{reason} Attempting to cancel Bridge Anchor.")
@@ -2268,8 +2312,12 @@ class GridEngine:
             self._notify_order_placed(kind="Bridge Anchor BUY", action="BUY", row=7, qty=row7.shares,
                                       price=limit_price, order_id=bridge_order_id)
 
-            # Update sheet status with pipe-delimited status
+            # Update sheet status with pipe-delimited status. Any older
+            # BRIDGE_BUY part names an order that is no longer live or tracked,
+            # so the new one replaces it rather than standing beside it.
             current_status = row7.status
+            if "BRIDGE_BUY:" in current_status:
+                current_status = _remove_status_part(current_status, "BRIDGE_BUY:")
             new_status = f"{current_status}|BRIDGE_BUY:{bridge_order_id}"
             self._update_row_status_in_memory(7, new_status)
             asyncio.create_task(self._sync_to_sheet())
@@ -2562,16 +2610,11 @@ class GridEngine:
                             bridge_like_orders.append(o)
 
         untracked_or_duplicate_cancelled = False
-        valid_tracked_bridge_id = None
-        if self.grid_state and 7 in self.grid_state.rows:
-            status = self.grid_state.rows[7].status
-            valid_id = _extract_order_id_from_status(status, "BRIDGE_BUY:")
-            if valid_id and self.order_manager.is_tracked(valid_id):
-                valid_tracked_bridge_id = valid_id
+        kept_bridge_id = self._adopt_sheet_bridge_anchor(open_orders)
 
         for o in bridge_like_orders:
             oid = str(o['order_id'])
-            if oid != valid_tracked_bridge_id:
+            if oid != kept_bridge_id:
                 logger.warning(f"Canceling untracked/stale Bridge Anchor order {oid}")
                 if self.config.dry_run:
                     logger.info(f"DRY RUN BLOCKED ORDER CANCEL: order_id={oid} reason=untracked or stale Bridge Anchor")

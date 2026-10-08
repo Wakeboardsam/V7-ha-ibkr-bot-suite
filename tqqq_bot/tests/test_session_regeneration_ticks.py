@@ -189,11 +189,10 @@ async def test_first_tick_after_a_start_sets_up_the_session_and_keeps_working_or
     assert broker.events == [], "the first tick neither cancels nor places"
 
     await run_ticks(restarted, 3)
-    # The grid's limit orders are kept and re-tracked. (A restart also replaces
-    # the Bridge Anchor order, with or without this first-tick step; that is
-    # outside what this test covers.)
+    # The grid's limit orders and the Bridge Anchor are kept and re-tracked.
     limit_ids = {oid for oid, o in working.items() if o["order_type"] == "LMT"}
-    assert not {e[1] for e in events(broker, "cancel")} & limit_ids
+    assert events(broker, "cancel") == []
+    assert events(broker, "place_stop") == []
     assert {oid: o for oid, o in broker.orders.items() if o["order_type"] == "LMT"} == \
         {oid: working[oid] for oid in limit_ids}
     assert limit_ids <= set(restarted.order_manager.get_tracked_order_ids())
