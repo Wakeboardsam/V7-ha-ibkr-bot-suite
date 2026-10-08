@@ -12,6 +12,9 @@ IBC_TEMPLATE_FILE="/app/gateway/ibc_config.ini.template"
 PERSIST_JTS_DIR="/data/ibgateway/persist/root_Jts"
 PERSIST_JAVA_DIR="/data/ibgateway/persist/root_java"
 
+# How often Gateway settings are copied back to /data. A fixed default, not an add-on option.
+GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=300
+
 # We must export this so envsubst can use it in ibc_config.ini.template
 export JTS_SETTINGS_DIR="${ACTIVE_JTS_DIR}"
 
@@ -31,7 +34,6 @@ if [ -f /data/options.json ]; then
     READONLY_API=$(jq -r '.readonly_api // false' /data/options.json)
     ENABLE_VNC=$(jq -r '.enable_vnc // false' /data/options.json)
     VNC_PORT=$(jq -r '.vnc_port // 5900' /data/options.json)
-    GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=$(jq -r '.gateway_settings_sync_interval_seconds // 300' /data/options.json)
 
     TIMEZONE=$(jq -r '.timezone // "America/Denver"' /data/options.json)
     GATEWAY_AUTO_RESTART_ENABLED=$(jq -r '.gateway_auto_restart_enabled // true' /data/options.json)
@@ -66,7 +68,6 @@ else
     READONLY_API="false"
     ENABLE_VNC="false"
     VNC_PORT=5900
-    GATEWAY_SETTINGS_SYNC_INTERVAL_SECONDS=300
     TIMEZONE="America/Denver"
     GATEWAY_AUTO_RESTART_ENABLED="true"
     GATEWAY_AUTO_RESTART_TIME="11:48 PM"
