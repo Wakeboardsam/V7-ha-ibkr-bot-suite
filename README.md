@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.49). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.50). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -325,7 +325,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.49, Account 1 runs 336 tests and Account 2 runs 324, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.50, Account 1 runs 336 tests and Account 2 runs 324, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 **Session clock in tests.** Every tick in the tests runs the real 16:00 and 20:00 ET session check, as live trading does. `tests/conftest.py` pins its clock to a Wednesday at 11:00 ET and starts each engine with that session already set up, so ordinary tests do not regenerate on their first tick. `tests/test_session_regeneration_ticks.py` moves that clock across the boundaries, the weekend gap and a fresh start. A test marked `real_session_clock` uses the real clock and a fresh engine instead.
 

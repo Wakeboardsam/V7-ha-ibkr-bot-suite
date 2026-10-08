@@ -2754,9 +2754,6 @@ class GridEngine:
 
         # 3. Calculate Window
         distal_y = self.grid_state.distal_y_row
-        # 3. Calculate Window
-        # 3. Calculate Window
-        distal_y = self.grid_state.distal_y_row
         window_start = max(7, distal_y - 3)
         window_end = max(7, distal_y + 3)
         window_range = range(window_start, window_end + 1)
