@@ -1,6 +1,8 @@
 FROM python:3.11-slim-bookworm
 
-LABEL io.hass.version="0.1.8" io.hass.type="app" io.hass.arch="amd64"
+# Home Assistant passes the add-on version from config.yaml as BUILD_VERSION.
+ARG BUILD_VERSION
+LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="amd64"
 
 # Install system dependencies (merged from ibkr_gateway and bot)
 RUN apt-get update && apt-get install -y \

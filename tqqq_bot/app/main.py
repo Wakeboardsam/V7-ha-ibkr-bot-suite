@@ -102,7 +102,7 @@ async def main():
     logger.info(f"Bot initialized with {config.active_broker} in {mode} mode")
 
     logger.info("")
-    logger.info("* TQQQ GRID BOT V6 OFFICIALLY STARTED!       *")
+    logger.info("* TQQQ GRID BOT V7 OFFICIALLY STARTED!       *")
     logger.info("")
 
     if config.dry_run:
