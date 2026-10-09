@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.51). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.52). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -131,7 +131,7 @@ Each tick, in this order (any step can end the tick early):
 9. At the 16:00 and 20:00 ET boundaries, regenerate the session (cancel all bot orders, clear order tracking) and end the tick.
 10. Write the account's total cash to `C2`.
 11. If shares went from above zero to zero, a full sell cycle has completed: write a fresh ask to `G7` (resetting the anchor) and end the tick.
-12. Cancel stale session orders and untracked or duplicate Bridge Anchor orders; run the share-mismatch checks; then handle Bridge Anchor states and evaluate the grid.
+12. Cancel stale session orders and untracked or duplicate Bridge Anchor orders (a live Bridge order named on row 7 with the intended terms is kept; see [Bridge Anchor](#bridge-anchor)); run the share-mismatch checks; then handle Bridge Anchor states and evaluate the grid.
 13. Write pending status updates to the Sheet and record the share count.
 
 ### Grid evaluation
@@ -157,6 +157,8 @@ Any other SELL that errors, is rejected or is cancelled with zero fill, and was 
 ### Bridge Anchor
 
 The Bridge Anchor protects against a fast rally after row 7, the last owned row, sells. It arms only when all of these hold: the feature is enabled (`enable_bridge_anchor`), row 7 is the only owned row, row 7 has a working SELL, broker shares equal row 7's share count, the session is not `OVERNIGHT`, it is not the weekend gap, and no share mismatch is active. It then places a GTC stop-limit BUY for row 7's share count with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`. It cancels the order when those conditions stop holding, and a separate check cancels a live Bridge order whenever no row 7 SELL is found at the broker. These checks run on each tick, so they reduce but do not eliminate the time a Bridge order can be live without its SELL. If row 7's SELL fills and the Bridge order does not, row 7 is `IDLE` with no shares: the bot cancels the Bridge order and carries on as after any full sell-out (fresh ask to `G7`, lower BUYs cancelled, new anchor BUY).
+
+**Restart with a Bridge order live.** After a restart the bot tracks nothing until it re-reads the Tracker. Outside the `OVERNIGHT` session, the Bridge order that row 7 names (`BRIDGE_BUY:<id>`) is kept and tracked again when it is still live at the broker with row 7's intended terms and the bot is not already cancelling it; it is not cancelled and placed again. A bridge-like order the Tracker does not name, or a named one with other terms, is an unknown order and halts reconciliation, as before. When the bot places a new Bridge order, its ID replaces any older `BRIDGE_BUY` ID on row 7.
 
 When the Bridge BUY fills, the anchor moves and every level is recalculated, so the bot re-anchors in fixed steps and places nothing new until each step is confirmed:
 
@@ -322,7 +324,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.51, Account 1 runs 336 tests and Account 2 runs 324, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.52, Account 1 runs 343 tests and Account 2 runs 331, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 **Session clock in tests.** Every tick in the tests runs the real 16:00 and 20:00 ET session check, as live trading does. `tests/conftest.py` pins its clock to a Wednesday at 11:00 ET and starts each engine with that session already set up, so ordinary tests do not regenerate on their first tick. `tests/test_session_regeneration_ticks.py` moves that clock across the boundaries, the weekend gap and a fresh start. A test marked `real_session_clock` uses the real clock and a fresh engine instead.
 

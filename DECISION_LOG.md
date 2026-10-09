@@ -397,3 +397,13 @@ Decision:
 - The owner approved deleting `ibkr_gateway/` and removing its current add-on references from the three READMEs. This supersedes the retention decisions of 2026-06-09 and 2026-06-10; earlier entries remain as history.
 - Keep the one-add-on, one-Gateway, one-bot, one-account, one-Sheet architecture. Neither bot's runtime, configuration, trading behavior or version changes; removal of an unused add-on requires no update to either installed bot.
 - Before merging, check Home Assistant Settings > Add-ons and uninstall `V7_ibkr_gateway` if it is still installed. Repository removal does not stop or uninstall an existing container, and that add-on will no longer be available for updates or rebuilds from this repository. Do not uninstall either bundled bot add-on.
+
+## 2026-10-08 — A restart keeps the live Bridge Anchor order
+
+Outcome:
+- After a restart the untracked-Bridge cleanup ran before the Tracker re-tracking, so the bot cancelled its own live Bridge order on the first tick. The next Bridge order's ID was added beside the old one on row 7, the cleanup read only the first ID, and it cancelled the new order as well. A restart went through three Bridge orders, with ticks in between when none was live. A Bridge order that had gone from the broker while the add-on was down caused the same extra place and cancel.
+
+Decision:
+- Outside the `OVERNIGHT` session, the Bridge order that row 7 names is kept and tracked again when it is live at the broker with row 7's intended terms (the same check reconciliation and Health use) and the bot has not already requested its cancel. A cancel the bot sent whose confirmation is late is therefore not undone.
+- A new Bridge order's ID replaces any older `BRIDGE_BUY` ID on row 7.
+- Unchanged: a bridge-like order the Tracker does not name, or a named one with other terms, halts reconciliation as an unknown order. During the `OVERNIGHT` session a Bridge order is not kept, as before.
