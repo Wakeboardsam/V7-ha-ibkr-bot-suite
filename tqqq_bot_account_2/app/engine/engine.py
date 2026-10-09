@@ -253,6 +253,10 @@ class GridEngine:
         # Working BUYs seen not matching their Sheet row: this tick, and the tick before
         self._stale_buy_confirmations: set[str] = set()
         self._stale_buy_previous: set[str] = set()
+        # (row, order ID) of outside-window WORKING_BUY rows whose order is gone
+        # from the broker, seen this tick and on the previous tick.
+        self._missing_buy_sightings: set[tuple[int, str]] = set()
+        self._missing_buy_previous: set[tuple[int, str]] = set()
         # Old-grid BUYs still tracked but absent from the broker during a re-anchor
         self._reanchor_absent_buys: set[str] = set()
         # A cancel with no broker callback after this long is sent again
@@ -1634,6 +1638,56 @@ class GridEngine:
                 return oid
         return None
 
+    async def _clear_missing_outside_window_buys(self, window_range, broker_order_ids: set) -> None:
+        """
+        Returns an outside-window row to IDLE when its WORKING_BUY order is gone.
+
+        Leaving the window cancels a row's BUY and keeps WORKING_BUY until the
+        broker confirms the cancel. If that confirmation never arrives, nothing
+        else clears the row. Called only on a tick whose fresh broker snapshot
+        agrees with the Tracker's shares, so a BUY that filled, fully or in
+        part, shows as a share mismatch and is left to the mismatch repair or
+        halt. A row qualifies only when its whole status is one WORKING_BUY,
+        no status write is queued for it, the order is neither tracked nor at the
+        broker, and the same row and order were seen this way on the previous
+        tick too. Any tick that does not get this far starts the count again.
+        """
+        if not self.grid_state or self._halted_reconciliation:
+            return
+        if self._bridge_state in ('ANCHOR_RECALC_PENDING', 'TRIM_PENDING', 'BRIDGE_HALTED'):
+            return
+
+        for row in self.grid_state.rows.values():
+            if row.row_index in window_range or row.has_y:
+                continue
+            parts = [p for p in row.status.split('|') if p]
+            if len(parts) != 1 or not parts[0].startswith("WORKING_BUY:"):
+                continue
+            if row.row_index in self.pending_status_updates:
+                continue
+            oid = parts[0].split(":", 1)[1]
+            if (not oid or oid in broker_order_ids or self.order_manager.is_tracked(oid)
+                    or oid in self._reanchor_unresolved_buys):
+                continue
+
+            key = (row.row_index, oid)
+            self._missing_buy_sightings.add(key)
+            if key not in self._missing_buy_previous:
+                logger.info(f"Row {row.row_index} WORKING_BUY {oid} is outside the window and gone from the broker; confirming on the next tick.")
+                continue
+
+            msg = (f"Row {row.row_index} showed WORKING_BUY:{oid}, but that BUY is gone from the broker with no "
+                   f"cancel or fill report, on two consecutive ticks, and broker shares match the Tracker. "
+                   f"The row is outside the active window and is set to IDLE.")
+            logger.warning(msg)
+            self._update_row_status_in_memory(row.row_index, "IDLE")
+            self._missing_buy_sightings.discard(key)
+            try:
+                await self.sheet.log_error(msg, severity="INFO", code="STALE_WORKING_BUY_CLEARED", symbol=TICKER,
+                                           row=row.row_index, action="BUY", bot_status=self._execution_status())
+            except Exception as e:
+                logger.error(f"Failed to log stale WORKING_BUY clear to sheet: {e}")
+
     async def _cancel_bridge_anchor(self, reason: str):
         """Helper to attempt to cancel the Bridge Anchor order and clear tracking safely."""
         logger.info(f"{reason} Attempting to cancel Bridge Anchor.")
@@ -2335,6 +2389,8 @@ class GridEngine:
         # A stale-BUY sighting only counts if the very next tick sees it again.
         self._stale_buy_previous = self._stale_buy_confirmations
         self._stale_buy_confirmations = set()
+        self._missing_buy_previous = self._missing_buy_sightings
+        self._missing_buy_sightings = set()
 
         # 0. Watchdog: ensure connection
         await self.broker.ensure_connected()
@@ -2689,6 +2745,7 @@ class GridEngine:
 
         effective_sheet_shares_for_mismatch = sheet_shares_adjusted + working_buy_filled_shares
 
+        shares_agree = False
         if broker_shares != effective_sheet_shares_for_mismatch:
             delta = broker_shares - effective_sheet_shares_for_mismatch
 
@@ -2794,6 +2851,7 @@ class GridEngine:
         else:
             # Fresh broker snapshot and Tracker agree: only this clears a mismatch.
             await self._clear_share_mismatch(broker_shares)
+            shares_agree = True
 
         # 3. Calculate Window
         distal_y = self.grid_state.distal_y_row
@@ -2805,6 +2863,9 @@ class GridEngine:
         if getattr(self, '_bridge_state', None) == 'BRIDGE_HALTED':
             logger.critical("Bot is in BRIDGE_HALTED state. Manual review required. Skipping grid evaluation.")
             return
+
+        if shares_agree:
+            await self._clear_missing_outside_window_buys(window_range, broker_order_ids)
 
         # Bridge Exception: Handle Trim Pending check
         if self._bridge_state == 'ANCHOR_RECALC_PENDING':
