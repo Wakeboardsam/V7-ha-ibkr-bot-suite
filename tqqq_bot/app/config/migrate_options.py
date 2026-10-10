@@ -12,7 +12,9 @@ restart the add-on, which then starts with the user's own values.
 Exit codes for run.sh:
   0  nothing to move (fresh install, already moved, or no Supervisor API)
   3  settings moved and a restart was requested; stop and wait for it
-  1  old settings were found but could not be moved; stop before IBKR
+  1  stop before IBKR: a moved value was reset and needs checking, the move
+     failed, or the saved settings could not be read while this add-on still
+     has placeholder settings
 This file uses only the standard library.
 """
 import json
@@ -23,7 +25,8 @@ import urllib.error
 import urllib.request
 
 SUPERVISOR_URL = "http://supervisor"
-BACKUP_PATH = "/data/options_before_sections.json"
+OPTIONS_PATH = "/data/options.json"
+PLACEHOLDER_ACCOUNT_ID = "DU1234567"
 
 # New section -> option names, in page order. Option names are unchanged.
 SECTIONS = {
@@ -114,12 +117,15 @@ def needs_migration(stored: dict) -> bool:
     return any(key in stored for key in LEGACY_KEYS)
 
 
-def migrate(stored: dict) -> dict:
+def migrate(stored: dict) -> tuple[dict, list[str]]:
     """
-    Returns the new sectioned options from the saved options. Values saved under
-    the old names win over the new sections' defaults; a value already saved in
-    a section is kept when no old value exists for it.
+    Returns the new sectioned options from the saved options, and a note for
+    each old value that could not be converted. Values saved under the old names
+    win over the new sections' defaults; a value already saved in a section is
+    kept when no old value exists for it. A value that cannot be converted gets
+    the new default instead, so every other setting is still moved.
     """
+    problems: list[str] = []
     result: dict = {}
     for section, keys in SECTIONS.items():
         current = stored.get(section)
@@ -135,20 +141,33 @@ def migrate(stored: dict) -> dict:
             k: v for k, v in notifications.items() if k not in DROPPED_NOTIFICATION_KEYS
         }
 
+    def default_for(section: str, key: str):
+        current = stored.get(section)
+        return current.get(key) if isinstance(current, dict) else None
+
     account = result["account"]
     if "trading_mode" not in stored and "paper_trading" in stored:
         account["trading_mode"] = "paper" if stored["paper_trading"] else "live"
     if account.get("trading_mode") not in ("paper", "live"):
-        raise MigrationError(f"trading_mode {account.get('trading_mode')!r} must be paper or live")
+        account["trading_mode"] = "paper"
+        problems.append("Trading mode was not paper or live and is now paper")
 
     schedule = result["schedule"]
-    for key in TIME_OPTIONS:
+    for key in sorted(TIME_OPTIONS):
         if key in schedule:
-            schedule[key] = to_24_hour(schedule[key], key)
+            try:
+                schedule[key] = to_24_hour(schedule[key], key)
+            except MigrationError:
+                schedule[key] = default_for("schedule", key)
+                problems.append(f"{key} could not be read as a time and is now {schedule[key]}")
     if "timezone" in schedule:
-        schedule["timezone"] = to_timezone(schedule["timezone"])
+        try:
+            schedule["timezone"] = to_timezone(schedule["timezone"])
+        except MigrationError:
+            schedule["timezone"] = default_for("schedule", "timezone")
+            problems.append(f"timezone is not one of the US zones on the new page and is now {schedule['timezone']}")
 
-    return result
+    return result, problems
 
 
 def warnings_for(stored: dict) -> list[str]:
@@ -200,7 +219,19 @@ def _call(method: str, path: str, token: str, body: dict | None = None, timeout:
             return {"result": "error", "message": f"HTTP {e.code}"}
 
 
-def run(token: str | None, call=_call, backup_path: str = BACKUP_PATH, log=print) -> int:
+def local_settings_are_placeholders(options_path: str) -> bool:
+    """True when this add-on's options.json still holds the placeholder account."""
+    try:
+        with open(options_path) as f:
+            options = json.load(f)
+    except (OSError, ValueError):
+        return True
+    account = options.get("account") if isinstance(options, dict) else None
+    account_id = account.get("ibkr_account_id") if isinstance(account, dict) else None
+    return account_id in (None, "", PLACEHOLDER_ACCOUNT_ID)
+
+
+def run(token: str | None, call=_call, options_path: str = OPTIONS_PATH, log=print) -> int:
     if not token:
         log("[Settings] No Supervisor API token; saved settings were not checked for the old layout.")
         return 0
@@ -208,33 +239,28 @@ def run(token: str | None, call=_call, backup_path: str = BACKUP_PATH, log=print
     try:
         info = call("GET", "/addons/self/info", token)
     except Exception as e:
-        log(f"[Settings] Could not read saved settings from Supervisor ({type(e).__name__}); continuing.")
-        return 0
+        info = {"result": "error", "message": type(e).__name__}
     if info.get("result") != "ok":
-        log("[Settings] Supervisor did not return saved settings; continuing.")
-        return 0
+        if not local_settings_are_placeholders(options_path):
+            log("[Settings] Could not read saved settings from Supervisor; this add-on is already configured, continuing.")
+            return 0
+        log("[Settings] STOPPED before connecting to IBKR: could not read saved settings from Supervisor.")
+        log("[Settings] If this add-on was set up before version 0.1.54, do not save the Configuration page yet: "
+            "start the add-on again so your earlier settings can be moved. On a new install, fill in the page, "
+            "save and start the add-on.")
+        return 1
 
     stored = (info.get("data") or {}).get("options") or {}
     if not needs_migration(stored):
         return 0
 
     log("[Settings] Saved settings use the old layout. Moving them into the new sections.")
-    try:
-        new_options = migrate(stored)
-    except MigrationError as e:
-        log(f"[Settings] STOPPED before connecting to IBKR: {redact(str(e), stored)}.")
-        log("[Settings] Open the add-on's Configuration tab, fill in that setting, save and start the add-on.")
-        return 1
+    new_options, problems = migrate(stored)
+    if problems:
+        # A reset value must be checked before the bot trades on it.
+        new_options["account"]["dry_run"] = True
     for note in warnings_for(stored):
         log(f"[Settings] {note}")
-
-    try:
-        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(stored, f, indent=2)
-        log(f"[Settings] A copy of the old settings is in {backup_path} inside the add-on.")
-    except OSError as e:
-        log(f"[Settings] Could not write the backup copy ({type(e).__name__}); continuing with the move.")
 
     try:
         saved = call("POST", "/addons/self/options", token, {"options": new_options})
@@ -243,7 +269,16 @@ def run(token: str | None, call=_call, backup_path: str = BACKUP_PATH, log=print
     if saved.get("result") != "ok":
         reason = redact(str(saved.get("message", "unknown error")), stored)
         log(f"[Settings] STOPPED before connecting to IBKR: Supervisor refused the moved settings ({reason}).")
-        log("[Settings] Open the add-on's Configuration tab, re-enter your settings, save and start the add-on.")
+        log("[Settings] Your earlier settings are still stored. Do not save the Configuration page; "
+            "start the add-on again to retry the move.")
+        return 1
+
+    if problems:
+        log("[Settings] STOPPED before connecting to IBKR. Every setting was moved, except:")
+        for problem in problems:
+            log(f"[Settings]  - {problem}")
+        log("[Settings] Watch only is turned on until you check them. On the Configuration page, correct those, "
+            "turn Watch only off if you trade, save, and start the add-on.")
         return 1
 
     log("[Settings] Settings saved in the new layout. Restarting the add-on once to apply them.")

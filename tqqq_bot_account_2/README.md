@@ -21,7 +21,7 @@ The Configuration tab groups the options into sections, each with a plain-Englis
 - **Phone notifications**: one switch per alert, all off by default.
 - **Advanced and troubleshooting**: API port, client ID, intervals, timeouts, log masking and VNC.
 
-**Upgrading from 0.1.53 or earlier.** On its first start, the add-on moves your saved settings into the new sections and restarts once. If a setting cannot be moved, it stops before connecting to IBKR and the log names the setting to fill in.
+**Upgrading from 0.1.53 or earlier.** On its first start, the add-on moves your saved settings into the new sections and restarts once. If a value cannot be moved, everything else still is, and the add-on stops in Watch only before connecting to IBKR; the log names the value to check. If the log says not to save the Configuration page yet, start the add-on again instead.
 
 **Switching between paper and live.** Stop the add-on, then change Trading mode, the account ID, the username and the password together, save, and start it. Paper uses IBKR's practice account, which has its own account ID (starting with `DU`) and usually its own username.
 

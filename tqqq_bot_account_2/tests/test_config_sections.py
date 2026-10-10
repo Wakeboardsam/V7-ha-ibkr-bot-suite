@@ -3,7 +3,6 @@ The sectioned Configuration page (0.1.54): moving saved settings from the old
 flat option names, reading the sections, and run.sh's option and time handling.
 """
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -158,8 +157,9 @@ def test_saved_settings_move_into_the_sections_unchanged():
     stored = supervisor_stored_after_update(LEGACY)
     assert needs_migration(stored)
 
-    moved = migrate(stored)
+    moved, problems = migrate(stored)
 
+    assert problems == []
     validate_against_schema(moved, CONFIG["schema"])
     for section, keys in SECTIONS.items():
         for key in keys:
@@ -173,7 +173,7 @@ def test_saved_settings_move_into_the_sections_unchanged():
 
 
 def test_moved_settings_read_back_as_the_same_bot_configuration(tmp_path):
-    moved = migrate(supervisor_stored_after_update(LEGACY))
+    moved, _ = migrate(supervisor_stored_after_update(LEGACY))
     path = tmp_path / "options.json"
     path.write_text(json.dumps(moved))
 
@@ -199,7 +199,7 @@ def test_new_layout_is_left_alone():
 
 def test_trading_mode_decides_when_the_old_settings_disagreed():
     stored = supervisor_stored_after_update({**LEGACY, "paper_trading": True, "trading_mode": "live"})
-    assert migrate(stored)["account"]["trading_mode"] == "live"
+    assert migrate(stored)[0]["account"]["trading_mode"] == "live"
     assert any("trading_mode" in note for note in warnings_for(stored))
 
 
@@ -208,7 +208,7 @@ def test_paper_trading_alone_sets_the_mode():
     stored = supervisor_stored_after_update(legacy)
     stored["account"]["trading_mode"] = "paper"  # the new default
     stored["paper_trading"] = False
-    assert migrate(stored)["account"]["trading_mode"] == "live"
+    assert migrate(stored)[0]["account"]["trading_mode"] == "live"
 
 
 @pytest.mark.parametrize("value, expected", [
@@ -258,24 +258,21 @@ class FakeSupervisor:
 
 def test_old_settings_are_saved_in_the_new_layout_then_the_add_on_restarts(tmp_path):
     supervisor = FakeSupervisor(supervisor_stored_after_update(LEGACY))
-    backup = tmp_path / "backup.json"
     lines = []
 
-    status = run("token", call=supervisor, backup_path=str(backup), log=lines.append)
+    status = run("token", call=supervisor, log=lines.append)
 
     assert status == 3
     assert [c[1] for c in supervisor.calls] == ["/addons/self/info", "/addons/self/options", "/addons/self/restart"]
     sent = supervisor.calls[1][2]["options"]
     validate_against_schema(sent, CONFIG["schema"])
     assert sent["account"]["ibkr_account_id"] == "DU1234567"
-    assert json.loads(backup.read_text())["ibkr_account_id"] == "DU1234567"
-    assert oct(os.stat(backup).st_mode & 0o777) == "0o600"
     assert not any("example-password-123" in line or "DU1234567" in line for line in lines)
 
 
 def test_nothing_happens_when_the_settings_are_already_in_sections(tmp_path):
     supervisor = FakeSupervisor(json.loads(json.dumps(CONFIG["options"])))
-    assert run("token", call=supervisor, backup_path=str(tmp_path / "b.json"), log=lambda *_: None) == 0
+    assert run("token", call=supervisor, log=lambda *_: None) == 0
     assert [c[1] for c in supervisor.calls] == ["/addons/self/info"]
 
 
@@ -290,7 +287,7 @@ def test_a_refused_save_stops_the_add_on_without_showing_secrets(tmp_path):
     )
     lines = []
 
-    status = run("token", call=supervisor, backup_path=str(tmp_path / "b.json"), log=lines.append)
+    status = run("token", call=supervisor, log=lines.append)
 
     assert status == 1
     assert "/addons/self/restart" not in [c[1] for c in supervisor.calls]
@@ -298,25 +295,89 @@ def test_a_refused_save_stops_the_add_on_without_showing_secrets(tmp_path):
     assert not any("example-password-123" in line for line in lines)
 
 
-def test_a_setting_that_cannot_be_moved_stops_before_saving_anything(tmp_path):
+def test_a_value_that_cannot_be_moved_keeps_every_other_setting_and_stops_in_watch_only(tmp_path):
+    """
+    An old time zone outside the list gets the new default, but the login,
+    account, Sheet and every other value are still saved in the sections, so
+    correcting that one field on the page loses nothing. The add-on stops
+    without restarting, in Watch only until the operator has checked it.
+    """
     supervisor = FakeSupervisor(supervisor_stored_after_update({**LEGACY, "timezone": "Europe/London"}))
     lines = []
 
-    status = run("token", call=supervisor, backup_path=str(tmp_path / "b.json"), log=lines.append)
+    status = run("token", call=supervisor, log=lines.append)
 
     assert status == 1
-    assert [c[1] for c in supervisor.calls] == ["/addons/self/info"]
+    assert [c[1] for c in supervisor.calls] == ["/addons/self/info", "/addons/self/options"]
+    sent = supervisor.calls[1][2]["options"]
+    validate_against_schema(sent, CONFIG["schema"])
+    assert sent["schedule"]["timezone"] == "America/Denver"
+    assert sent["account"]["dry_run"] is True
+    assert sent["account"]["trading_mode"] == "live"
+    assert sent["account"]["ibkr_username"] == "example_user"
+    assert sent["account"]["ibkr_password"] == "example-password-123"
+    assert sent["google_sheet"]["google_sheet_id"] == "example_sheet_id"
+    assert sent["advanced"]["poll_interval_seconds"] == 45
     assert any("timezone" in line for line in lines)
+    assert any("Watch only" in line for line in lines)
+    assert not needs_migration(sent)
+
+
+def test_an_unreadable_old_time_gets_the_default_and_the_rest_moves():
+    moved, problems = migrate(supervisor_stored_after_update({**LEGACY, "gateway_auto_restart_time": "late"}))
+    assert moved["schedule"]["gateway_auto_restart_time"] == "23:48"
+    assert moved["schedule"]["gateway_cold_restart_time"] == "18:00"
+    assert moved["account"]["ibkr_username"] == "example_user"
+    assert len(problems) == 1 and "gateway_auto_restart_time" in problems[0]
+
+
+def placeholder_options(tmp_path, account_id):
+    options = json.loads(json.dumps(CONFIG["options"]))
+    options["account"]["ibkr_account_id"] = account_id
+    path = tmp_path / "options.json"
+    path.write_text(json.dumps(options))
+    return str(path)
+
+
+class UnreachableSupervisor:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, method, path, token, body=None):
+        self.calls.append(path)
+        raise ConnectionRefusedError()
+
+
+def test_an_unreadable_supervisor_stops_an_add_on_still_on_placeholders(tmp_path):
+    """After the update the page shows defaults until the move runs; saving it then would discard the old values."""
+    lines = []
+    status = run("token", call=UnreachableSupervisor(),
+                 options_path=placeholder_options(tmp_path, "DU1234567"), log=lines.append)
+    assert status == 1
+    assert any("do not save the Configuration page" in line for line in lines)
+
+
+def test_an_unreadable_supervisor_does_not_block_a_configured_add_on(tmp_path):
+    supervisor = UnreachableSupervisor()
+    status = run("token", call=supervisor, options_path=placeholder_options(tmp_path, "configured_account"), log=lambda *_: None)
+    assert status == 0
+    assert supervisor.calls == ["/addons/self/info"]
+
+
+def test_a_supervisor_error_reply_is_treated_like_an_unreadable_one(tmp_path):
+    def refuses(method, path, token, body=None):
+        return {"result": "error", "message": "403"}
+    assert run("token", call=refuses, options_path=placeholder_options(tmp_path, "DU1234567"), log=lambda *_: None) == 1
 
 
 def test_a_restart_request_cut_off_by_the_restart_waits_for_it(tmp_path):
     supervisor = FakeSupervisor(supervisor_stored_after_update(LEGACY), restart=ConnectionResetError())
-    assert run("token", call=supervisor, backup_path=str(tmp_path / "b.json"), log=lambda *_: None) == 3
+    assert run("token", call=supervisor, log=lambda *_: None) == 3
 
 
 def test_a_refused_restart_stops_the_add_on(tmp_path):
     supervisor = FakeSupervisor(supervisor_stored_after_update(LEGACY), restart={"result": "error", "message": "x"})
-    assert run("token", call=supervisor, backup_path=str(tmp_path / "b.json"), log=lambda *_: None) == 1
+    assert run("token", call=supervisor, log=lambda *_: None) == 1
 
 
 # --- reading the sections -------------------------------------------------
@@ -399,7 +460,7 @@ def test_the_real_http_calls_reach_supervisor_with_the_token(tmp_path, monkeypat
     thread.start()
     monkeypatch.setattr(module, "SUPERVISOR_URL", f"http://127.0.0.1:{server.server_port}")
     try:
-        status = module.run("secret-token", backup_path=str(tmp_path / "b.json"), log=lambda *_: None)
+        status = module.run("secret-token", log=lambda *_: None)
     finally:
         server.shutdown()
 
