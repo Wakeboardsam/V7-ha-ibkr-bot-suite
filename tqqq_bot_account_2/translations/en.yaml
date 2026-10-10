@@ -1,5 +1,135 @@
 ---
 configuration:
+  account:
+    name: Account and trading
+    description: >-
+      Which IBKR account this add-on trades, and how. A new install starts in
+      Paper with "Watch only" and "Gateway read-only" on, so nothing can trade
+      until you choose to.
+    fields:
+      trading_mode:
+        name: Trading mode
+        description: >-
+          live trades your real account with real money. paper trades IBKR's
+          practice account, which has its own account ID (it starts with DU) and
+          usually its own username. To switch: stop the add-on, change this, the
+          account ID, the username and the password together, save, then start it.
+          The Gateway login and the bot both follow this one setting.
+      ibkr_account_id:
+        name: IBKR account ID
+        description: >-
+          The account number shown at the top of IBKR Client Portal, for the mode
+          above. The bot trades only this account and refuses to start without it.
+      ibkr_username:
+        name: IBKR username
+        description: The IBKR login for the account above.
+      ibkr_password:
+        name: IBKR password
+        description: >-
+          The password for that login. In live mode, approve the login in IBKR
+          Mobile when it asks, for example after a restart or the weekly Gateway
+          restart.
+      dry_run:
+        name: Watch only (no orders)
+        description: >-
+          The bot reads IBKR and the Sheet and logs what it would do, but places,
+          changes and cancels nothing. Use it to check a new setup. Turn it off to
+          trade.
+      readonly_api:
+        name: Gateway read-only
+        description: >-
+          The Gateway itself refuses every order, as a second lock behind Watch
+          only. Turn it off to trade.
+  google_sheet:
+    name: Google Sheet
+    description: The Tracker Sheet this account reads its grid from and writes to.
+    fields:
+      google_sheet_id:
+        name: Sheet ID
+        description: >-
+          The part of the Sheet's address between /d/ and /edit. Each account uses
+          its own Sheet.
+      google_credentials_json:
+        name: Service account key (JSON)
+        description: >-
+          In Google Cloud Console, turn on the Google Sheets API, create a service
+          account, then under Keys choose Add key, JSON. Paste the whole file here
+          as a single line.
+          Then share the Sheet with the client_email from that file as an Editor.
+  strategy:
+    name: Strategy and safeguards
+    description: Bridge Anchor, price offsets and what happens when share counts disagree.
+    fields:
+      enable_bridge_anchor:
+        name: Bridge Anchor
+        description: >-
+          When row 7 is the only owned row, keep a stop BUY at row 7's sell price
+          so a quick rally after it sells re-anchors the grid instead of leaving
+          it empty.
+      anchor_buy_offset:
+        name: Anchor price offset ($)
+        description: >-
+          Dollars per share. The anchor BUY is placed this much above the Sheet's
+          buy price, the Bridge BUY limit this much above its stop, and a trim
+          SELL this much below the bid. Normal is 1.5.
+      bridge_max_auto_trim_shares:
+        name: Bridge trim limit (shares)
+        description: >-
+          After a re-anchor, up to this many extra shares are sold automatically.
+          More than this stops the Bridge for your review. Normal is 5.
+      share_mismatch_mode:
+        name: When IBKR and Sheet shares disagree
+        description: >-
+          halt pauses trading until the counts agree. warn keeps SELLs working but
+          places no BUYs and arms no Bridge. Normal is halt.
+      max_spread_pct:
+        name: Maximum spread for the anchor BUY (%)
+        description: >-
+          The anchor BUY waits while the bid-ask spread is wider than this percent.
+          0.5 means half a percent. Normal is 0.5.
+  schedule:
+    name: Time zone and schedule
+    description: >-
+      Nightly maintenance pause and Gateway restarts. Enter every time as 24-hour
+      HH:MM, for example 23:44 for 11:44 PM.
+    fields:
+      timezone:
+        name: Time zone
+        description: >-
+          New_York is Eastern, Chicago Central, Denver Mountain, Phoenix Arizona
+          (no daylight saving), Los_Angeles Pacific, Anchorage Alaska and Honolulu
+          Hawaii. Every time on this page is in this zone. Market sessions always
+          follow New York time.
+      maintenance_enabled:
+        name: Pause nightly
+        description: Stops trading between the two times below, around IBKR's nightly reset.
+      maintenance_start_local:
+        name: Pause starts (HH:MM)
+        description: Normal is 23:44.
+      maintenance_end_local:
+        name: Pause ends (HH:MM)
+        description: 00:00 is midnight. The pause may cross midnight. Normal is 00:00.
+      maintenance_cancel_open_orders:
+        name: Cancel open orders when the pause starts
+        description: When off, orders already at IBKR can still fill during the pause.
+      gateway_auto_restart_enabled:
+        name: Daily Gateway restart
+        description: >-
+          Restarts the Gateway each night while keeping its session, so normally no
+          phone approval is needed.
+      gateway_auto_restart_time:
+        name: Daily restart time (HH:MM)
+        description: Normal is 23:48, inside the pause.
+      gateway_cold_restart_enabled:
+        name: Weekly full Gateway restart (Sunday)
+        description: >-
+          Closes and reopens the Gateway on Sunday with a fresh login, as IBKR
+          requires once a week. Live accounts then need approval in IBKR Mobile.
+      gateway_cold_restart_time:
+        name: Weekly restart time (HH:MM)
+        description: >-
+          A Sunday time you can approve the login on your phone. It must be after
+          01:00 New York time. Normal is 18:00.
   notifications:
     name: Phone notifications
     description: >-
@@ -12,24 +142,13 @@ configuration:
         name: Send notifications
         description: >-
           Master switch. When off, no alert is sent, whatever the switches below say.
-      provider:
-        name: Provider
-        description: >-
-          How alerts are delivered. Only home_assistant_webhook is supported.
       webhook_url:
         name: Webhook URL
         description: >-
-          The URL of the Home Assistant webhook trigger in your automation, for
-          example http://homeassistant.local:8123/api/webhook/<your-webhook-id>.
+          In Home Assistant, create an automation with a Webhook trigger and a
+          phone notification action, and paste its URL here, for example
+          http://homeassistant.local:8123/api/webhook/<your-webhook-id>.
           Keep it private: anyone with it can send you alerts.
-      timeout_seconds:
-        name: Send timeout (seconds)
-        description: >-
-          How long to wait for Home Assistant to accept an alert. 3 is normal.
-      dedupe_window_seconds:
-        name: Duplicate window (seconds)
-        description: >-
-          An identical alert inside this many seconds is dropped. 300 is normal.
       notify_on_fills:
         name: Fills
         description: >-
@@ -85,3 +204,62 @@ configuration:
           Any other row the bot writes to the Errors tab, such as an engine error,
           missing position data or an automatic share repair. Each repair alerts;
           any other repeated error alerts once until it clears.
+      timeout_seconds:
+        name: Send timeout (seconds)
+        description: >-
+          How long to wait for Home Assistant to accept an alert. Normal is 3.
+      dedupe_window_seconds:
+        name: Duplicate window (seconds)
+        description: >-
+          An identical alert inside this many seconds is dropped. Normal is 300.
+  advanced:
+    name: Advanced and troubleshooting
+    description: Connection, timing, log privacy and Gateway screen access. Rarely changed.
+    fields:
+      ibkr_port:
+        name: Gateway API port
+        description: >-
+          The port the bot and this add-on's own Gateway talk on. Both always use
+          this same value, so any free port works and the two add-ons may differ.
+          It does not depend on paper or live. Keep your current value.
+      ibkr_client_id:
+        name: API client ID
+        description: How the bot identifies itself to its Gateway. Normal is 1.
+      poll_interval_seconds:
+        name: Check interval (seconds)
+        description: Wait between trading checks. Normal is 60.
+      heartbeat_interval_seconds:
+        name: Sheet heartbeat (seconds)
+        description: How often the Sheet's heartbeat is updated. Normal is 60.
+      health_log_interval_seconds:
+        name: Health row interval (seconds)
+        description: How often a row is written to the Health tab. Normal is 300.
+      maintenance_reconnect_grace_minutes:
+        name: Reconnect grace after the pause (minutes)
+        description: >-
+          Within this time after the nightly pause, a disconnected Gateway does not
+          restart the add-on. Normal is 30.
+      gateway_live_wait_timeout_seconds:
+        name: Live login wait (seconds)
+        description: >-
+          How long startup waits for the Gateway in live mode, including your phone
+          approval. Normal is 3600.
+      gateway_paper_wait_timeout_seconds:
+        name: Paper login wait (seconds)
+        description: How long startup waits for the Gateway in paper mode. Normal is 300.
+      mask_account_ids_in_logs:
+        name: Hide account IDs in logs
+        description: Shows DU1****567 instead of the full ID. Keep this on.
+      enable_vnc:
+        name: Gateway screen (VNC)
+        description: >-
+          Lets a VNC viewer show the Gateway window, to log in by hand. It has no
+          password, so turn it off afterwards. Also set a port for it under Network
+          below, a different one for each add-on.
+      vnc_port:
+        name: VNC port inside the add-on
+        description: Leave at 5900 and change the Network port instead.
+network:
+  5900/tcp: >-
+    Gateway screen (VNC). Leave empty unless "Gateway screen (VNC)" is on; then use
+    a different port for each add-on, for example 5901 and 5902.

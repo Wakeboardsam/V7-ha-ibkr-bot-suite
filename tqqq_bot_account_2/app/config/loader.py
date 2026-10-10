@@ -2,12 +2,14 @@ import json
 import sys
 from pydantic import ValidationError
 from config.schema import AppConfig
+from config.migrate_options import SECTIONS
 
 
 def validate_ibkr_settings(config: AppConfig) -> list[str]:
     """
-    Validates that paper_trading and ibkr_port are consistent with IBKR defaults.
-    Returns a list of warning messages.
+    Validates that paper_trading and trading_mode agree. Returns a list of
+    warning messages. The API port is not checked against the mode: the bot
+    and its own Gateway always use the same configured port.
     """
     warnings = []
     if config.active_broker == "ibkr":
@@ -23,18 +25,6 @@ def validate_ibkr_settings(config: AppConfig) -> list[str]:
                 "Gateway is configured for live while bot runtime is configured as paper."
             )
 
-        if config.paper_trading:
-            if config.ibkr_port != 7497:
-                warnings.append(
-                    f"Inconsistency detected: paper_trading=True but ibkr_port={config.ibkr_port}. "
-                    "IBKR default paper port is 7497."
-                )
-        else:
-            if config.ibkr_port != 7496:
-                warnings.append(
-                    f"Inconsistency detected: paper_trading=False (LIVE) but ibkr_port={config.ibkr_port}. "
-                    "IBKR default live port is 7496."
-                )
     return warnings
 
 
@@ -43,11 +33,29 @@ from utils.log_sanitizer import mask_account_ids_in_text
 
 logger = logging.getLogger(__name__)
 
+def flatten_options(data: dict) -> dict:
+    """
+    The Configuration page groups options into sections; the bot reads them
+    under their own names. trading_mode also sets paper_trading, so the two
+    cannot disagree. A flat dictionary is returned unchanged.
+    """
+    if not isinstance(data, dict) or not any(isinstance(data.get(s), dict) for s in SECTIONS):
+        return data
+    flat = {k: v for k, v in data.items() if k not in SECTIONS}
+    for section in SECTIONS:
+        values = data.get(section)
+        if isinstance(values, dict):
+            flat.update(values)
+    if "trading_mode" in flat:
+        flat["paper_trading"] = flat["trading_mode"] == "paper"
+    return flat
+
+
 def load_config(path: str = "/data/options.json") -> AppConfig:
     data = {}
     try:
         with open(path, "r") as f:
-            data = json.load(f)
+            data = flatten_options(json.load(f))
 
         return AppConfig(**data)
     except FileNotFoundError:

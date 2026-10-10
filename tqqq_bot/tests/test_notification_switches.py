@@ -178,7 +178,9 @@ def test_upgrade_from_saved_0_1_47_settings_keeps_choices_and_adds_new_switches_
 
     merged = _supervisor_merge(addon["options"], saved)["notifications"]
 
-    assert set(merged) == set(addon["schema"]["notifications"])
+    # provider left the page in 0.1.54; Supervisor drops a saved key the schema no longer has.
+    assert set(merged) - set(addon["schema"]["notifications"]) == {"provider"}
+    assert set(addon["schema"]["notifications"]) <= set(merged)
     for key in ("notify_on_fills", "notify_on_errors", "notify_on_halts", "notify_on_startup_ok"):
         assert merged[key] is True, key
     for key in set(ALL_SWITCHES) - set(saved["notifications"]):

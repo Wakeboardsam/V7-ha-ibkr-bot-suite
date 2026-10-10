@@ -1,5 +1,5 @@
 name: V7_tqqq_bot
-version: 0.1.53
+version: 0.1.54
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
@@ -7,48 +7,35 @@ arch:
 startup: application
 boot: auto
 options:
-  active_broker: ibkr
-  paper_trading: true
-  dry_run: false
-  ibkr_host: 127.0.0.1
-  ibkr_port: 7497
-  ibkr_client_id: 1
-  ibkr_account_id: DU1234567
-  google_sheet_id: your_google_sheet_id_here
-  google_credentials_json: ''
-  poll_interval_seconds: 60
-  heartbeat_interval_seconds: 60
-  health_log_interval_seconds: 300
-  anchor_buy_offset: 1.5
-  share_mismatch_mode: halt
-  max_spread_pct: 0.5
-  enable_bridge_anchor: true
-  bridge_max_auto_trim_shares: 5
-  maintenance_enabled: true
-  maintenance_start_local: '23:44'
-  maintenance_end_local: '00:00'
-  maintenance_reconnect_grace_minutes: 30
-  maintenance_cancel_open_orders: true
-  timezone: 'America/Denver'
-  gateway_auto_restart_enabled: true
-  gateway_auto_restart_time: '11:48 PM'
-  gateway_cold_restart_enabled: true
-  gateway_cold_restart_time: '06:00 PM'
-  gateway_live_wait_timeout_seconds: 3600
-  gateway_paper_wait_timeout_seconds: 300
-  mask_account_ids_in_logs: true
-  ibkr_username: placeholder_user
-  ibkr_password: placeholder_password
-  trading_mode: paper
-  readonly_api: false
-  enable_vnc: false
-  vnc_port: 5900
+  account:
+    trading_mode: paper
+    ibkr_account_id: DU1234567
+    ibkr_username: placeholder_user
+    ibkr_password: placeholder_password
+    dry_run: true
+    readonly_api: true
+  google_sheet:
+    google_sheet_id: your_google_sheet_id_here
+    google_credentials_json: ''
+  strategy:
+    enable_bridge_anchor: true
+    anchor_buy_offset: 1.5
+    bridge_max_auto_trim_shares: 5
+    share_mismatch_mode: halt
+    max_spread_pct: 0.5
+  schedule:
+    timezone: America/Denver
+    maintenance_enabled: true
+    maintenance_start_local: '23:44'
+    maintenance_end_local: '00:00'
+    maintenance_cancel_open_orders: true
+    gateway_auto_restart_enabled: true
+    gateway_auto_restart_time: '23:48'
+    gateway_cold_restart_enabled: true
+    gateway_cold_restart_time: '18:00'
   notifications:
     enabled: false
-    provider: home_assistant_webhook
     webhook_url: ""
-    timeout_seconds: 3.0
-    dedupe_window_seconds: 300
     notify_on_fills: false
     notify_on_startup_ok: false
     notify_on_order_submit: false
@@ -60,49 +47,50 @@ options:
     notify_on_gateway_login: false
     notify_on_watchdog_restart: false
     notify_on_errors: false
+    timeout_seconds: 3.0
+    dedupe_window_seconds: 300
+  advanced:
+    ibkr_port: 7497
+    ibkr_client_id: 1
+    poll_interval_seconds: 60
+    heartbeat_interval_seconds: 60
+    health_log_interval_seconds: 300
+    maintenance_reconnect_grace_minutes: 30
+    gateway_live_wait_timeout_seconds: 3600
+    gateway_paper_wait_timeout_seconds: 300
+    mask_account_ids_in_logs: true
+    enable_vnc: false
+    vnc_port: 5900
 schema:
-  active_broker: list(ibkr)
-  paper_trading: bool
-  ibkr_host: str
-  ibkr_port: port
-  ibkr_client_id: int
-  ibkr_account_id: str
-  google_sheet_id: str
-  google_credentials_json: password
-  poll_interval_seconds: int
-  heartbeat_interval_seconds: int
-  health_log_interval_seconds: int
-  anchor_buy_offset: float
-  share_mismatch_mode: list(halt|warn)
-  max_spread_pct: float
-  enable_bridge_anchor: bool
-  bridge_max_auto_trim_shares: int
-  maintenance_enabled: bool
-  maintenance_start_local: str
-  maintenance_end_local: str
-  maintenance_reconnect_grace_minutes: int
-  maintenance_cancel_open_orders: bool
-  timezone: str
-  gateway_auto_restart_enabled: bool
-  gateway_auto_restart_time: str
-  gateway_cold_restart_enabled: bool
-  gateway_cold_restart_time: str
-  gateway_live_wait_timeout_seconds: int
-  gateway_paper_wait_timeout_seconds: int
-  mask_account_ids_in_logs: bool
-  ibkr_username: str
-  ibkr_password: password
-  trading_mode: list(paper|live)
-  readonly_api: bool
-  dry_run: bool
-  enable_vnc: bool
-  vnc_port: port
+  account:
+    trading_mode: list(paper|live)
+    ibkr_account_id: str
+    ibkr_username: str
+    ibkr_password: password
+    dry_run: bool
+    readonly_api: bool
+  google_sheet:
+    google_sheet_id: str
+    google_credentials_json: password
+  strategy:
+    enable_bridge_anchor: bool
+    anchor_buy_offset: float(0,)
+    bridge_max_auto_trim_shares: int(0,)
+    share_mismatch_mode: list(halt|warn)
+    max_spread_pct: float(0,)
+  schedule:
+    timezone: list(America/New_York|America/Chicago|America/Denver|America/Phoenix|America/Los_Angeles|America/Anchorage|Pacific/Honolulu)
+    maintenance_enabled: bool
+    maintenance_start_local: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
+    maintenance_end_local: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
+    maintenance_cancel_open_orders: bool
+    gateway_auto_restart_enabled: bool
+    gateway_auto_restart_time: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
+    gateway_cold_restart_enabled: bool
+    gateway_cold_restart_time: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
   notifications:
     enabled: bool
-    provider: str
     webhook_url: password
-    timeout_seconds: float
-    dedupe_window_seconds: int
     notify_on_fills: bool
     notify_on_startup_ok: bool
     notify_on_order_submit: bool
@@ -114,5 +102,19 @@ schema:
     notify_on_gateway_login: bool
     notify_on_watchdog_restart: bool
     notify_on_errors: bool
+    timeout_seconds: float(0,)
+    dedupe_window_seconds: int(0,)
+  advanced:
+    ibkr_port: port
+    ibkr_client_id: int(0,)
+    poll_interval_seconds: int(1,)
+    heartbeat_interval_seconds: int(1,)
+    health_log_interval_seconds: int(1,)
+    maintenance_reconnect_grace_minutes: int(0,)
+    gateway_live_wait_timeout_seconds: int(1,)
+    gateway_paper_wait_timeout_seconds: int(1,)
+    mask_account_ids_in_logs: bool
+    enable_vnc: bool
+    vnc_port: port
 ports:
   5900/tcp: null

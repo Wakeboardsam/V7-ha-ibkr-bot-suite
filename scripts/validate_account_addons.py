@@ -40,42 +40,36 @@ def validate():
     if conf2.get("boot") != "manual":
         errors.append("Account 2 'boot' must be 'manual'")
 
-    opts2 = conf2.get("options", {})
-    if opts2.get("paper_trading") is not True:
-        errors.append("Account 2 'paper_trading' must be true")
-    if opts2.get("dry_run") is not True:
-        errors.append("Account 2 'dry_run' must be true")
-    if opts2.get("trading_mode") != "paper":
-        errors.append("Account 2 'trading_mode' must be 'paper'")
-    if opts2.get("readonly_api") is not True:
-        errors.append("Account 2 'readonly_api' must be true")
-    if opts2.get("enable_vnc") is not False:
-        errors.append("Account 2 'enable_vnc' must be false")
-    if opts2.get("mask_account_ids_in_logs") is not True:
-        errors.append("Account 2 'mask_account_ids_in_logs' must be true")
-    if opts2.get("ibkr_host") != "127.0.0.1":
-        errors.append("Account 2 'ibkr_host' must be '127.0.0.1'")
-    if opts2.get("ibkr_port") != 7497:
-        errors.append("Account 2 'ibkr_port' must be 7497")
-    if opts2.get("ibkr_client_id") != 1:
-        errors.append("Account 2 'ibkr_client_id' must be 1")
-    if opts2.get("ibkr_account_id") != "DU1234567":
-        errors.append("Account 2 'ibkr_account_id' must be exactly the placeholder 'DU1234567'")
-    if opts2.get("google_sheet_id") != "your_google_sheet_id_here":
-        errors.append("Account 2 'google_sheet_id' must be exactly 'your_google_sheet_id_here'")
-    if opts2.get("ibkr_username") != "placeholder_user" or opts2.get("ibkr_password") != "placeholder_password":
-        errors.append("Account 2 username and password must remain placeholders")
+    # Both add-ons start a fresh install unable to trade, with placeholder values only.
+    safe_defaults = {
+        ("account", "trading_mode"): "paper",
+        ("account", "dry_run"): True,
+        ("account", "readonly_api"): True,
+        ("account", "ibkr_account_id"): "DU1234567",
+        ("account", "ibkr_username"): "placeholder_user",
+        ("account", "ibkr_password"): "placeholder_password",
+        ("google_sheet", "google_sheet_id"): "your_google_sheet_id_here",
+        ("google_sheet", "google_credentials_json"): "",
+        ("advanced", "ibkr_port"): 7497,
+        ("advanced", "ibkr_client_id"): 1,
+        ("advanced", "enable_vnc"): False,
+        ("advanced", "mask_account_ids_in_logs"): True,
+        ("notifications", "webhook_url"): "",
+    }
+    for label, conf in (("Account 1", conf1), ("Account 2", conf2)):
+        opts = conf.get("options", {})
+        for (section, key), expected in safe_defaults.items():
+            actual = (opts.get(section) or {}).get(key)
+            if actual != expected:
+                errors.append(f"{label} default '{section}.{key}' must be {expected!r}")
 
-    # Schema keys check
-    schema1_keys = set(conf1.get("schema", {}).keys())
-    schema2_keys = set(conf2.get("schema", {}).keys())
-    if schema1_keys != schema2_keys:
-        errors.append("Both add-ons must expose the same schema keys")
-
-    opts1_keys = set(conf1.get("options", {}).keys())
-    opts2_keys = set(conf2.get("options", {}).keys())
-    if opts1_keys != opts2_keys:
-        errors.append("Both add-ons must retain the same option keys")
+    # The two add-ons expose the same page with the same defaults.
+    if conf1.get("schema") != conf2.get("schema"):
+        errors.append("Both add-ons must have identical schemas")
+    if conf1.get("options") != conf2.get("options"):
+        errors.append("Both add-ons must have identical default options")
+    if conf1.get("version") != conf2.get("version"):
+        errors.append("Both add-ons must have the same version")
 
     prohibited_errors = check_prohibited_files("tqqq_bot_account_2")
     errors.extend(prohibited_errors)
