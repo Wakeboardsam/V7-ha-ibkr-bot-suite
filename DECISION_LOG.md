@@ -407,3 +407,13 @@ Decision:
 - Outside the `OVERNIGHT` session, the Bridge order that row 7 names is kept and tracked again when it is live at the broker with row 7's intended terms (the same check reconciliation and Health use) and the bot has not already requested its cancel. A cancel the bot sent whose confirmation is late is therefore not undone.
 - A new Bridge order's ID replaces any older `BRIDGE_BUY` ID on row 7.
 - Unchanged: a bridge-like order the Tracker does not name, or a named one with other terms, halts reconciliation as an unknown order. During the `OVERNIGHT` session a Bridge order is not kept, as before.
+
+## 2026-10-09 — A stale outside-window WORKING_BUY row is set to IDLE
+
+Outcome:
+- Leaving the active window cancels a row's BUY, and the row keeps `WORKING_BUY` until IBKR confirms the cancel. When that confirmation was lost, the order disappeared from tracking and from the broker while the row stayed `WORKING_BUY` indefinitely, with no error. A row left stale before a restart stayed the same way. The in-window path already places a new BUY for such a row; nothing handled the outside-window case.
+
+Decision:
+- The grid pass sets such a row to `IDLE` when two consecutive ticks find: the row is outside the window and not owned, its whole status is one `WORKING_BUY`, no status write is queued for it, the order is neither tracked, at the broker, nor an unresolved re-anchor BUY, broker shares match the Tracker on a fresh snapshot, and no reconciliation halt, re-anchor, trim or bridge halt is in progress. Any tick that stops earlier, the order reappearing, or a changed order ID starts the count again. Each clear writes an INFO `STALE_WORKING_BUY_CLEARED` row to the Errors tab.
+- A BUY that filled silently, fully or in part, shows as a share mismatch and is never cleared this way. The existing repair owns the row only when exactly one combination of rows explains the difference; otherwise the mismatch pause stays and the row keeps its `WORKING_BUY` evidence for the operator.
+- Unchanged: Bridge, trim and SELL rows, reconciliation halts, and in-window rows.
