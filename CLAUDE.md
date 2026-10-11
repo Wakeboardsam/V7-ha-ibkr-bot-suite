@@ -19,7 +19,7 @@ This repository operates a live-capable trading bot. When unsure, stop and ask r
 ## Two add-ons stay in parity
 
 - `tqqq_bot` is the reference. A production-code change goes into `tqqq_bot_account_2` in the same pull request, and `scripts/check_addon_parity.py` must pass.
-- Keep Account 2's committed safe defaults. `scripts/validate_account_addons.py` enforces them.
+- Keep the committed safe defaults of both add-ons, which share one schema and one set of defaults. `scripts/validate_account_addons.py` enforces them.
 
 ## Testing
 

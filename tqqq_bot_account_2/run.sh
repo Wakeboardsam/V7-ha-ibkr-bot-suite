@@ -20,28 +20,52 @@ export JTS_SETTINGS_DIR="${ACTIVE_JTS_DIR}"
 
 echo "Matching v6 Gateway settings behavior: active settings path /root/Jts"
 
+# Saved settings from before the sectioned Configuration page are moved into
+# the new sections once; the add-on then restarts with them. It never starts the
+# Gateway or the bot on settings it could not move.
 if [ -f /data/options.json ]; then
-    # Bot / Account Config
-    IBKR_ACCOUNT_ID=$(jq -r '.ibkr_account_id // "DU1234567"' /data/options.json)
-    MASK_LOGS=$(jq -r '.mask_account_ids_in_logs // true' /data/options.json)
-    GATEWAY_HOST=$(jq -r '.ibkr_host // "127.0.0.1"' /data/options.json)
-    GATEWAY_PORT=$(jq -r '.ibkr_port // 7497' /data/options.json)
+    set +e
+    python3 /app/config/migrate_options.py
+    MIGRATION_STATUS=$?
+    set -e
+    if [ "$MIGRATION_STATUS" -eq 3 ]; then
+        echo "Waiting for Home Assistant to restart the add-on with the moved settings..."
+        sleep 120
+        echo "The add-on did not restart. Start it again from Home Assistant."
+        exit 1
+    elif [ "$MIGRATION_STATUS" -ne 0 ]; then
+        exit 1
+    fi
+fi
 
-    # Gateway Config
-    IBKR_USERNAME=$(jq -r '.ibkr_username // empty' /data/options.json)
-    IBKR_PASSWORD=$(jq -r '.ibkr_password // empty' /data/options.json)
-    TRADING_MODE=$(jq -r '.trading_mode // "paper"' /data/options.json)
-    READONLY_API=$(jq -r '.readonly_api // false' /data/options.json)
-    ENABLE_VNC=$(jq -r '.enable_vnc // false' /data/options.json)
-    VNC_PORT=$(jq -r '.vnc_port // 5900' /data/options.json)
+# opt PATH DEFAULT: the saved value, or DEFAULT when it is missing. A saved
+# false stays false (jq's // operator would replace it with the default).
+opt() {
+    jq -r --argjson fallback "$2" "($1) as \$v | if \$v == null then \$fallback else \$v end" /data/options.json
+}
 
-    TIMEZONE=$(jq -r '.timezone // "America/Denver"' /data/options.json)
-    GATEWAY_AUTO_RESTART_ENABLED=$(jq -r '.gateway_auto_restart_enabled // true' /data/options.json)
-    GATEWAY_AUTO_RESTART_TIME=$(jq -r '.gateway_auto_restart_time // "11:48 PM"' /data/options.json)
-    GATEWAY_COLD_RESTART_ENABLED=$(jq -r '.gateway_cold_restart_enabled // true' /data/options.json)
-    GATEWAY_COLD_RESTART_TIME=$(jq -r '.gateway_cold_restart_time // "06:00 PM"' /data/options.json)
-    GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=$(jq -r '.gateway_live_wait_timeout_seconds // 3600' /data/options.json)
-    GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=$(jq -r '.gateway_paper_wait_timeout_seconds // 300' /data/options.json)
+if [ -f /data/options.json ]; then
+    # Account and trading
+    IBKR_ACCOUNT_ID=$(opt '.account.ibkr_account_id' '"DU1234567"')
+    IBKR_USERNAME=$(opt '.account.ibkr_username' '""')
+    IBKR_PASSWORD=$(opt '.account.ibkr_password' '""')
+    TRADING_MODE=$(opt '.account.trading_mode' '"paper"')
+    READONLY_API=$(opt '.account.readonly_api' 'true')
+
+    # Schedule
+    TIMEZONE=$(opt '.schedule.timezone' '"America/Denver"')
+    GATEWAY_AUTO_RESTART_ENABLED=$(opt '.schedule.gateway_auto_restart_enabled' 'true')
+    GATEWAY_AUTO_RESTART_TIME=$(opt '.schedule.gateway_auto_restart_time' '"23:48"')
+    GATEWAY_COLD_RESTART_ENABLED=$(opt '.schedule.gateway_cold_restart_enabled' 'true')
+    GATEWAY_COLD_RESTART_TIME=$(opt '.schedule.gateway_cold_restart_time' '"18:00"')
+
+    # Advanced
+    GATEWAY_PORT=$(opt '.advanced.ibkr_port' '7497')
+    MASK_LOGS=$(opt '.advanced.mask_account_ids_in_logs' 'true')
+    ENABLE_VNC=$(opt '.advanced.enable_vnc' 'false')
+    VNC_PORT=$(opt '.advanced.vnc_port' '5900')
+    GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=$(opt '.advanced.gateway_live_wait_timeout_seconds' '3600')
+    GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=$(opt '.advanced.gateway_paper_wait_timeout_seconds' '300')
 
     if [ "$MASK_LOGS" = "true" ]; then
         if [[ ${#IBKR_ACCOUNT_ID} -gt 6 ]]; then
@@ -60,27 +84,24 @@ else
     echo "Warning: /data/options.json not found. Using local test defaults."
     IBKR_ACCOUNT_ID="DU1234567"
     MASK_LOGS="true"
-    GATEWAY_HOST="127.0.0.1"
     GATEWAY_PORT=7497
     IBKR_USERNAME=""
     IBKR_PASSWORD=""
     TRADING_MODE="paper"
-    READONLY_API="false"
+    READONLY_API="true"
     ENABLE_VNC="false"
     VNC_PORT=5900
     TIMEZONE="America/Denver"
     GATEWAY_AUTO_RESTART_ENABLED="true"
-    GATEWAY_AUTO_RESTART_TIME="11:48 PM"
+    GATEWAY_AUTO_RESTART_TIME="23:48"
     GATEWAY_COLD_RESTART_ENABLED="true"
-    GATEWAY_COLD_RESTART_TIME="06:00 PM"
+    GATEWAY_COLD_RESTART_TIME="18:00"
     GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=3600
     GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=300
 fi
 
-if [ "$GATEWAY_HOST" != "127.0.0.1" ] && [ "$GATEWAY_HOST" != "localhost" ]; then
-    echo "Warning: bundled tqqq_bot_account_2 only supports local Gateway access. Forcing ibkr_host to 127.0.0.1."
-    GATEWAY_HOST="127.0.0.1"
-fi
+# The bot always connects to its own Gateway inside this add-on.
+GATEWAY_HOST="127.0.0.1"
 
 export GATEWAY_HOST
 export GATEWAY_PORT
@@ -95,21 +116,27 @@ export TWS_SETTINGS_PATH="${ACTIVE_JTS_DIR}"
 export IBC_INI="${IBC_CONFIG_FILE}"
 export TZ="${TIMEZONE}"
 
+# The page uses 24-hour HH:MM. IBC wants "hh:mm AM/PM" for the daily restart
+# and 24-hour hh:mm for the Sunday cold restart.
+to_ibc_12_hour() {
+    local hour minute suffix
+    hour=$((10#${1%%:*}))
+    minute=${1##*:}
+    suffix="AM"
+    if [ "$hour" -ge 12 ]; then suffix="PM"; fi
+    hour=$((hour % 12))
+    if [ "$hour" -eq 0 ]; then hour=12; fi
+    printf "%02d:%s %s" "$hour" "$minute" "$suffix"
+}
+
 if [ "$GATEWAY_AUTO_RESTART_ENABLED" = "true" ]; then
-    export AUTO_RESTART_TIME="${GATEWAY_AUTO_RESTART_TIME}"
+    export AUTO_RESTART_TIME="$(to_ibc_12_hour "$GATEWAY_AUTO_RESTART_TIME")"
 else
     export AUTO_RESTART_TIME=""
 fi
 
 if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
-    # Sanitize prefix if it exists
-    if [[ "$GATEWAY_COLD_RESTART_TIME" =~ ^[A-Za-z]+day\ (.*) ]]; then
-        SANITIZED_TIME="${BASH_REMATCH[1]}"
-        echo "[Gateway] Warning: gateway_cold_restart_time should be a time only. Stripping weekday prefix."
-        export COLD_RESTART_TIME="${SANITIZED_TIME}"
-    else
-        export COLD_RESTART_TIME="${GATEWAY_COLD_RESTART_TIME}"
-    fi
+    export COLD_RESTART_TIME="${GATEWAY_COLD_RESTART_TIME}"
 else
     export COLD_RESTART_TIME=""
 fi
@@ -135,7 +162,7 @@ echo "Bot configured to connect to Gateway at: ${GATEWAY_HOST}:${GATEWAY_PORT}"
 
 echo "[Gateway] Timezone: ${TIMEZONE}"
 if [ "$GATEWAY_AUTO_RESTART_ENABLED" = "true" ]; then
-    echo "[Gateway] IBC AutoRestartTime: ${GATEWAY_AUTO_RESTART_TIME}"
+    echo "[Gateway] IBC AutoRestartTime: ${AUTO_RESTART_TIME}"
 else
     echo "[Gateway] IBC AutoRestartTime: (Disabled)"
 fi

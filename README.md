@@ -4,7 +4,7 @@ A Home Assistant add-on repository that runs a TQQQ grid-trading bot against Int
 
 This README is the authoritative description of the project and how to operate and change it. Agent working rules are in [`CLAUDE.md`](CLAUDE.md), the reasons behind significant decisions are in [`DECISION_LOG.md`](DECISION_LOG.md), and the security policy is in [`SECURITY.md`](SECURITY.md).
 
-**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.53). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
+**How to read this guide.** Statements without a tag describe behavior implemented in the current code (checked against add-on version 0.1.54). Code shows what is implemented, not necessarily what was intended, so two tags mark the gaps:
 
 - **[Intended]** — documented project intent that the code or tests do not prove.
 - **[Unverified]** — could not be confirmed from this repository (for example Google Sheet formulas or Home Assistant behavior).
@@ -47,16 +47,16 @@ Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_f
 
 - The strategy is the v6 grid strategy: the grid logic, Bridge Anchor behavior, TQQQ-only scope and Google Sheets behavior come from the stable v6 baseline. Do not change them unless a safety requirement or Home Assistant packaging need explicitly requires it.
 - The traded symbol is hard-coded to `TQQQ`.
-- `active_broker` accepts only `ibkr`. A Schwab adapter exists only as a stub.
+- The broker is always IBKR. A Schwab adapter exists in the code only as a stub and cannot be selected.
 - The repository is public and its name does not change.
 
 ## Startup, readiness, maintenance and recovery
 
 ### Container startup (`run.sh`)
 
-1. Read Home Assistant options from `/data/options.json`, log the account ID in masked form and force `ibkr_host` to `127.0.0.1`.
+1. Move saved settings from the pre-0.1.54 layout into the Configuration sections when needed (see [Configuration](#configuration)), then read the options from `/data/options.json` and log the account ID in masked form. The bot always connects to its own Gateway at `127.0.0.1`.
 2. Restore saved Gateway settings and Java preferences from `/data/ibgateway/persist` into `/root/Jts` and `/root/.java`, so first-run Gateway choices (such as the SSL reconnect prompt) survive restarts.
-3. Render the IBC configuration from `gateway/ibc_config.ini.template` (credentials, trading mode, read-only API flag, API port, auto and cold restart times) and set `BypassOrderPrecautions` and `BypassRedirectOrderWarning` in `jts.ini`.
+3. Render the IBC configuration from `gateway/ibc_config.ini.template` (credentials, trading mode, read-only API flag, API port, auto and cold restart times; the daily restart time is converted from the page's 24-hour `HH:MM` to the `hh:mm AM/PM` form IBC requires) and set `BypassOrderPrecautions` and `BypassRedirectOrderWarning` in `jts.ini`.
 4. Start Xvfb, then `x11vnc` only if `enable_vnc` is true.
 5. Check that the Java runtime bundled with IB Gateway (`/opt/ibgateway_jre`) exists, then start Gateway through IBC.
 6. Run `wait_for_gateway.py` until the API port opens or the timeout expires (3600 s for `live`, 300 s for `paper`). On timeout the container prints sanitized IBC logs and exits with an error.
@@ -68,7 +68,7 @@ Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_f
 ### Bot startup (`main.py`, then the engine)
 
 1. Load configuration and install the account-ID masking filter on all logging.
-2. Warn loudly if `trading_mode`, `paper_trading` and `ibkr_port` disagree (paper expects 7497, live expects 7496).
+2. Warn loudly if `trading_mode` and `paper_trading` disagree. With the Configuration page they always agree, because Trading mode sets both. The API port is not tied to the mode: the bot and its own Gateway use the same configured port.
 3. Refuse to start when `dry_run` is false and `ibkr_account_id` is empty.
 4. Connect to IBKR and Google Sheets; load the 50 most recent execution IDs from the Fills tab to avoid logging duplicates; subscribe to executions.
 5. Wait up to 30 seconds for a non-zero `TQQQ` price, otherwise shut down.
@@ -83,8 +83,8 @@ A tick runs only when the broker connection is up and broker state is **READY**:
 
 IBKR restarts or disconnects Gateway around 23:50 (user-observed, America/Denver). The settings below cooperate:
 
-- **Gateway auto restart** (`gateway_auto_restart_time`, default `11:48 PM`) has IBC restart the Gateway just before the observed disruption.
-- **Gateway cold restart** (`gateway_cold_restart_time`, default `06:00 PM`) is a weekly full restart. **[Intended]** IBC runs it on Sundays; live accounts may then need two-factor approval.
+- **Gateway auto restart** (`gateway_auto_restart_time`, default `23:48`) has IBC restart the Gateway just before the observed disruption, keeping its session.
+- **Gateway cold restart** (`gateway_cold_restart_time`, default `18:00`) is a weekly full restart. IBC's documentation says it runs on Sundays at a time after 01:00 US/Eastern, given as 24-hour `hh:mm`; live accounts may then need two-factor approval. **[Needs verification]** Before 0.1.54 this value was passed as `06:00 PM`, which is not the form IBC documents, so the weekly restart may not have run at 18:00.
 - **Bot maintenance window** (`maintenance_start_local`–`maintenance_end_local`, default `23:44`–`00:00`, in `timezone`): on entering the window the bot cancels its open orders (when `maintenance_cancel_open_orders` is true), forgets its order tracking and trades nothing until the window ends.
 - **Reconnect grace** (`maintenance_reconnect_grace_minutes`, default 30) extends the period after the window in which a disconnected Gateway does not trigger a container restart, avoiding a restart loop that would keep demanding two-factor approval. Trading stays paused while disconnected and resumes only when broker state is READY again.
 
@@ -249,20 +249,22 @@ The bot appends to `Fills`, `Health` and `Errors` and never edits their existing
 
 ## Configuration
 
-Options are set in the Home Assistant add-on UI. The defaults and schema live in each add-on's `config.yaml`, and the committed values must be placeholders. The runtime schema is `tqqq_bot/app/config/schema.py`.
+Options are set on the add-on's Configuration page in Home Assistant. Each add-on's `config.yaml` holds the schema and defaults, and `translations/en.yaml` holds the plain-English name and description shown for every option. The bot reads the sections under the option names below (`app/config/loader.py` flattens them for `app/config/schema.py`). Committed values must be placeholders. Both add-ons have the same page and the same defaults.
 
-| Group | Options | Role |
+| Section | Options | Role |
 |---|---|---|
-| Broker and account | `active_broker`, `paper_trading`, `trading_mode`, `ibkr_host`, `ibkr_port`, `ibkr_client_id`, `ibkr_account_id`, `ibkr_username`, `ibkr_password` | Which account the instance trades. `trading_mode` configures Gateway; `paper_trading` configures the bot; they should agree. `ibkr_host` is forced to `127.0.0.1`. `ibkr_port` defaults to 7497 (paper) and is also the port Gateway opens. |
-| Safety | `dry_run`, `readonly_api`, `mask_account_ids_in_logs` | `dry_run` connects and reads real state but places, cancels and modifies no orders; it does not simulate fills. `readonly_api` makes IBC start the Gateway API read-only. Masking defaults to true. |
-| Sheet | `google_sheet_id`, `google_credentials_json` | Target Sheet and service-account JSON. Enter the JSON as a single line; multi-line values may not round-trip through the Home Assistant password field. |
-| Loop | `poll_interval_seconds` (60), `heartbeat_interval_seconds` (60), `health_log_interval_seconds` (300) | Tick, `C1` heartbeat and Health tab cadence. |
-| Strategy | `anchor_buy_offset` (1.5), `max_spread_pct` (0.5), `enable_bridge_anchor` (true), `bridge_max_auto_trim_shares` (5), `share_mismatch_mode` (`halt` or `warn`) | Anchor price offset, spread limit for the anchor BUY, Bridge Anchor controls and mismatch behavior. |
-| Maintenance | `maintenance_enabled`, `maintenance_start_local`, `maintenance_end_local`, `maintenance_reconnect_grace_minutes`, `maintenance_cancel_open_orders`, `timezone` | The nightly pause (see above). `timezone` also sets the container's `TZ`. |
-| Gateway | `gateway_auto_restart_enabled`, `gateway_auto_restart_time`, `gateway_cold_restart_enabled`, `gateway_cold_restart_time`, `gateway_live_wait_timeout_seconds`, `gateway_paper_wait_timeout_seconds`, `enable_vnc`, `vnc_port` | IBC restart schedule, readiness timeouts and optional VNC. VNC is disabled by default and its port is unmapped. |
-| Notifications | `notifications.*` | See [Notifications](#notifications). |
+| Account and trading (`account`) | `trading_mode`, `ibkr_account_id`, `ibkr_username`, `ibkr_password`, `dry_run`, `readonly_api` | Which account the instance trades and whether it may. `trading_mode` (`paper` or `live`) sets both the Gateway login and the bot. `dry_run` (shown as "Watch only") reads real state but places, cancels and modifies no orders; it does not simulate fills. `readonly_api` makes IBC start the Gateway API read-only. |
+| Google Sheet (`google_sheet`) | `google_sheet_id`, `google_credentials_json` | Target Sheet and service-account JSON. Enter the JSON as a single line; multi-line values may not round-trip through the Home Assistant password field. |
+| Strategy and safeguards (`strategy`) | `enable_bridge_anchor` (true), `anchor_buy_offset` (1.5), `bridge_max_auto_trim_shares` (5), `share_mismatch_mode` (`halt` or `warn`), `max_spread_pct` (0.5) | Bridge Anchor controls, anchor price offset, mismatch behavior and the spread limit for the anchor BUY. |
+| Time zone and schedule (`schedule`) | `timezone`, `maintenance_enabled`, `maintenance_start_local`, `maintenance_end_local`, `maintenance_cancel_open_orders`, `gateway_auto_restart_enabled`, `gateway_auto_restart_time`, `gateway_cold_restart_enabled`, `gateway_cold_restart_time` | The nightly pause and Gateway restarts (see above). Times are 24-hour `HH:MM` and the page rejects any other form. `timezone` is one of seven US zones and also sets the container's `TZ`. |
+| Phone notifications (`notifications`) | `notifications.*` | See [Notifications](#notifications). |
+| Advanced and troubleshooting (`advanced`) | `ibkr_port` (7497), `ibkr_client_id` (1), `poll_interval_seconds` (60), `heartbeat_interval_seconds` (60), `health_log_interval_seconds` (300), `maintenance_reconnect_grace_minutes` (30), `gateway_live_wait_timeout_seconds` (3600), `gateway_paper_wait_timeout_seconds` (300), `mask_account_ids_in_logs` (true), `enable_vnc` (false), `vnc_port` (5900) | `ibkr_port` is the port the bot and its own Gateway share; any free port works in either mode, and the two add-ons may differ. Tick, `C1` heartbeat and Health tab cadence, readiness timeouts, log masking and optional VNC. VNC is disabled by default and its port is unmapped. |
 
-Account 2's committed defaults (manual boot, paper, `dry_run`, read-only API, VNC off, placeholder credentials) are checked by `scripts/validate_account_addons.py`.
+`active_broker`, `paper_trading`, `ibkr_host` and `notifications.provider` left the page in 0.1.54: IBKR is the only broker, `trading_mode` replaces `paper_trading`, the bot always connects to `127.0.0.1`, and the Home Assistant webhook is the only notification provider.
+
+**Safe defaults.** A fresh install of either add-on starts in `paper` with `dry_run` and `readonly_api` on and placeholder credentials, so it cannot trade until the operator configures it. `scripts/validate_account_addons.py` checks these defaults for both add-ons and that both have identical schemas and defaults. `boot` stays per add-on: `auto` for Account 1 and `manual` for Account 2.
+
+**Moving saved settings (0.1.54).** Home Assistant Supervisor keeps an add-on's saved options under their old names when an update changes the schema, and only leaves them out of `/data/options.json`. On start, `run.sh` runs `app/config/migrate_options.py`. It reads the saved options through the Supervisor API (`/addons/self/info`, which an add-on may call for itself), and if they still use the old flat names it saves them into the sections (`/addons/self/options`), converts the restart times to 24-hour form, maps legacy time-zone names such as `US/Mountain`, keeps `trading_mode` as the mode, and asks Supervisor to restart the add-on, which then starts with the moved values. A value that cannot be converted (an unreadable time, a time zone outside the list) gets the new default while every other value is still moved; the add-on then turns on `dry_run`, stops before starting the Gateway or the bot, and the log names each reset value to check. If Supervisor refuses the save, the old settings stay stored and the add-on stops; starting it again retries. If the saved settings cannot be read while this add-on's own options still hold the placeholder account, the add-on stops and the log says not to save the Configuration page yet, because saving the defaults would discard the old values; an add-on already configured continues. Saved values are never printed. Without a Supervisor API token the step is skipped. **[Needs verification]** This is based on reading Supervisor's source; the first update on a real installation confirms it.
 
 ## Account isolation and secrets
 
@@ -324,7 +326,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.53, Account 1 runs 357 tests and Account 2 runs 345, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.54, Account 1 runs 400 tests and Account 2 runs 388, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 **Session clock in tests.** Every tick in the tests runs the real 16:00 and 20:00 ET session check, as live trading does. `tests/conftest.py` pins its clock to a Wednesday at 11:00 ET and starts each engine with that session already set up, so ordinary tests do not regenerate on their first tick. `tests/test_session_regeneration_ticks.py` moves that clock across the boundaries, the weekend gap and a fresh start. A test marked `real_session_clock` uses the real clock and a fresh engine instead.
 
@@ -338,7 +340,7 @@ A production-code change belongs in both add-ons in the same pull request, with 
 
 ```bash
 python scripts/check_addon_parity.py        # app/, scripts and non-test files identical
-python scripts/validate_account_addons.py   # Account 2 safe defaults, placeholders, matching option keys (needs PyYAML)
+python scripts/validate_account_addons.py   # safe defaults for both add-ons, placeholders, identical schema and defaults (needs PyYAML)
 ```
 
 ### Version bumps
@@ -351,7 +353,7 @@ Run the tests for the code you changed and the full suites for both add-ons (com
 
 ### Deployment and rollback
 
-There is no separate deployment pipeline: merging to `main` publishes the add-on version, and Home Assistant installs it when the operator updates the add-on. Keep `boot` for Account 2 as `manual` and test new behavior in `dry_run` or paper mode first. To roll back, revert the pull request and bump the add-on version, as for any runtime change, so Home Assistant detects the reverted code, then update the add-on. The pull request template asks each change to state its rollback impact.
+There is no separate deployment pipeline: merging to `main` publishes the add-on version, and Home Assistant installs it when the operator updates the add-on. Keep `boot` for Account 2 as `manual` and test new behavior in `dry_run` or paper mode first. To roll back, revert the pull request and bump the add-on version, as for any runtime change, so Home Assistant detects the reverted code, then update the add-on. Rolling back past 0.1.54 returns the flat Configuration page, which cannot read the sectioned settings, so every value must then be entered again. The pull request template asks each change to state its rollback impact.
 
 ## Imported v6 baseline
 

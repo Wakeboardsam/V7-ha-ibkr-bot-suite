@@ -66,7 +66,7 @@ def test_validate_ibkr_settings_live_correct():
     assert len(warnings) == 0
 
 
-def test_validate_ibkr_settings_paper_inconsistent():
+def test_validate_ibkr_settings_paper_mode_on_another_port():
     config = AppConfig(
         google_sheet_id="id",
         google_credentials_json="{}",
@@ -74,11 +74,11 @@ def test_validate_ibkr_settings_paper_inconsistent():
         ibkr_port=7496
     )
     warnings = validate_ibkr_settings(config)
-    assert len(warnings) == 1
-    assert "paper_trading=True but ibkr_port=7496" in warnings[0]
+    # The bot and its own Gateway share one configured port, so any port is valid in either mode.
+    assert warnings == []
 
 
-def test_validate_ibkr_settings_live_inconsistent():
+def test_validate_ibkr_settings_live_mode_on_port_7497():
     config = AppConfig(
         google_sheet_id="id",
         google_credentials_json="{}",
@@ -87,8 +87,7 @@ def test_validate_ibkr_settings_live_inconsistent():
         ibkr_port=7497
     )
     warnings = validate_ibkr_settings(config)
-    assert len(warnings) == 1
-    assert "paper_trading=False (LIVE) but ibkr_port=7497" in warnings[0]
+    assert warnings == []
 
 
 def test_validate_ibkr_settings_live_mode_paper_trading():
@@ -125,5 +124,4 @@ def test_validate_ibkr_settings_custom_port():
         ibkr_port=4001
     )
     warnings = validate_ibkr_settings(config)
-    assert len(warnings) == 1
-    assert "paper_trading=True but ibkr_port=4001" in warnings[0]
+    assert warnings == []
