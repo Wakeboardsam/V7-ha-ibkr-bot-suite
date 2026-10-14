@@ -169,7 +169,10 @@ def test_saved_settings_move_into_the_sections_unchanged():
             elif key == "gateway_cold_restart_time":
                 expected = "18:00"
             assert moved[section][key] == expected, key
-    assert moved["notifications"] == {k: v for k, v in LEGACY["notifications"].items() if k != "provider"}
+    expected_notifications = {k: v for k, v in LEGACY["notifications"].items() if k != "provider"}
+    # Keys added after 0.1.54 were never saved, so they arrive from the add-on defaults.
+    expected_notifications["error_alert_delay_seconds"] = CONFIG["options"]["notifications"]["error_alert_delay_seconds"]
+    assert moved["notifications"] == expected_notifications
 
 
 def test_moved_settings_read_back_as_the_same_bot_configuration(tmp_path):
