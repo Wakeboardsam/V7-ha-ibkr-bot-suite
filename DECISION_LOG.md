@@ -429,3 +429,12 @@ Decision:
 - Times are entered as 24-hour `HH:MM` and validated by the page. `run.sh` converts the daily restart to the `hh:mm AM/PM` form IBC requires and passes the Sunday cold restart as 24-hour `hh:mm`, the form IBC documents for it.
 - Saved settings are not re-entered. On the first start of 0.1.54, `app/config/migrate_options.py` reads the saved options through the Supervisor API, saves them into the sections and restarts the add-on. A value that cannot be converted gets its new default while everything else is still moved, and the add-on stops in `dry_run` before starting the Gateway or the bot, so fixing that one field on the page loses nothing. If the saved settings cannot be read while the add-on still has placeholder settings, it stops and says not to save the page yet. No separate backup file is kept: on every path the old values either move or stay stored. This relies on Supervisor keeping saved options under their old names across a schema change, read from its source; the first real update confirms it.
 - At the owner's choice, both add-ons now share the same safe fresh-install defaults: paper, `dry_run` on, `readonly_api` on and placeholder credentials. Saved settings are unaffected. `boot` stays `auto` for Account 1 and `manual` for Account 2, because changing it could stop Account 1 starting after a reboot.
+
+## 2026-10-14 — Error alerts wait for the problem to outlast a recovery delay
+
+Outcome:
+- "Other errors" (`notify_on_errors`) alerted on the first failed engine tick and the first missing position snapshot. The nightly Gateway restart and brief IBKR outages (502/503 responses) produced these overnight even though the bot recovered on its own a minute or two later, so the alerts reported problems that were already gone.
+
+Decision:
+- `ENGINE_TICK_ERROR` and `POSITION_SNAPSHOT_UNAVAILABLE` now alert only when the problem has lasted `notifications.error_alert_delay_seconds` (default 600, ten minutes) without a successful tick or an OK snapshot. Each alerts once per episode and again only after recovery and a new full delay. `0` restores alerting on the first occurrence.
+- Unchanged: every Errors-tab row is still written; `SHARE_RECONCILED` still alerts on each repair; the watchdog restart, halt and other alerts keep their own switches and timing.

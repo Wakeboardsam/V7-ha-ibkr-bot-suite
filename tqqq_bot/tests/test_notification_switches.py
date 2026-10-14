@@ -133,7 +133,7 @@ async def test_repeated_error_alerts_once_until_cleared():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("errors_on", [True, False])
 async def test_errors_row_is_written_whether_or_not_the_alert_is_on(errors_on):
-    engine, notifier = _engine(notify_on_errors=errors_on)
+    engine, notifier = _engine(notify_on_errors=errors_on, error_alert_delay_seconds=0)
     engine.broker.get_verified_symbol_snapshot = AsyncMock(return_value=SimpleNamespace(
         snapshot_status="UNAVAILABLE", account_id_masked="DU****", snapshot_error="no data"))
 
@@ -240,8 +240,121 @@ async def test_watchdog_restart_tick_error_is_not_sent_again_as_other_errors(wat
 
 @pytest.mark.asyncio
 async def test_ordinary_tick_error_still_alerts_as_other_errors():
-    engine, notifier = _engine(notify_on_errors=True)
+    engine, notifier = _engine(notify_on_errors=True, error_alert_delay_seconds=0)
     await engine._handle_tick_error(RuntimeError("boom"))
     await _drain()
     assert _sent(notifier) == {"BOT_ERROR"}
     engine.sheet.log_error.assert_called_once()
+
+
+# --- alert only when an error does not recover -----------------------------
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _errors_engine_with_clock(monkeypatch, delay=600):
+    clock = _Clock()
+    monkeypatch.setattr("engine.engine.monotonic", clock)
+    engine, notifier = _engine(notify_on_errors=True, error_alert_delay_seconds=delay)
+    return engine, notifier, clock
+
+
+def _bot_errors(notifier):
+    return [c for c in notifier.send.call_args_list if c.kwargs.get("event_type") == "BOT_ERROR"]
+
+
+def test_error_alert_delay_defaults_to_ten_minutes():
+    assert NotificationSettings().error_alert_delay_seconds == 600
+    addon = yaml.safe_load((ADDON_DIR / "config.yaml").read_text())
+    assert addon["options"]["notifications"]["error_alert_delay_seconds"] == 600
+
+
+@pytest.mark.asyncio
+async def test_tick_error_that_recovers_within_the_delay_never_alerts(monkeypatch):
+    engine, notifier, clock = _errors_engine_with_clock(monkeypatch)
+
+    await engine._handle_tick_error(RuntimeError("APIError: [503]"))
+    clock.now += 60
+    await engine._handle_tick_error(RuntimeError("Watchdog failed to reconnect during this tick."))
+    clock.now += 60
+    engine._clear_error_alert("ENGINE_TICK_ERROR")  # a tick succeeded
+    clock.now += 900
+    await engine._handle_tick_error(RuntimeError("APIError: [503]"))
+    await _drain()
+
+    assert _bot_errors(notifier) == []
+    assert engine.sheet.log_error.call_count == 3, "every failed tick is still written to the Errors tab"
+
+
+@pytest.mark.asyncio
+async def test_tick_error_that_persists_past_the_delay_alerts_once(monkeypatch):
+    engine, notifier, clock = _errors_engine_with_clock(monkeypatch)
+
+    await engine._handle_tick_error(RuntimeError("boom"))
+    clock.now += 599
+    await engine._handle_tick_error(RuntimeError("boom"))
+    await _drain()
+    assert _bot_errors(notifier) == []
+
+    clock.now += 1
+    await engine._handle_tick_error(RuntimeError("boom again"))
+    clock.now += 60
+    await engine._handle_tick_error(RuntimeError("boom"))
+    await _drain()
+    alerts = _bot_errors(notifier)
+    assert len(alerts) == 1
+    assert "Engine tick error: boom again" in alerts[0].kwargs["message"]
+    assert "Not recovered after 10 min." in alerts[0].kwargs["message"]
+
+    # After recovery, a new episode waits the full delay again.
+    engine._clear_error_alert("ENGINE_TICK_ERROR")
+    await engine._handle_tick_error(RuntimeError("boom"))
+    clock.now += 600
+    await engine._handle_tick_error(RuntimeError("boom"))
+    await _drain()
+    assert len(_bot_errors(notifier)) == 2
+
+
+@pytest.mark.asyncio
+async def test_missing_position_data_alerts_only_if_it_does_not_recover(monkeypatch):
+    engine, notifier, clock = _errors_engine_with_clock(monkeypatch)
+    unavailable = SimpleNamespace(snapshot_status="UNAVAILABLE", account_id_masked="DU1****567",
+                                  snapshot_error="Broker connection state is not ready or valid.")
+    ok = SimpleNamespace(snapshot_status="OK")
+    engine.broker.get_verified_symbol_snapshot = AsyncMock(return_value=unavailable)
+
+    # Unavailable, then recovered on the next Health check: no alert.
+    await engine._log_health_once()
+    clock.now += 300
+    engine.broker.get_verified_symbol_snapshot.return_value = ok
+    await engine._log_health_once()
+    await _drain()
+    assert _bot_errors(notifier) == []
+
+    # Unavailable across three Health checks (ten minutes): one alert.
+    engine.broker.get_verified_symbol_snapshot.return_value = unavailable
+    for _ in range(4):
+        clock.now += 300
+        await engine._log_health_once()
+    await _drain()
+    alerts = _bot_errors(notifier)
+    assert len(alerts) == 1
+    assert alerts[0].kwargs["extra"]["code"] == "POSITION_SNAPSHOT_UNAVAILABLE"
+    codes = [c.kwargs.get("code") for c in engine.sheet.log_error.call_args_list]
+    assert codes.count("POSITION_SNAPSHOT_UNAVAILABLE") == 2, "one Errors row per episode, as before"
+
+
+@pytest.mark.asyncio
+async def test_error_alert_delay_zero_alerts_on_the_first_error(monkeypatch):
+    engine, notifier, clock = _errors_engine_with_clock(monkeypatch, delay=0)
+    await engine._handle_tick_error(RuntimeError("boom"))
+    await engine._handle_tick_error(RuntimeError("boom"))
+    await _drain()
+    alerts = _bot_errors(notifier)
+    assert len(alerts) == 1
+    assert "Not recovered" not in alerts[0].kwargs["message"]

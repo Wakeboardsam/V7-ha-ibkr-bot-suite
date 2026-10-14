@@ -202,8 +202,9 @@ configuration:
         name: Other errors
         description: >-
           Any other row the bot writes to the Errors tab, such as an engine error,
-          missing position data or an automatic share repair. Each repair alerts;
-          any other repeated error alerts once until it clears.
+          missing position data or an automatic share repair. Each repair alerts.
+          An engine error or missing position data alerts only if it has not
+          recovered within the error alert delay below, then once until it clears.
       timeout_seconds:
         name: Send timeout (seconds)
         description: >-
@@ -212,6 +213,11 @@ configuration:
         name: Duplicate window (seconds)
         description: >-
           An identical alert inside this many seconds is dropped. Normal is 300.
+      error_alert_delay_seconds:
+        name: Error alert delay (seconds)
+        description: >-
+          How long an engine error or missing position data must last without
+          recovering before "Other errors" alerts. 0 alerts at once. Normal is 600.
   advanced:
     name: Advanced and troubleshooting
     description: Connection, timing, log privacy and Gateway screen access. Rarely changed.

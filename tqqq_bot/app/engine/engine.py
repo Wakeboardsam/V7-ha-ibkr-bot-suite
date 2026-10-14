@@ -6,6 +6,7 @@ import os
 import signal
 from datetime import datetime, time, timedelta
 import zoneinfo
+from time import monotonic
 
 SESSION_BOUNDARY_TZ = zoneinfo.ZoneInfo("America/New_York")
 SESSION_BOUNDARY_START = time(3, 45)
@@ -230,6 +231,8 @@ class GridEngine:
         self._snapshot_error_logged = False
         # Last details alerted per Errors-tab code, so a repeated error alerts once.
         self._error_alerts_sent: dict[str, str] = {}
+        # When each recovery-aware error code was first seen in its current episode.
+        self._error_first_seen: dict[str, float] = {}
         # Set once the connection watchdog has asked for a restart; the tick
         # error that follows is already covered by the WATCHDOG_RESTART alert.
         self._watchdog_restart_requested = False
@@ -388,17 +391,34 @@ class GridEngine:
             )
         )
 
-    def _notify_error_row(self, code: str, details: str, repeat_once: bool = True):
+    def _notify_error_row(self, code: str, details: str, repeat_once: bool = True,
+                          wait_for_recovery: bool = False):
         """
         Alerts on an Errors-tab row that has no alert of its own, gated by
         notify_on_errors. With repeat_once, the same code with the same details
         alerts once and callers clear the code when the condition recovers.
         Without it, every call is a new event (only the notifier's duplicate
         window applies).
+
+        With wait_for_recovery, callers report the code on every check while the
+        problem lasts. It alerts once, only after the problem has gone
+        error_alert_delay_seconds without recovering, and not again until
+        _clear_error_alert marks it recovered.
         """
-        if not self._notification_enabled("notify_on_errors"):
+        if wait_for_recovery:
+            now = monotonic()
+            first_seen = self._error_first_seen.setdefault(code, now)
+            if not self._notification_enabled("notify_on_errors"):
+                return
+            delay = self.config.notifications.error_alert_delay_seconds
+            if code in self._error_alerts_sent or now - first_seen < delay:
+                return
+            self._error_alerts_sent[code] = details
+            if delay > 0:
+                details = f"{details} Not recovered after {round((now - first_seen) / 60)} min."
+        elif not self._notification_enabled("notify_on_errors"):
             return
-        if repeat_once:
+        elif repeat_once:
             if self._error_alerts_sent.get(code) == details:
                 return
             self._error_alerts_sent[code] = details
@@ -411,6 +431,11 @@ class GridEngine:
             tag="tqqq_bot_error",
             extra={"code": code},
         )
+
+    def _clear_error_alert(self, code: str):
+        """Marks an error code recovered, so a later occurrence starts a new episode."""
+        self._error_alerts_sent.pop(code, None)
+        self._error_first_seen.pop(code, None)
 
     def _notify_order_placed(self, *, kind: str, action: str, row: int, qty, price: float, order_id):
         """Alerts that the bot placed an order at the broker, gated by notify_on_order_submit."""
@@ -1063,8 +1088,8 @@ class GridEngine:
             while not self._shutdown_event.is_set():
                 try:
                     await self._tick()
-                    # A later tick error alerts again even if its text repeats.
-                    self._error_alerts_sent.pop("ENGINE_TICK_ERROR", None)
+                    # A successful tick ends the error episode, so a pending alert is dropped.
+                    self._clear_error_alert("ENGINE_TICK_ERROR")
                 except Exception as e:
                     await self._handle_tick_error(e)
 
@@ -1098,7 +1123,7 @@ class GridEngine:
         await self.sheet.log_error(f"Engine tick error: {str(e)}", bot_status=self._execution_status())
         # A watchdog restart has its own alert, so its tick error is not sent again.
         if not self._watchdog_restart_requested:
-            self._notify_error_row("ENGINE_TICK_ERROR", f"Engine tick error: {str(e)}")
+            self._notify_error_row("ENGINE_TICK_ERROR", f"Engine tick error: {str(e)}", wait_for_recovery=True)
 
     def _handle_shutdown_signal(self):
         logger.info("Shutdown signal received.")
@@ -1271,14 +1296,14 @@ class GridEngine:
                 snapshot = await self.broker.get_verified_symbol_snapshot(TICKER)
 
                 if snapshot.snapshot_status in ("PARTIAL", "UNAVAILABLE", "ACCOUNT_SCOPE_MISSING"):
+                    error_details = (
+                        f"Account: {snapshot.account_id_masked}. "
+                        f"Status: {snapshot.snapshot_status}. "
+                        f"Error: {snapshot.snapshot_error}. "
+                        "Health tab withholding values. "
+                        f"Bot state: {self._execution_status()}."
+                    )
                     if not self._snapshot_error_logged:
-                        error_details = (
-                            f"Account: {snapshot.account_id_masked}. "
-                            f"Status: {snapshot.snapshot_status}. "
-                            f"Error: {snapshot.snapshot_error}. "
-                            "Health tab withholding values. "
-                            f"Bot state: {self._execution_status()}."
-                        )
                         await self.sheet.log_error(
                             severity="ERROR",
                             code="POSITION_SNAPSHOT_UNAVAILABLE",
@@ -1289,12 +1314,12 @@ class GridEngine:
                             details=error_details
                         )
                         self._snapshot_error_logged = True
-                        self._notify_error_row("POSITION_SNAPSHOT_UNAVAILABLE", error_details)
+                    self._notify_error_row("POSITION_SNAPSHOT_UNAVAILABLE", error_details, wait_for_recovery=True)
                 elif snapshot.snapshot_status == "OK":
                     if self._snapshot_error_logged:
                         # Recovered
                         self._snapshot_error_logged = False
-                        self._error_alerts_sent.pop("POSITION_SNAPSHOT_UNAVAILABLE", None)
+                    self._clear_error_alert("POSITION_SNAPSHOT_UNAVAILABLE")
 
                 # Trading state comes from one place. It is independent of
                 # snapshot_status: an OK snapshot does not mean trading is permitted.

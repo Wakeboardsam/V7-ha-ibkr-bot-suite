@@ -7,6 +7,7 @@ class NotificationSettings(BaseModel):
     webhook_url: str = Field(default="")
     timeout_seconds: float = Field(default=3.0)
     dedupe_window_seconds: int = Field(default=300)
+    error_alert_delay_seconds: int = Field(default=600)
     notify_on_fills: bool = Field(default=False)
     notify_on_startup_ok: bool = Field(default=False)
     notify_on_order_submit: bool = Field(default=False)

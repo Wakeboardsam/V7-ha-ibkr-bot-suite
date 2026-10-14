@@ -1,5 +1,5 @@
 name: V7_tqqq_bot
-version: 0.1.54
+version: 0.1.55
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
@@ -49,6 +49,7 @@ options:
     notify_on_errors: false
     timeout_seconds: 3.0
     dedupe_window_seconds: 300
+    error_alert_delay_seconds: 600
   advanced:
     ibkr_port: 7497
     ibkr_client_id: 1
@@ -104,6 +105,7 @@ schema:
     notify_on_errors: bool
     timeout_seconds: float(0,)
     dedupe_window_seconds: int(0,)
+    error_alert_delay_seconds: int(0,)
   advanced:
     ibkr_port: port
     ibkr_client_id: int(0,)
