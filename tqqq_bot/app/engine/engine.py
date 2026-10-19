@@ -27,6 +27,7 @@ from engine.spread_guard import SpreadGuard
 from sheets.interface import SheetInterface
 from notifications.home_assistant import HomeAssistantNotifier
 from utils.log_sanitizer import mask_account_ids_in_text
+from utils.weekend_pause import pause_end
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,8 @@ class GridEngine:
         tz = zoneinfo.ZoneInfo("America/New_York")
         self._last_grid_regeneration = datetime.min.replace(tzinfo=tz)
         self._is_weekend_gap = False
+        # Set when the weekend bot pause stops the engine: the Sunday time it ends.
+        self._weekend_pause_until: Optional[datetime] = None
         self._maintenance_cancel_done = False
         self._snapshot_error_logged = False
         # Last details alerted per Errors-tab code, so a repeated error alerts once.
@@ -331,6 +334,8 @@ class GridEngine:
             return "HALTED_RECONCILIATION"
         if self._bridge_state == 'BRIDGE_HALTED':
             return f"BRIDGE_HALTED: {self._bridge_halt_reason}" if self._bridge_halt_reason else "BRIDGE_HALTED"
+        if self._weekend_pause_until is not None:
+            return f"WEEKEND_PAUSE: off until Sunday {self._weekend_pause_until.strftime('%H:%M')}"
         if self._is_in_maintenance_window():
             return "PAUSED_MAINTENANCE"
         if self._share_mismatch:
@@ -1086,6 +1091,10 @@ class GridEngine:
 
         try:
             while not self._shutdown_event.is_set():
+                weekend_pause_end = self._weekend_pause_end()
+                if weekend_pause_end is not None:
+                    await self._start_weekend_pause(weekend_pause_end)
+                    break
                 try:
                     await self._tick()
                     # A successful tick ends the error episode, so a pending alert is dropped.
@@ -1124,6 +1133,36 @@ class GridEngine:
         # A watchdog restart has its own alert, so its tick error is not sent again.
         if not self._watchdog_restart_requested:
             self._notify_error_row("ENGINE_TICK_ERROR", f"Engine tick error: {str(e)}", wait_for_recovery=True)
+
+    def _weekend_pause_end(self) -> Optional[datetime]:
+        """The Sunday time the weekend bot pause ends, when it is active now; otherwise None."""
+        if not self.config.weekend_pause_enabled:
+            return None
+        try:
+            now = self._now_et().astimezone(zoneinfo.ZoneInfo(self.config.timezone))
+            return pause_end(now, self.config.weekend_pause_start_friday, self.config.weekend_pause_end_sunday)
+        except Exception as e:
+            logger.error(f"Error checking the weekend pause: {e}")
+            return None
+
+    @property
+    def weekend_pause_started(self) -> bool:
+        """True when the engine stopped because the weekend bot pause began."""
+        return self._weekend_pause_until is not None
+
+    async def _start_weekend_pause(self, until: datetime):
+        """
+        Stops the engine for the weekend bot pause. A last Health row records the
+        pause, then the normal shutdown cancels this session's tracked orders and
+        disconnects. run.sh then stops the Gateway and waits until `until`.
+        """
+        self._weekend_pause_until = until
+        logger.info(
+            f"[Weekend pause] Pause started; the bot and Gateway stop until Sunday "
+            f"{until.strftime('%H:%M')} {self.config.timezone}."
+        )
+        await self._log_health_once()
+        self._shutdown_event.set()
 
     def _handle_shutdown_signal(self):
         logger.info("Shutdown signal received.")

@@ -120,16 +120,22 @@ configuration:
       gateway_auto_restart_time:
         name: Daily restart time (HH:MM)
         description: Normal is 23:48, inside the pause.
-      gateway_cold_restart_enabled:
-        name: Weekly full Gateway restart (Sunday)
+      weekend_pause_enabled:
+        name: Weekend bot pause
         description: >-
-          Closes and reopens the Gateway on Sunday with a fresh login, as IBKR
-          requires once a week. Live accounts then need approval in IBKR Mobile.
-      gateway_cold_restart_time:
-        name: Weekly restart time (HH:MM)
+          Turns the bot and its Gateway off from Friday evening to Sunday, so
+          nothing logs in, alerts or restarts over the weekend. The Sunday start
+          is IBKR's weekly fresh login: approve it in IBKR Mobile.
+      weekend_pause_start_friday:
+        name: Pause starts Friday at (HH:MM)
         description: >-
-          A Sunday time you can approve the login on your phone. It must be after
-          01:00 New York time. Normal is 18:00.
+          Use 18:15 or later in Mountain time (20:15 New York): the bot trades
+          Friday after-hours until 20:00 New York. Normal is 18:15.
+      weekend_pause_end_sunday:
+        name: Bot starts again Sunday at (HH:MM)
+        description: >-
+          A Sunday time you can approve the login on your phone, before trading
+          opens at 20:00 New York (18:00 Mountain). Normal is 09:00.
   notifications:
     name: Phone notifications
     description: >-

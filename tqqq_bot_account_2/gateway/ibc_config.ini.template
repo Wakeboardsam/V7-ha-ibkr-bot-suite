@@ -6,7 +6,6 @@ ReadOnlyApi=${READONLY_VAL}
 OverrideTwsApiPort=${GATEWAY_PORT}
 AutoRestartTime=${AUTO_RESTART_TIME}
 AutoLogoffTime=
-ColdRestartTime=${COLD_RESTART_TIME}
 AcceptIncomingConnectionAction=accept
 AcceptNonBrokerageAccountWarning=yes
 BypassOrderPrecautions=yes

@@ -1,5 +1,5 @@
 name: V7_tqqq_bot
-version: 0.1.55
+version: 0.1.56
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
@@ -31,8 +31,9 @@ options:
     maintenance_cancel_open_orders: true
     gateway_auto_restart_enabled: true
     gateway_auto_restart_time: '23:48'
-    gateway_cold_restart_enabled: true
-    gateway_cold_restart_time: '18:00'
+    weekend_pause_enabled: true
+    weekend_pause_start_friday: '18:15'
+    weekend_pause_end_sunday: '09:00'
   notifications:
     enabled: false
     webhook_url: ""
@@ -87,8 +88,9 @@ schema:
     maintenance_cancel_open_orders: bool
     gateway_auto_restart_enabled: bool
     gateway_auto_restart_time: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
-    gateway_cold_restart_enabled: bool
-    gateway_cold_restart_time: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
+    weekend_pause_enabled: bool
+    weekend_pause_start_friday: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
+    weekend_pause_end_sunday: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
   notifications:
     enabled: bool
     webhook_url: password

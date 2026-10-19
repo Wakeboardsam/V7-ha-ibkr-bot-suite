@@ -163,12 +163,14 @@ def test_saved_settings_move_into_the_sections_unchanged():
     validate_against_schema(moved, CONFIG["schema"])
     for section, keys in SECTIONS.items():
         for key in keys:
-            expected = LEGACY[key]
+            # Keys added after 0.1.54 were never saved, so they arrive from the add-on defaults.
+            expected = LEGACY.get(key, CONFIG["options"][section][key])
             if key == "gateway_auto_restart_time":
                 expected = "23:48"
-            elif key == "gateway_cold_restart_time":
-                expected = "18:00"
             assert moved[section][key] == expected, key
+    # The Sunday cold restart left the page in 0.1.56; the weekend pause replaces it.
+    assert "gateway_cold_restart_enabled" not in moved["schedule"]
+    assert "gateway_cold_restart_time" not in moved["schedule"]
     expected_notifications = {k: v for k, v in LEGACY["notifications"].items() if k != "provider"}
     # Keys added after 0.1.54 were never saved, so they arrive from the add-on defaults.
     expected_notifications["error_alert_delay_seconds"] = CONFIG["options"]["notifications"]["error_alert_delay_seconds"]
@@ -329,7 +331,7 @@ def test_a_value_that_cannot_be_moved_keeps_every_other_setting_and_stops_in_wat
 def test_an_unreadable_old_time_gets_the_default_and_the_rest_moves():
     moved, problems = migrate(supervisor_stored_after_update({**LEGACY, "gateway_auto_restart_time": "late"}))
     assert moved["schedule"]["gateway_auto_restart_time"] == "23:48"
-    assert moved["schedule"]["gateway_cold_restart_time"] == "18:00"
+    assert "gateway_cold_restart_time" not in moved["schedule"]
     assert moved["account"]["ibkr_username"] == "example_user"
     assert len(problems) == 1 and "gateway_auto_restart_time" in problems[0]
 

@@ -56,14 +56,14 @@ Account 2 must remain a runtime copy of Account 1: the two `app/` trees, `wait_f
 
 1. Move saved settings from the pre-0.1.54 layout into the Configuration sections when needed (see [Configuration](#configuration)), then read the options from `/data/options.json` and log the account ID in masked form. The bot always connects to its own Gateway at `127.0.0.1`.
 2. Restore saved Gateway settings and Java preferences from `/data/ibgateway/persist` into `/root/Jts` and `/root/.java`, so first-run Gateway choices (such as the SSL reconnect prompt) survive restarts.
-3. Render the IBC configuration from `gateway/ibc_config.ini.template` (credentials, trading mode, read-only API flag, API port, auto and cold restart times; the daily restart time is converted from the page's 24-hour `HH:MM` to the `hh:mm AM/PM` form IBC requires) and set `BypassOrderPrecautions` and `BypassRedirectOrderWarning` in `jts.ini`.
-4. Start Xvfb, then `x11vnc` only if `enable_vnc` is true.
+3. Render the IBC configuration from `gateway/ibc_config.ini.template` (credentials, trading mode, read-only API flag, API port and daily restart time; the daily restart time is converted from the page's 24-hour `HH:MM` to the `hh:mm AM/PM` form IBC requires) and set `BypassOrderPrecautions` and `BypassRedirectOrderWarning` in `jts.ini`.
+4. During the [weekend bot pause](#weekend-bot-pause), wait until it ends without starting anything else. Then start Xvfb, then `x11vnc` only if `enable_vnc` is true.
 5. Check that the Java runtime bundled with IB Gateway (`/opt/ibgateway_jre`) exists, then start Gateway through IBC.
 6. Run `wait_for_gateway.py` until the API port opens or the timeout expires (3600 s for `live`, 300 s for `paper`). On timeout the container prints sanitized IBC logs and exits with an error.
 7. Copy the Gateway settings back to `/data` once, then every `300` seconds in the background. The interval is a fixed `run.sh` constant, not an add-on option.
-8. Start the Python bot (`python -m main`). When the bot exits, `run.sh` stops the other processes and exits with the bot's exit code.
+8. Start the Python bot (`python -m main`). When the bot exits, `run.sh` stops the other processes and exits with the bot's exit code. Exit code `10` means the weekend pause started: `run.sh` then starts itself again and waits at step 4 instead of exiting.
 
-**Login problems.** If IBC reports the Gateway as `LOGGED_OUT` for five minutes while the port is still closed, `wait_for_gateway.py` prints a loud warning and, when notifications are enabled with `notify_on_gateway_login`, sends a Home Assistant alert every five minutes asking the operator to open VNC and sign in. Live accounts may need IBKR Mobile two-factor approval after a cold restart, host reboot, full add-on restart or session expiry. VNC has no password; enable it only for troubleshooting and do not expose its port to untrusted networks.
+**Login problems.** If IBC reports the Gateway as `LOGGED_OUT` for five minutes while the port is still closed, `wait_for_gateway.py` prints a loud warning and, when notifications are enabled with `notify_on_gateway_login`, sends a Home Assistant alert every five minutes asking the operator to open VNC and sign in. Live accounts may need IBKR Mobile two-factor approval when the weekend pause ends, after a host reboot, full add-on restart or session expiry. VNC has no password; enable it only for troubleshooting and do not expose its port to untrusted networks.
 
 ### Bot startup (`main.py`, then the engine)
 
@@ -84,9 +84,20 @@ A tick runs only when the broker connection is up and broker state is **READY**:
 IBKR restarts or disconnects Gateway around 23:50 (user-observed, America/Denver). The settings below cooperate:
 
 - **Gateway auto restart** (`gateway_auto_restart_time`, default `23:48`) has IBC restart the Gateway just before the observed disruption, keeping its session.
-- **Gateway cold restart** (`gateway_cold_restart_time`, default `18:00`) is a weekly full restart. IBC's documentation says it runs on Sundays at a time after 01:00 US/Eastern, given as 24-hour `hh:mm`; live accounts may then need two-factor approval. **[Needs verification]** Before 0.1.54 this value was passed as `06:00 PM`, which is not the form IBC documents, so the weekly restart may not have run at 18:00.
 - **Bot maintenance window** (`maintenance_start_local`–`maintenance_end_local`, default `23:44`–`00:00`, in `timezone`): on entering the window the bot cancels its open orders (when `maintenance_cancel_open_orders` is true), forgets its order tracking and trades nothing until the window ends.
 - **Reconnect grace** (`maintenance_reconnect_grace_minutes`, default 30) extends the period after the window in which a disconnected Gateway does not trigger a container restart, avoiding a restart loop that would keep demanding two-factor approval. Trading stays paused while disconnected and resumes only when broker state is READY again.
+
+### Weekend bot pause
+
+IBKR requires a fresh login with two-factor approval once a week; IBC's documentation places it after Sunday 01:00 US/Eastern (Saturday 23:00 in Denver). The nightly Gateway restart at 23:48 on Saturday falls after that point and cannot log back in without the phone approval, so before 0.1.56 the Gateway stayed logged out from Saturday night, the watchdog restarted the add-on, and each hourly retry sent an IBKR Mobile push and login alerts until someone approved it.
+
+With `weekend_pause_enabled` on (default), from `weekend_pause_start_friday` (default `18:15`) to `weekend_pause_end_sunday` (default `09:00`), both in `timezone`, the bot and its Gateway are off:
+
+- When the pause starts, the engine writes one Health row with the status `WEEKEND_PAUSE: off until Sunday HH:MM`, then shuts down as on `SIGTERM` (see [Shutdown](#shutdown)) and exits with code `10`. `run.sh` stops the Gateway and waits for the pause to end. The add-on keeps running, so Home Assistant neither restarts nor stops it.
+- An add-on started during the pause waits in the same way. Stopping it from Home Assistant during the pause stops it at once.
+- When the pause ends, the add-on starts as usual. That login is the weekly fresh login, so a live account needs one IBKR Mobile approval. The pause replaced the Sunday Gateway cold restart (`gateway_cold_restart_enabled`, `gateway_cold_restart_time`), which left the page in 0.1.56.
+- Keep the Friday time after 20:00 US/Eastern (18:00 in Denver). Until then the bot trades Friday after-hours with GTC orders; at 20:00 the session boundary cancels them. A pause that starts earlier relies on the shutdown cancel, which can leave orders live (see [Shutdown](#shutdown)).
+- The pause is checked against the calendar only: market holidays are not paused. A Gateway that is still waiting for a login when the pause starts keeps waiting, with its login alerts, until its wait timeout ends; the restarted add-on then waits out the pause.
 
 ### Shutdown
 
@@ -215,6 +226,7 @@ A **reconciliation halt** sets `HALTED_RECONCILIATION`: the bot places nothing a
 | `WAITING_BRIDGE_RECALC` | A re-anchor is waiting for old orders to clear or the Sheet to recalculate. |
 | `WAITING_TRIM` | A trim SELL is working. |
 | `PAUSED_WEEKEND_GAP` | Friday 20:00 ET to Sunday 20:00 ET: no new orders. |
+| `WEEKEND_PAUSE: off until Sunday HH:MM` | Written once, on the Health row recorded as the [weekend bot pause](#weekend-bot-pause) stops the bot. |
 
 The Health order comparison treats a Bridge Anchor order as a BUY and a trim as a SELL. A bridge order matches only when its order type is exactly the stop-limit type the bot places (`STP LMT`; a plain stop does not match), for row 7's shares, with the stop at row 7's sell price and the limit at that price plus `anchor_buy_offset`. A trim matches on the trim it placed (SELL limit order, trim quantity and limit price), not row 7's share count.
 
@@ -256,7 +268,7 @@ Options are set on the add-on's Configuration page in Home Assistant. Each add-o
 | Account and trading (`account`) | `trading_mode`, `ibkr_account_id`, `ibkr_username`, `ibkr_password`, `dry_run`, `readonly_api` | Which account the instance trades and whether it may. `trading_mode` (`paper` or `live`) sets both the Gateway login and the bot. `dry_run` (shown as "Watch only") reads real state but places, cancels and modifies no orders; it does not simulate fills. `readonly_api` makes IBC start the Gateway API read-only. |
 | Google Sheet (`google_sheet`) | `google_sheet_id`, `google_credentials_json` | Target Sheet and service-account JSON. Enter the JSON as a single line; multi-line values may not round-trip through the Home Assistant password field. |
 | Strategy and safeguards (`strategy`) | `enable_bridge_anchor` (true), `anchor_buy_offset` (1.5), `bridge_max_auto_trim_shares` (5), `share_mismatch_mode` (`halt` or `warn`), `max_spread_pct` (0.5) | Bridge Anchor controls, anchor price offset, mismatch behavior and the spread limit for the anchor BUY. |
-| Time zone and schedule (`schedule`) | `timezone`, `maintenance_enabled`, `maintenance_start_local`, `maintenance_end_local`, `maintenance_cancel_open_orders`, `gateway_auto_restart_enabled`, `gateway_auto_restart_time`, `gateway_cold_restart_enabled`, `gateway_cold_restart_time` | The nightly pause and Gateway restarts (see above). Times are 24-hour `HH:MM` and the page rejects any other form. `timezone` is one of seven US zones and also sets the container's `TZ`. |
+| Time zone and schedule (`schedule`) | `timezone`, `maintenance_enabled`, `maintenance_start_local`, `maintenance_end_local`, `maintenance_cancel_open_orders`, `gateway_auto_restart_enabled`, `gateway_auto_restart_time`, `weekend_pause_enabled`, `weekend_pause_start_friday`, `weekend_pause_end_sunday` | The nightly pause, the daily Gateway restart and the weekend bot pause (see above). Times are 24-hour `HH:MM` and the page rejects any other form. `timezone` is one of seven US zones and also sets the container's `TZ`. |
 | Phone notifications (`notifications`) | `notifications.*` | See [Notifications](#notifications). |
 | Advanced and troubleshooting (`advanced`) | `ibkr_port` (7497), `ibkr_client_id` (1), `poll_interval_seconds` (60), `heartbeat_interval_seconds` (60), `health_log_interval_seconds` (300), `maintenance_reconnect_grace_minutes` (30), `gateway_live_wait_timeout_seconds` (3600), `gateway_paper_wait_timeout_seconds` (300), `mask_account_ids_in_logs` (true), `enable_vnc` (false), `vnc_port` (5900) | `ibkr_port` is the port the bot and its own Gateway share; any free port works in either mode, and the two add-ons may differ. Tick, `C1` heartbeat and Health tab cadence, readiness timeouts, log masking and optional VNC. VNC is disabled by default and its port is unmapped. |
 
@@ -326,7 +338,7 @@ PYTHONPATH=app python -m pytest -q
 
 `PYTHONPATH=app` makes the bot's modules importable. Account 1 also needs the repository root (`..`) on the path because `test_wait_for_gateway.py` imports `tqqq_bot`; without it, collection fails. Account 2 has no copy of that test file because tests stay canonical in `tqqq_bot`.
 
-**Current baseline.** At add-on version 0.1.55, Account 1 runs 405 tests and Account 2 runs 393, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
+**Current baseline.** At add-on version 0.1.56, Account 1 runs 427 tests and Account 2 runs 415, and all pass. The three `tests/test_status_strings.py` failures recorded earlier were stale expectations: since 2026-06-28 an outside-window cancel leaves the row status unchanged until IBKR confirms the cancel, and the tests now cover that.
 
 **Session clock in tests.** Every tick in the tests runs the real 16:00 and 20:00 ET session check, as live trading does. `tests/conftest.py` pins its clock to a Wednesday at 11:00 ET and starts each engine with that session already set up, so ordinary tests do not regenerate on their first tick. `tests/test_session_regeneration_ticks.py` moves that clock across the boundaries, the weekend gap and a fresh start. A test marked `real_session_clock` uses the real clock and a fresh engine instead.
 
