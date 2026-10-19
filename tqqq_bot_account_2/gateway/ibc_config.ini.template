@@ -11,3 +11,4 @@ AcceptNonBrokerageAccountWarning=yes
 BypassOrderPrecautions=yes
 BypassRedirectOrderWarning=yes
 AllowBlindTrading=yes
+SaveTwsSettingsAt=Every 1 hours

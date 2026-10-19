@@ -183,6 +183,21 @@ rsync -a "${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/" || true
 echo "Restoring persisted Java preferences from ${PERSIST_JAVA_DIR}"
 rsync -a "${PERSIST_JAVA_DIR}/" /root/.java/ || true
 
+# One line per start, so the log shows whether the Gateway's own settings file
+# (ibg.xml) came back and how much the saved settings take up. The folder name
+# is left out because the Gateway derives it from the login.
+report_saved_gateway_settings() {
+    local saved_files total_size
+    saved_files=$(find "${PERSIST_JTS_DIR}" -mindepth 2 -maxdepth 2 -name ibg.xml 2>/dev/null | wc -l)
+    total_size=$(du -sh /data/ibgateway/persist 2>/dev/null | cut -f1)
+    if [ "$saved_files" -gt 0 ]; then
+        echo "[Gateway settings] Saved ibg.xml found in persistent storage and copied back; the Gateway decides whether it loads. Saved settings size: ${total_size:-0}."
+    else
+        echo "[Gateway settings] No saved ibg.xml in persistent storage yet; the Gateway may offer to recover from a backup. Saved settings size: ${total_size:-0}."
+    fi
+}
+report_saved_gateway_settings
+
 if [ ! -f "$IBC_TEMPLATE_FILE" ]; then
     echo "ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
     exit 1
@@ -192,11 +207,6 @@ echo "Rendering active IBC config..."
 envsubst < "$IBC_TEMPLATE_FILE" > "$IBC_CONFIG_FILE"
 chmod 600 "$IBC_CONFIG_FILE"
 echo "Active IBC config written to ${IBC_CONFIG_FILE}"
-
-echo "Patching active runtime jts.ini..."
-touch "${ACTIVE_JTS_DIR}/jts.ini"
-grep -q "^BypassOrderPrecautions=" "${ACTIVE_JTS_DIR}/jts.ini" || echo "BypassOrderPrecautions=true" >> "${ACTIVE_JTS_DIR}/jts.ini"
-grep -q "^BypassRedirectOrderWarning=" "${ACTIVE_JTS_DIR}/jts.ini" || echo "BypassRedirectOrderWarning=true" >> "${ACTIVE_JTS_DIR}/jts.ini"
 
 sync_gateway_settings() {
     # Conservative exclusions so we do not copy the installed Gateway application
@@ -268,6 +278,13 @@ shutdown_handler() {
     if [ -n "${IBC_PID:-}" ]; then wait "$IBC_PID" 2>/dev/null || true; fi
     if [ -n "${XVFB_PID:-}" ]; then wait "$XVFB_PID" 2>/dev/null || true; fi
     if [ -n "${PERSISTENCE_PID:-}" ]; then wait "$PERSISTENCE_PID" 2>/dev/null || true; fi
+
+    # The Gateway may write its settings as it closes, after the last periodic
+    # copy, so copy them once more now that it has stopped.
+    if [ -n "${IBC_PID:-}" ]; then
+        echo "Saving Gateway settings to /data before stopping."
+        sync_gateway_settings
+    fi
 
     echo "Graceful shutdown complete."
 }

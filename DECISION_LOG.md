@@ -449,3 +449,14 @@ Decision:
 - At the owner's choice the Sunday cold restart is removed (`gateway_cold_restart_*` leave the page and the IBC configuration); keeping it would have asked for a second approval right after the Sunday start. Saved values for it are dropped by Supervisor, and the pre-0.1.54 settings move drops them too.
 - The default Friday time is after 20:00 US/Eastern, so the session boundary has already cancelled Friday's after-hours orders.
 - Unchanged: the nightly maintenance window, the daily Gateway restart, the watchdog and the alert switches.
+
+## 2026-10-19 — Gateway settings survive add-on restarts
+
+Outcome:
+- On both add-ons, every start showed the Gateway prompt "We are having trouble loading your settings, they may be corrupted", naming a missing `ibg.xml` and offering a weekday backup such as `ibg.Sun.xml`. Answering it, or choosing not to see it again, did not stick. `run.sh` copied the Gateway settings to `/data` only every 300 seconds while running and never after the Gateway stopped, and Home Assistant allowed its default 10 seconds to stop, so the Gateway's own settings file never reached `/data`. This cause is reasoned from the code and the prompt, not observed in the saved folder.
+
+Decision:
+- IBC has the Gateway save its settings hourly (`SaveTwsSettingsAt=Every 1 hours`). The owner preferred hourly to a few minutes: settings change rarely, the file is overwritten in place rather than growing, and the periodic copy then picks it up.
+- `run.sh` copies the settings once more after the Gateway has stopped, and `config.yaml` sets `timeout: 60` for that.
+- A startup log line says whether a saved `ibg.xml` was found and copied back and how large the saved settings are, so the operator can confirm it without opening the add-on's files.
+- The two `jts.ini` lines for the precaution bypasses are removed: `jts.ini` does not hold them, and IBC already applies both through the Gateway's Configure dialog on every start. No other bypass is added and no Gateway prompt is answered automatically.
