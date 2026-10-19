@@ -129,8 +129,8 @@ configuration:
       weekend_pause_start_friday:
         name: Pause starts Friday at (HH:MM)
         description: >-
-          Use 18:15 or later in Mountain time (20:15 New York): the bot trades
-          Friday after-hours until 20:00 New York. Normal is 18:15.
+          Set it after 20:00 New York time (18:00 Mountain), when the bot ends
+          Friday after-hours trading and cancels its orders. Normal is 18:15.
       weekend_pause_end_sunday:
         name: Bot starts again Sunday at (HH:MM)
         description: >-
