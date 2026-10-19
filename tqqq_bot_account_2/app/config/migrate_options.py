@@ -42,7 +42,7 @@ SECTIONS = {
     "schedule": [
         "timezone", "maintenance_enabled", "maintenance_start_local", "maintenance_end_local",
         "maintenance_cancel_open_orders", "gateway_auto_restart_enabled", "gateway_auto_restart_time",
-        "gateway_cold_restart_enabled", "gateway_cold_restart_time",
+        "weekend_pause_enabled", "weekend_pause_start_friday", "weekend_pause_end_sunday",
     ],
     "advanced": [
         "ibkr_port", "ibkr_client_id", "poll_interval_seconds", "heartbeat_interval_seconds",
@@ -53,13 +53,18 @@ SECTIONS = {
 }
 
 # Old top-level options that leave the page. paper_trading is replaced by
-# trading_mode, which is what the Gateway login always used.
-DROPPED = {"active_broker", "paper_trading", "ibkr_host"}
+# trading_mode, which is what the Gateway login always used. The Sunday cold
+# restart is replaced by the weekend bot pause (0.1.56), whose Sunday start is
+# the weekly fresh login.
+DROPPED = {
+    "active_broker", "paper_trading", "ibkr_host",
+    "gateway_cold_restart_enabled", "gateway_cold_restart_time",
+}
 DROPPED_NOTIFICATION_KEYS = {"provider"}
 
 TIME_OPTIONS = {
     "maintenance_start_local", "maintenance_end_local",
-    "gateway_auto_restart_time", "gateway_cold_restart_time",
+    "gateway_auto_restart_time",
 }
 
 TIMEZONES = [

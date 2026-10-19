@@ -17,6 +17,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Tells run.sh the weekend shutdown began, so it stops the Gateway and waits.
+WEEKEND_PAUSE_EXIT_CODE = 10
+
 async def main():
     try:
         config = load_config()
@@ -115,6 +118,9 @@ async def main():
     except Exception as e:
         logger.error(f"Bot crashed: {e}", exc_info=True)
         sys.exit(1)
+
+    if engine.weekend_pause_started is True:
+        sys.exit(WEEKEND_PAUSE_EXIT_CODE)
 
 if __name__ == "__main__":
     asyncio.run(main())

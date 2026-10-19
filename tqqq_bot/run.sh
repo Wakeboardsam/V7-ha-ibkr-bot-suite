@@ -56,8 +56,9 @@ if [ -f /data/options.json ]; then
     TIMEZONE=$(opt '.schedule.timezone' '"America/Denver"')
     GATEWAY_AUTO_RESTART_ENABLED=$(opt '.schedule.gateway_auto_restart_enabled' 'true')
     GATEWAY_AUTO_RESTART_TIME=$(opt '.schedule.gateway_auto_restart_time' '"23:48"')
-    GATEWAY_COLD_RESTART_ENABLED=$(opt '.schedule.gateway_cold_restart_enabled' 'true')
-    GATEWAY_COLD_RESTART_TIME=$(opt '.schedule.gateway_cold_restart_time' '"18:00"')
+    WEEKEND_PAUSE_ENABLED=$(opt '.schedule.weekend_pause_enabled' 'true')
+    WEEKEND_PAUSE_START_FRIDAY=$(opt '.schedule.weekend_pause_start_friday' '"18:15"')
+    WEEKEND_PAUSE_END_SUNDAY=$(opt '.schedule.weekend_pause_end_sunday' '"09:00"')
 
     # Advanced
     GATEWAY_PORT=$(opt '.advanced.ibkr_port' '7497')
@@ -94,8 +95,9 @@ else
     TIMEZONE="America/Denver"
     GATEWAY_AUTO_RESTART_ENABLED="true"
     GATEWAY_AUTO_RESTART_TIME="23:48"
-    GATEWAY_COLD_RESTART_ENABLED="true"
-    GATEWAY_COLD_RESTART_TIME="18:00"
+    WEEKEND_PAUSE_ENABLED="true"
+    WEEKEND_PAUSE_START_FRIDAY="18:15"
+    WEEKEND_PAUSE_END_SUNDAY="09:00"
     GATEWAY_LIVE_WAIT_TIMEOUT_SECONDS=3600
     GATEWAY_PAPER_WAIT_TIMEOUT_SECONDS=300
 fi
@@ -116,8 +118,7 @@ export TWS_SETTINGS_PATH="${ACTIVE_JTS_DIR}"
 export IBC_INI="${IBC_CONFIG_FILE}"
 export TZ="${TIMEZONE}"
 
-# The page uses 24-hour HH:MM. IBC wants "hh:mm AM/PM" for the daily restart
-# and 24-hour hh:mm for the Sunday cold restart.
+# The page uses 24-hour HH:MM. IBC wants "hh:mm AM/PM" for the daily restart.
 to_ibc_12_hour() {
     local hour minute suffix
     hour=$((10#${1%%:*}))
@@ -133,12 +134,6 @@ if [ "$GATEWAY_AUTO_RESTART_ENABLED" = "true" ]; then
     export AUTO_RESTART_TIME="$(to_ibc_12_hour "$GATEWAY_AUTO_RESTART_TIME")"
 else
     export AUTO_RESTART_TIME=""
-fi
-
-if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
-    export COLD_RESTART_TIME="${GATEWAY_COLD_RESTART_TIME}"
-else
-    export COLD_RESTART_TIME=""
 fi
 
 if [ "$TRADING_MODE" = "live" ]; then
@@ -166,10 +161,10 @@ if [ "$GATEWAY_AUTO_RESTART_ENABLED" = "true" ]; then
 else
     echo "[Gateway] IBC AutoRestartTime: (Disabled)"
 fi
-if [ "$GATEWAY_COLD_RESTART_ENABLED" = "true" ]; then
-    echo "[Gateway] IBC ColdRestartTime: ${COLD_RESTART_TIME}"
+if [ "$WEEKEND_PAUSE_ENABLED" = "true" ]; then
+    echo "[Weekend shutdown] Off Friday ${WEEKEND_PAUSE_START_FRIDAY}, back on Sunday ${WEEKEND_PAUSE_END_SUNDAY} (${TIMEZONE})"
 else
-    echo "[Gateway] IBC ColdRestartTime: (Disabled)"
+    echo "[Weekend shutdown] (Disabled)"
 fi
 echo "[Gateway] Gateway wait timeout: ${WAIT_TIMEOUT} seconds"
 echo "[Gateway] VNC is manual only; enable_vnc controls whether VNC starts"
@@ -277,7 +272,36 @@ shutdown_handler() {
     echo "Graceful shutdown complete."
 }
 
-trap 'shutdown_handler' SIGTERM SIGINT
+STOP_REQUESTED=false
+trap 'STOP_REQUESTED=true; shutdown_handler' SIGTERM SIGINT
+
+# Exit code the bot uses when the weekend shutdown begins.
+WEEKEND_PAUSE_EXIT_CODE=10
+
+# During the weekend shutdown nothing starts: no Gateway, no login, no bot. The
+# add-on keeps running so Home Assistant does not restart or stop it, and
+# starts normally when the shutdown ends.
+weekend_pause_seconds_left() {
+    if [ "$WEEKEND_PAUSE_ENABLED" != "true" ]; then
+        echo 0
+        return
+    fi
+    python3 /app/utils/weekend_pause.py --timezone "$TIMEZONE" \
+        --start "$WEEKEND_PAUSE_START_FRIDAY" --end "$WEEKEND_PAUSE_END_SUNDAY" || echo 0
+}
+
+PAUSE_SECONDS=$(weekend_pause_seconds_left)
+if [ "$PAUSE_SECONDS" -gt 0 ]; then
+    echo "[Weekend shutdown] Bot and Gateway are off until Sunday ${WEEKEND_PAUSE_END_SUNDAY} (${TIMEZONE}), ${PAUSE_SECONDS} seconds from now."
+    sleep "$PAUSE_SECONDS" &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID" || true
+    if [ "$STOP_REQUESTED" = "true" ]; then
+        kill -TERM "$SLEEP_PID" 2>/dev/null || true
+        exit 0
+    fi
+    echo "[Weekend shutdown] Turning back on: starting the Gateway and bot."
+fi
 
 echo "Starting Xvfb..."
 Xvfb :99 -ac -screen 0 1024x768x16 &
@@ -356,4 +380,11 @@ BOT_EXIT_CODE=$?
 set -e
 
 shutdown_handler
+
+if [ "$BOT_EXIT_CODE" -eq "$WEEKEND_PAUSE_EXIT_CODE" ] && [ "$STOP_REQUESTED" != "true" ]; then
+    # Gateway and bot are stopped. Start this script again, which waits out
+    # the weekend shutdown before starting them.
+    echo "[Weekend shutdown] Bot and Gateway turned off for the weekend."
+    exec /app/run.sh
+fi
 exit "$BOT_EXIT_CODE"
