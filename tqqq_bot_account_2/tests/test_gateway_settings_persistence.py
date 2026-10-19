@@ -50,8 +50,8 @@ def test_run_sh_no_longer_writes_precautions_into_jts_ini():
 
 
 @pytest.mark.parametrize("with_settings_file, expected", [
-    (True, "Saved settings file restored (ibg.xml)"),
-    (False, "No saved settings file (ibg.xml) yet"),
+    (True, "Saved ibg.xml found in persistent storage"),
+    (False, "No saved ibg.xml in persistent storage yet"),
 ])
 def test_startup_reports_whether_the_settings_file_came_back(tmp_path, with_settings_file, expected):
     persist = tmp_path / "persist"

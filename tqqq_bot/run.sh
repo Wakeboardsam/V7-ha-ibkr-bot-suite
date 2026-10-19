@@ -191,9 +191,9 @@ report_saved_gateway_settings() {
     saved_files=$(find "${PERSIST_JTS_DIR}" -mindepth 2 -maxdepth 2 -name ibg.xml 2>/dev/null | wc -l)
     total_size=$(du -sh /data/ibgateway/persist 2>/dev/null | cut -f1)
     if [ "$saved_files" -gt 0 ]; then
-        echo "[Gateway settings] Saved settings file restored (ibg.xml). Saved settings size: ${total_size:-0}."
+        echo "[Gateway settings] Saved ibg.xml found in persistent storage and copied back; the Gateway decides whether it loads. Saved settings size: ${total_size:-0}."
     else
-        echo "[Gateway settings] No saved settings file (ibg.xml) yet; the Gateway may offer to recover from a backup. Saved settings size: ${total_size:-0}."
+        echo "[Gateway settings] No saved ibg.xml in persistent storage yet; the Gateway may offer to recover from a backup. Saved settings size: ${total_size:-0}."
     fi
 }
 report_saved_gateway_settings

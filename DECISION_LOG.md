@@ -458,5 +458,5 @@ Outcome:
 Decision:
 - IBC has the Gateway save its settings hourly (`SaveTwsSettingsAt=Every 1 hours`). The owner preferred hourly to a few minutes: settings change rarely, the file is overwritten in place rather than growing, and the periodic copy then picks it up.
 - `run.sh` copies the settings once more after the Gateway has stopped, and `config.yaml` sets `timeout: 60` for that.
-- A startup log line says whether `ibg.xml` was restored and how large the saved settings are, so the operator can confirm it without opening the add-on's files.
+- A startup log line says whether a saved `ibg.xml` was found and copied back and how large the saved settings are, so the operator can confirm it without opening the add-on's files.
 - The two `jts.ini` lines for the precaution bypasses are removed: `jts.ini` does not hold them, and IBC already applies both through the Gateway's Configure dialog on every start. No other bypass is added and no Gateway prompt is answered automatically.
