@@ -109,7 +109,7 @@ async def test_the_engine_stops_when_the_pause_starts():
     engine._tick.assert_not_called()
     assert engine.weekend_pause_started is True
     engine._log_health_once.assert_awaited_once()
-    assert engine._execution_status() == "WEEKEND_PAUSE: off until Sunday 09:00"
+    assert engine._execution_status() == "WEEKEND_SHUTDOWN: back on Sunday 09:00"
     engine.broker.disconnect.assert_awaited()
 
 

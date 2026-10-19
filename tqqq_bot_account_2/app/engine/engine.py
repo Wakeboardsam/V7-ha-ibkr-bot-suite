@@ -335,7 +335,7 @@ class GridEngine:
         if self._bridge_state == 'BRIDGE_HALTED':
             return f"BRIDGE_HALTED: {self._bridge_halt_reason}" if self._bridge_halt_reason else "BRIDGE_HALTED"
         if self._weekend_pause_until is not None:
-            return f"WEEKEND_PAUSE: off until Sunday {self._weekend_pause_until.strftime('%H:%M')}"
+            return f"WEEKEND_SHUTDOWN: back on Sunday {self._weekend_pause_until.strftime('%H:%M')}"
         if self._is_in_maintenance_window():
             return "PAUSED_MAINTENANCE"
         if self._share_mismatch:
@@ -1142,7 +1142,7 @@ class GridEngine:
             now = self._now_et().astimezone(zoneinfo.ZoneInfo(self.config.timezone))
             return pause_end(now, self.config.weekend_pause_start_friday, self.config.weekend_pause_end_sunday)
         except Exception as e:
-            logger.error(f"Error checking the weekend pause: {e}")
+            logger.error(f"Error checking the weekend shutdown: {e}")
             return None
 
     @property
@@ -1158,7 +1158,7 @@ class GridEngine:
         """
         self._weekend_pause_until = until
         logger.info(
-            f"[Weekend pause] Pause started; the bot and Gateway stop until Sunday "
+            f"[Weekend shutdown] Friday shutdown time reached; the bot and Gateway turn off until Sunday "
             f"{until.strftime('%H:%M')} {self.config.timezone}."
         )
         await self._log_health_once()

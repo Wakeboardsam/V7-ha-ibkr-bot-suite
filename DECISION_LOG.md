@@ -439,13 +439,13 @@ Decision:
 - `ENGINE_TICK_ERROR` and `POSITION_SNAPSHOT_UNAVAILABLE` now alert only when the problem has lasted `notifications.error_alert_delay_seconds` (default 600, ten minutes) without a successful tick or an OK snapshot. Each alerts once per episode and again only after recovery and a new full delay. `0` restores alerting on the first occurrence.
 - Unchanged: every Errors-tab row is still written; `SHARE_RECONCILED` still alerts on each repair; the watchdog restart, halt and other alerts keep their own switches and timing.
 
-## 2026-10-19 — Weekend bot pause replaces the Sunday cold restart
+## 2026-10-19 — Weekend shutdown replaces the Sunday cold restart
 
 Outcome:
 - IBC's documentation places IBKR's weekly re-authentication after Sunday 01:00 US/Eastern (Saturday 23:00 in Denver). The daily Gateway restart at 23:48 on Saturday night came after it and could not log in without IBKR Mobile approval. On 2026-10-17 the Gateway stayed logged out from 23:48; the watchdog restarted the add-on at 00:30 and the add-on retried hourly, each retry sending an IBKR Mobile push, with login, restart and Errors-tab alerts all night. The Sunday cold restart never ran as the planned weekly login, because the session was already gone.
 
 Decision:
-- The owner chose to turn the bot off for the weekend instead of tuning the alerts. With `schedule.weekend_pause_enabled` (default on), from `weekend_pause_start_friday` (default 18:15) to `weekend_pause_end_sunday` (default 09:00) in the add-on's time zone, the engine stops (one Health row with `WEEKEND_PAUSE`, then the normal shutdown) and `run.sh` stops the Gateway and waits, keeping the add-on running so Home Assistant does not restart or stop it. The Sunday start is the weekly fresh login, at a time the owner can approve it.
+- The owner chose to turn the bot off for the weekend instead of tuning the alerts. With `schedule.weekend_pause_enabled` (default on), from `weekend_pause_start_friday` (default 18:15) to `weekend_pause_end_sunday` (default 09:00) in the add-on's time zone, the engine stops (one Health row with `WEEKEND_SHUTDOWN`, then the normal shutdown) and `run.sh` stops the Gateway and waits, keeping the add-on running so Home Assistant does not restart or stop it. The Sunday start is the weekly fresh login, at a time the owner can approve it.
 - At the owner's choice the Sunday cold restart is removed (`gateway_cold_restart_*` leave the page and the IBC configuration); keeping it would have asked for a second approval right after the Sunday start. Saved values for it are dropped by Supervisor, and the pre-0.1.54 settings move drops them too.
 - The default Friday time is after 20:00 US/Eastern, so the session boundary has already cancelled Friday's after-hours orders.
 - Unchanged: the nightly maintenance window, the daily Gateway restart, the watchdog and the alert switches.

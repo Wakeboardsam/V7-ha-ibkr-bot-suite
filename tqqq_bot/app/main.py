@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Tells run.sh the weekend pause started, so it stops the Gateway and waits.
+# Tells run.sh the weekend shutdown began, so it stops the Gateway and waits.
 WEEKEND_PAUSE_EXIT_CODE = 10
 
 async def main():

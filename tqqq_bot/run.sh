@@ -162,9 +162,9 @@ else
     echo "[Gateway] IBC AutoRestartTime: (Disabled)"
 fi
 if [ "$WEEKEND_PAUSE_ENABLED" = "true" ]; then
-    echo "[Weekend pause] Friday ${WEEKEND_PAUSE_START_FRIDAY} to Sunday ${WEEKEND_PAUSE_END_SUNDAY} (${TIMEZONE})"
+    echo "[Weekend shutdown] Off Friday ${WEEKEND_PAUSE_START_FRIDAY}, back on Sunday ${WEEKEND_PAUSE_END_SUNDAY} (${TIMEZONE})"
 else
-    echo "[Weekend pause] (Disabled)"
+    echo "[Weekend shutdown] (Disabled)"
 fi
 echo "[Gateway] Gateway wait timeout: ${WAIT_TIMEOUT} seconds"
 echo "[Gateway] VNC is manual only; enable_vnc controls whether VNC starts"
@@ -275,12 +275,12 @@ shutdown_handler() {
 STOP_REQUESTED=false
 trap 'STOP_REQUESTED=true; shutdown_handler' SIGTERM SIGINT
 
-# Exit code the bot uses when the weekend pause starts.
+# Exit code the bot uses when the weekend shutdown begins.
 WEEKEND_PAUSE_EXIT_CODE=10
 
-# During the weekend pause nothing starts: no Gateway, no login, no bot. The
+# During the weekend shutdown nothing starts: no Gateway, no login, no bot. The
 # add-on keeps running so Home Assistant does not restart or stop it, and
-# starts normally when the pause ends.
+# starts normally when the shutdown ends.
 weekend_pause_seconds_left() {
     if [ "$WEEKEND_PAUSE_ENABLED" != "true" ]; then
         echo 0
@@ -292,7 +292,7 @@ weekend_pause_seconds_left() {
 
 PAUSE_SECONDS=$(weekend_pause_seconds_left)
 if [ "$PAUSE_SECONDS" -gt 0 ]; then
-    echo "[Weekend pause] Bot and Gateway are off until Sunday ${WEEKEND_PAUSE_END_SUNDAY} (${TIMEZONE}), ${PAUSE_SECONDS} seconds from now."
+    echo "[Weekend shutdown] Bot and Gateway are off until Sunday ${WEEKEND_PAUSE_END_SUNDAY} (${TIMEZONE}), ${PAUSE_SECONDS} seconds from now."
     sleep "$PAUSE_SECONDS" &
     SLEEP_PID=$!
     wait "$SLEEP_PID" || true
@@ -300,7 +300,7 @@ if [ "$PAUSE_SECONDS" -gt 0 ]; then
         kill -TERM "$SLEEP_PID" 2>/dev/null || true
         exit 0
     fi
-    echo "[Weekend pause] Pause over. Starting the Gateway and bot."
+    echo "[Weekend shutdown] Turning back on: starting the Gateway and bot."
 fi
 
 echo "Starting Xvfb..."
@@ -383,8 +383,8 @@ shutdown_handler
 
 if [ "$BOT_EXIT_CODE" -eq "$WEEKEND_PAUSE_EXIT_CODE" ] && [ "$STOP_REQUESTED" != "true" ]; then
     # Gateway and bot are stopped. Start this script again, which waits out
-    # the pause before starting them.
-    echo "[Weekend pause] Weekend pause started; Gateway and bot stopped."
+    # the weekend shutdown before starting them.
+    echo "[Weekend shutdown] Bot and Gateway turned off for the weekend."
     exec /app/run.sh
 fi
 exit "$BOT_EXIT_CODE"
