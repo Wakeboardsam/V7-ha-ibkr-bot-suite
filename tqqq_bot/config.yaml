@@ -1,10 +1,11 @@
 name: V7_tqqq_bot
-version: 0.1.56
+version: 0.1.57
 slug: tqqq_bot
 description: TQQQ automated trading bot for a single IBKR account
 arch:
 - amd64
 startup: application
+timeout: 60
 boot: auto
 options:
   account:
