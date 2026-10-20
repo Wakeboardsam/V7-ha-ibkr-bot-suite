@@ -178,8 +178,12 @@ mkdir -p "${ACTIVE_JTS_DIR}"
 mkdir -p "${ACTIVE_IBC_DIR}"
 mkdir -p /root/.java
 
+# ibg.tmp.xml is the Gateway's half-written settings save. A saved copy left
+# over from a Gateway that was stopped mid-save is not restored or saved again,
+# so each start sees only the finished ibg.xml. Copies already in /data are
+# left in place, just not used.
 echo "Restoring persisted Gateway settings from ${PERSIST_JTS_DIR}"
-rsync -a "${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/" || true
+rsync -a --exclude='ibg.tmp.xml' "${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/" || true
 echo "Restoring persisted Java preferences from ${PERSIST_JAVA_DIR}"
 rsync -a "${PERSIST_JAVA_DIR}/" /root/.java/ || true
 
@@ -242,6 +246,7 @@ sync_gateway_settings() {
       --exclude='logs/' \
       --exclude='cache/' \
       --exclude='tmp/' \
+      --exclude='ibg.tmp.xml' \
       "${ACTIVE_JTS_DIR}/" "${PERSIST_JTS_DIR}/" || true
 
     rsync -a \

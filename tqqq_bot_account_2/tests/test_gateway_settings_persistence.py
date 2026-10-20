@@ -112,3 +112,30 @@ def test_listing_runs_before_start_after_login_and_after_stop():
     assert text.index('echo "Initial Gateway settings sync complete."') < after_login
     handler = shell_function("shutdown_handler")
     assert handler.index('list_gateway_settings_files "After the Gateway stopped"') < handler.index("sync_gateway_settings")
+
+
+def test_a_half_written_settings_save_is_not_restored():
+    restore = next(line for line in run_sh_text().splitlines()
+                   if line.startswith('rsync -a') and '"${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/"' in line)
+    assert "--exclude='ibg.tmp.xml'" in restore
+
+
+def test_a_half_written_settings_save_is_not_copied_to_data(tmp_path):
+    active = tmp_path / "Jts"
+    persist = tmp_path / "persist_Jts"
+    java = tmp_path / "java"
+    persist_java = tmp_path / "persist_java"
+    folder = active / "gcfpedoofahkknlgmede"
+    folder.mkdir(parents=True)
+    java.mkdir()
+    (folder / "ibg.xml").write_text("<settings/>")
+    (folder / "ibg.tmp.xml").write_text("<half/>")
+    script = (
+        f'ACTIVE_JTS_DIR="{active}"; PERSIST_JTS_DIR="{persist}"; PERSIST_JAVA_DIR="{persist_java}"\n'
+        + shell_function("sync_gateway_settings").replace("/root/.java/", f"{java}/")
+        + "sync_gateway_settings"
+    )
+    subprocess.run(["bash", "-c", script], check=True)
+    saved = persist / "gcfpedoofahkknlgmede"
+    assert (saved / "ibg.xml").read_text() == "<settings/>"
+    assert not (saved / "ibg.tmp.xml").exists()

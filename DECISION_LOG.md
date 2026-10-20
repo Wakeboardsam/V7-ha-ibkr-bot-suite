@@ -460,3 +460,13 @@ Decision:
 - `run.sh` copies the settings once more after the Gateway has stopped, and `config.yaml` sets `timeout: 60` for that.
 - A startup log line says whether a saved `ibg.xml` was found and copied back and how large the saved settings are, so the operator can confirm it without opening the add-on's files.
 - The two `jts.ini` lines for the precaution bypasses are removed: `jts.ini` does not hold them, and IBC already applies both through the Gateway's Configure dialog on every start. No other bypass is added and no Gateway prompt is answered automatically.
+
+## 2026-10-20 — A half-written Gateway settings save is no longer restored
+
+Outcome:
+- After 0.1.57 the settings-recovery prompt still appeared on every start. The 0.1.58 file listing showed one settings folder holding `ibg.xml` (last written 2026-10-18 23:48, at the nightly restart), the seven weekday backups, and an `ibg.tmp.xml` from the previous run that `run.sh` had saved to `/data` and restored. The Gateway writes `ibg.tmp.xml` during a save; one left behind is a save that never finished. The hourly `SaveTwsSettingsAt` produced no newer `ibg.xml` in the 3.5-hour run before (needs verification against the IBC log).
+- Working hypothesis, **needs verification**: the Gateway treats a leftover `ibg.tmp.xml` as an interrupted save and reports the settings as damaged. Because `rsync` copies without deleting, a saved `ibg.tmp.xml` came back on every start.
+
+Decision:
+- `run.sh` neither restores `ibg.tmp.xml` from `/data` nor copies it there. Copies already in `/data` stay in place and unused; nothing is deleted.
+- If the prompt still appears with no `ibg.tmp.xml` present, `ibg.xml` itself is the next suspect.
