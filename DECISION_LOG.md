@@ -470,3 +470,11 @@ Outcome:
 Decision:
 - `run.sh` neither restores `ibg.tmp.xml` from `/data` nor copies it there. Copies already in `/data` stay in place and unused; nothing is deleted.
 - If the prompt still appears with no `ibg.tmp.xml` present, `ibg.xml` itself is the next suspect.
+
+## 2026-10-20 — Gateway settings prompt: log lines instead of more guesses
+
+Outcome:
+- With 0.1.59 no `ibg.tmp.xml` was present before start and the prompt still appeared. The Gateway saved a clean `ibg.xml` at the 23:48 restart on 2026-10-19; after the next full add-on restart the Gateway still called that file missing. The leftover-file hypothesis is ruled out. The bot trades normally with the prompt open.
+
+Decision:
+- The owner chose to read the Gateway's own logs. `run.sh` prints the settings-related lines from the IBC log and any plain-text Gateway log two minutes after login and after the Gateway stops, masking credentials, account IDs and the folder name. No settings file is changed.
