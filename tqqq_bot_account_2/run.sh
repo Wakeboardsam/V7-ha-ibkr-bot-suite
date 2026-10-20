@@ -198,6 +198,28 @@ report_saved_gateway_settings() {
 }
 report_saved_gateway_settings
 
+# Lists the Gateway's settings files (ibg*.xml) in each settings folder of $2,
+# with size and time, so the log shows which folder the Gateway uses and
+# whether its ibg.xml is there. Folder names are shortened because the Gateway
+# derives them from the login.
+list_gateway_settings_files() {
+    local label="$1" dir="$2" folder files found=false
+    echo "[Gateway settings] ${label}:"
+    for folder in "$dir"/*/; do
+        [ -d "$folder" ] || continue
+        files=$(find "$folder" -maxdepth 1 -name 'ibg*.xml' -printf '%f %s bytes %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | sort)
+        [ -n "$files" ] || continue
+        folder=$(basename "$folder")
+        echo "  folder ${folder:0:6}...:"
+        echo "$files" | sed 's/^/    /'
+        found=true
+    done
+    if [ "$found" != "true" ]; then
+        echo "  no ibg*.xml files"
+    fi
+}
+list_gateway_settings_files "Before the Gateway starts" "${ACTIVE_JTS_DIR}"
+
 if [ ! -f "$IBC_TEMPLATE_FILE" ]; then
     echo "ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
     exit 1
@@ -282,6 +304,7 @@ shutdown_handler() {
     # The Gateway may write its settings as it closes, after the last periodic
     # copy, so copy them once more now that it has stopped.
     if [ -n "${IBC_PID:-}" ]; then
+        list_gateway_settings_files "After the Gateway stopped" "${ACTIVE_JTS_DIR}"
         echo "Saving Gateway settings to /data before stopping."
         sync_gateway_settings
     fi
@@ -382,6 +405,7 @@ fi
 echo "Gateway port is ready; running initial persistent settings sync."
 sync_gateway_settings
 echo "Initial Gateway settings sync complete."
+list_gateway_settings_files "After login" "${ACTIVE_JTS_DIR}"
 
 # Start the background sync loop AFTER gateway is ready
 start_persistence_loop &

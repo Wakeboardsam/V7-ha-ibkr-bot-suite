@@ -35,7 +35,8 @@ def test_settings_are_copied_once_more_after_the_gateway_stops():
     final_copy = handler.index("sync_gateway_settings")
     assert gateway_stopped < final_copy
     # Only when the Gateway was started: during the weekend shutdown nothing changed.
-    assert 'if [ -n "${IBC_PID:-}" ]; then\n        echo "Saving Gateway settings' in handler
+    assert 'if [ -n "${IBC_PID:-}" ]; then\n        list_gateway_settings_files "After the Gateway stopped"' in handler
+    assert handler.index('echo "Saving Gateway settings') < final_copy
 
 
 def test_home_assistant_waits_for_the_final_copy():
@@ -69,3 +70,45 @@ def test_startup_reports_whether_the_settings_file_came_back(tmp_path, with_sett
     assert expected in out
     assert "Saved settings size: " in out
     assert "encodedfolder" not in out
+
+
+def run_listing(tmp_path, jts):
+    script = (
+        shell_function("list_gateway_settings_files")
+        + f'list_gateway_settings_files "Before the Gateway starts" "{jts}"'
+    )
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+
+
+def test_listing_shows_each_settings_folder_with_its_files(tmp_path):
+    jts = tmp_path / "Jts"
+    current = jts / "gcfpedoofahkknlgmede"
+    other = jts / "abcdefghijklmnop"
+    current.mkdir(parents=True)
+    other.mkdir()
+    (current / "ibg.Mon.xml").write_text("<backup/>")
+    (other / "ibg.xml").write_text("<settings/>")
+    (jts / "ibgateway").mkdir()
+    out = run_listing(tmp_path, jts)
+    assert out.startswith("[Gateway settings] Before the Gateway starts:\n")
+    assert "  folder gcfped...:\n    ibg.Mon.xml 9 bytes " in out
+    assert "  folder abcdef...:\n    ibg.xml 11 bytes " in out
+    # Full folder names come from the login and stay out of the log.
+    assert "gcfpedoofahkknlgmede" not in out
+    assert "ibgateway" not in out
+
+
+def test_listing_says_when_there_are_no_settings_files(tmp_path):
+    jts = tmp_path / "Jts"
+    jts.mkdir()
+    assert "  no ibg*.xml files" in run_listing(tmp_path, jts)
+
+
+def test_listing_runs_before_start_after_login_and_after_stop():
+    text = run_sh_text()
+    before = text.index('list_gateway_settings_files "Before the Gateway starts"')
+    assert before < text.index("/opt/ibc/gatewaystart.sh")
+    after_login = text.index('list_gateway_settings_files "After login"')
+    assert text.index('echo "Initial Gateway settings sync complete."') < after_login
+    handler = shell_function("shutdown_handler")
+    assert handler.index('list_gateway_settings_files "After the Gateway stopped"') < handler.index("sync_gateway_settings")
