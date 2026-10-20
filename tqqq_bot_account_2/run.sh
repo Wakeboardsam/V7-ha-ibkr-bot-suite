@@ -224,6 +224,43 @@ list_gateway_settings_files() {
 }
 list_gateway_settings_files "Before the Gateway starts" "${ACTIVE_JTS_DIR}"
 
+# Prints the settings-related lines from the IBC log and from any plain-text
+# Gateway log, to find why the Gateway rejects its saved ibg.xml. Credentials,
+# account IDs and the login-derived folder name are masked. Gateway logs that
+# are not plain text are only listed.
+print_gateway_settings_log_lines() {
+    local label="$1" log_file name lines
+    echo "[Gateway logs] ${label}: settings-related lines"
+    for log_file in "${ACTIVE_IBC_DIR}"/logs/*.txt "${ACTIVE_JTS_DIR}"/*.log "${ACTIVE_JTS_DIR}"/*/*.log; do
+        [ -f "$log_file" ] || continue
+        name="${log_file#"${ACTIVE_JTS_DIR}"/}"
+        name="${name#"${ACTIVE_IBC_DIR}"/}"
+        name=$(echo "$name" | sed -E 's#^[a-z]{20,}/#<folder>/#')
+        if [ ! -s "$log_file" ]; then
+            echo "  ${name}: empty"
+            continue
+        fi
+        if ! grep -Iq . "$log_file"; then
+            echo "  ${name}: not plain text ($(wc -c < "$log_file") bytes)"
+            continue
+        fi
+        lines=$(grep -iE 'ibg\.|settings|corrupt|xml' "$log_file" | tail -n 40 | \
+            sed -E 's/(password|IbPassword)[=:][^ ]*/\1=****/Ig' | \
+            sed -E 's/(username|IbLoginId)[=:][^ ]*/\1=****/Ig' | \
+            sed -E 's/[DU][0-9]{5,}/****/g' | \
+            sed -E 's#/[a-z]{20,}/#/<folder>/#g')
+        if [ -n "${IBKR_USERNAME:-}" ]; then
+            lines="${lines//"$IBKR_USERNAME"/****}"
+        fi
+        if [ -z "$lines" ]; then
+            echo "  ${name}: no matching lines"
+        else
+            echo "  ${name}:"
+            echo "$lines" | sed 's/^/    /'
+        fi
+    done
+}
+
 if [ ! -f "$IBC_TEMPLATE_FILE" ]; then
     echo "ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
     exit 1
@@ -278,6 +315,10 @@ shutdown_handler() {
         kill -TERM "$PERSISTENCE_PID"
     fi
 
+    if [ -n "${LOG_REPORT_PID:-}" ] && kill -0 "$LOG_REPORT_PID" 2>/dev/null; then
+        kill -TERM "$LOG_REPORT_PID"
+    fi
+
     if [ -n "${BOT_PID:-}" ] && kill -0 "$BOT_PID" 2>/dev/null; then
         kill -TERM "$BOT_PID"
     fi
@@ -310,6 +351,7 @@ shutdown_handler() {
     # copy, so copy them once more now that it has stopped.
     if [ -n "${IBC_PID:-}" ]; then
         list_gateway_settings_files "After the Gateway stopped" "${ACTIVE_JTS_DIR}"
+        print_gateway_settings_log_lines "After the Gateway stopped"
         echo "Saving Gateway settings to /data before stopping."
         sync_gateway_settings
     fi
@@ -419,6 +461,11 @@ PERSISTENCE_PID=$!
 echo "Gateway is ready! Starting the Python bot runtime..."
 python -m main &
 BOT_PID=$!
+
+# The settings prompt opens shortly after login, so its log lines are read a
+# couple of minutes later.
+(sleep 120; print_gateway_settings_log_lines "Two minutes after login") &
+LOG_REPORT_PID=$!
 
 set +e
 wait "$BOT_PID"

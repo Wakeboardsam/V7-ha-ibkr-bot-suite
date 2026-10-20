@@ -139,3 +139,50 @@ def test_a_half_written_settings_save_is_not_copied_to_data(tmp_path):
     saved = persist / "gcfpedoofahkknlgmede"
     assert (saved / "ibg.xml").read_text() == "<settings/>"
     assert not (saved / "ibg.tmp.xml").exists()
+
+
+def run_log_report(tmp_path, username="realuser"):
+    jts = tmp_path / "Jts"
+    ibc = tmp_path / "ibc"
+    script = (
+        f'ACTIVE_JTS_DIR="{jts}"; ACTIVE_IBC_DIR="{ibc}"; IBKR_USERNAME="{username}"\n'
+        + shell_function("print_gateway_settings_log_lines")
+        + 'print_gateway_settings_log_lines "Two minutes after login"'
+    )
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+
+
+def test_log_report_prints_settings_lines_with_secrets_masked(tmp_path):
+    folder = tmp_path / "Jts" / "gcfpedoofahkknlgmedekopoh"
+    folder.mkdir(parents=True)
+    logs = tmp_path / "ibc" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "ibc-3.23.0_GATEWAY-1019_Tuesday.txt").write_text(
+        "Loading settings for realuser\n"
+        "settings check IbPassword=secret123\n"
+        "Saving Tws settings\n"
+        "Could not read /root/Jts/gcfpedoofahkknlgmedekopoh/ibg.xml for U1234567\n"
+        "unrelated line\n"
+    )
+    (folder / "ibgateway.Tue.log").write_bytes(b"\x00\x01\x02binary")
+    (tmp_path / "Jts" / "launcher.log").write_text("starting\n")
+    out = run_log_report(tmp_path)
+    assert out.startswith("[Gateway logs] Two minutes after login: settings-related lines\n")
+    assert "  logs/ibc-3.23.0_GATEWAY-1019_Tuesday.txt:\n    Loading settings for ****\n" in out
+    assert "    Saving Tws settings\n" in out
+    assert "/root/Jts/<folder>/ibg.xml for ****" in out
+    assert "    Loading settings for ****\n" in out
+    assert "    settings check IbPassword=****\n" in out
+    assert "  <folder>/ibgateway.Tue.log: not plain text (9 bytes)" in out
+    assert "  launcher.log: no matching lines" in out
+    for secret in ("secret123", "realuser", "U1234567", "gcfpedoofahkknlgmedekopoh", "unrelated line"):
+        assert secret not in out
+
+
+def test_log_report_runs_after_login_and_after_stop():
+    text = run_sh_text()
+    assert '(sleep 120; print_gateway_settings_log_lines "Two minutes after login") &' in text
+    assert text.index('BOT_PID=$!') < text.index('print_gateway_settings_log_lines "Two minutes after login"')
+    handler = shell_function("shutdown_handler")
+    assert 'kill -TERM "$LOG_REPORT_PID"' in handler
+    assert handler.index('print_gateway_settings_log_lines "After the Gateway stopped"') < handler.index("sync_gateway_settings")
