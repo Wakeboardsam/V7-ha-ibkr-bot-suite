@@ -489,3 +489,13 @@ Outcome:
 Decision:
 - `SaveTwsSettingsAt` is removed from the IBC template; this replaces the hourly-save choice in the 2026-10-19 entry. The copy after the Gateway stops and the 300-second copy stay.
 - Before the Gateway starts, `run.sh` prints 8-character SHA-256 fingerprints of the hostname, `/etc/machine-id` and network addresses, and whether each `ibg.xml` is plain XML. Values are not printed. No settings file and no machine identity is changed.
+
+## 2026-10-21 — Gateway settings prompt: accepted as a Gateway issue; diagnostics removed
+
+Outcome:
+- With 0.1.62 the hostname and `/etc/machine-id` fingerprints stayed the same between two add-on starts, and the prompt appeared both times. It also appeared at the nightly in-container Gateway restart at 2026-10-20 23:48: the Gateway wrote `ibg.xml` while closing, then about 20 seconds later reported that same file as missing. `ibg.xml` is not plain XML (encrypted or binary). The machine-identity hypothesis is ruled out. The Gateway cannot load its own encrypted settings file, which `run.sh` cannot fix by copying files. "Don't display this message again" and "reset to default" do not stick, because they are stored in the same file. Trading is unaffected.
+
+Decision:
+- The owner chose to clean up rather than have the add-on click the prompt away; no Gateway prompt is answered automatically.
+- Removed: the `ibg*.xml` file listings, the `[Gateway logs]` report and the machine-identity block added in 0.1.58–0.1.62.
+- Kept: the settings restore (without `ibg.tmp.xml`), the 300-second copy, the copy after the Gateway stops, `timeout: 60`, and the one-line startup report. The prompt is documented as a known issue in `README.md`.
