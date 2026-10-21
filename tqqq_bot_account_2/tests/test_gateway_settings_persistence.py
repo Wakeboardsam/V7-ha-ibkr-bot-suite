@@ -99,3 +99,14 @@ def test_a_half_written_settings_save_is_not_copied_to_data(tmp_path):
     saved = persist / "gcfpedoofahkknlgmede"
     assert (saved / "ibg.xml").read_text() == "<settings/>"
     assert not (saved / "ibg.tmp.xml").exists()
+
+
+def test_the_ibc_config_with_the_password_is_not_copied_to_data():
+    text = run_sh_text()
+    assert 'cp "${IBC_CONFIG_FILE}"' not in text
+    # Versions before 0.1.64 left a copy there; it is removed before the Gateway starts.
+    assert text.index("rm -f /data/ibgateway/config.ini") < text.index("/opt/ibc/gatewaystart.sh")
+
+
+def test_xdotool_is_not_installed():
+    assert "xdotool" not in (ADDON_DIR / "Dockerfile").read_text()

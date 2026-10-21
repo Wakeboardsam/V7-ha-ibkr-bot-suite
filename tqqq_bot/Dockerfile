@@ -17,7 +17,6 @@ RUN apt-get update && apt-get install -y \
     gettext-base \
     x11vnc \
     xvfb \
-    xdotool \
     bash \
     rsync \
     && rm -rf /var/lib/apt/lists/*
