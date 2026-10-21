@@ -37,7 +37,7 @@ def test_settings_are_copied_once_more_after_the_gateway_stops():
     final_copy = handler.index("sync_gateway_settings")
     assert gateway_stopped < final_copy
     # Only when the Gateway was started: during the weekend shutdown nothing changed.
-    assert 'if [ -n "${IBC_PID:-}" ]; then\n        list_gateway_settings_files "After the Gateway stopped"' in handler
+    assert 'if [ -n "${IBC_PID:-}" ]; then\n        echo "Saving Gateway settings' in handler
     assert handler.index('echo "Saving Gateway settings') < final_copy
 
 
@@ -74,61 +74,6 @@ def test_startup_reports_whether_the_settings_file_came_back(tmp_path, with_sett
     assert "encodedfolder" not in out
 
 
-def run_listing(tmp_path, jts):
-    script = (
-        "set -euo pipefail\n"
-        + shell_function("list_gateway_settings_files")
-        + f'list_gateway_settings_files "Before the Gateway starts" "{jts}"'
-    )
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
-
-
-def test_listing_shows_each_settings_folder_with_its_files(tmp_path):
-    jts = tmp_path / "Jts"
-    current = jts / "gcfpedoofahkknlgmede"
-    other = jts / "abcdefghijklmnop"
-    current.mkdir(parents=True)
-    other.mkdir()
-    (current / "ibg.Mon.xml").write_text("<backup/>")
-    (other / "ibg.xml").write_text("<settings/>")
-    (jts / "ibgateway").mkdir()
-    out = run_listing(tmp_path, jts)
-    assert out.startswith("[Gateway settings] Before the Gateway starts:\n")
-    assert "  folder gcfped...:\n    ibg.Mon.xml 9 bytes " in out
-    assert "  folder abcdef...:\n    ibg.xml 11 bytes " in out
-    assert "  no ibg*.xml files" not in out
-    # Full folder names come from the login and stay out of the log.
-    assert "gcfpedoofahkknlgmede" not in out
-    assert "ibgateway" not in out
-
-
-def test_listing_shows_folders_without_settings_files(tmp_path):
-    jts = tmp_path / "Jts"
-    (jts / "gcfpedoofahkknlgmede").mkdir(parents=True)
-    (jts / "zyxwvutsrqponmlkjihg").mkdir()
-    (jts / "zyxwvutsrqponmlkjihg" / "ibg.xml").write_text("<settings/>")
-    out = run_listing(tmp_path, jts)
-    assert "  folder gcfped...: no ibg*.xml files\n" in out
-    assert "  folder zyxwvu...:\n    ibg.xml 11 bytes " in out
-    assert "gcfpedoofahkknlgmede" not in out
-
-
-def test_listing_says_when_there_are_no_settings_files(tmp_path):
-    jts = tmp_path / "Jts"
-    jts.mkdir()
-    assert "  no ibg*.xml files" in run_listing(tmp_path, jts)
-
-
-def test_listing_runs_before_start_after_login_and_after_stop():
-    text = run_sh_text()
-    before = text.index('list_gateway_settings_files "Before the Gateway starts"')
-    assert before < text.index("/opt/ibc/gatewaystart.sh")
-    after_login = text.index('list_gateway_settings_files "After login"')
-    assert text.index('echo "Initial Gateway settings sync complete."') < after_login
-    handler = shell_function("shutdown_handler")
-    assert handler.index('list_gateway_settings_files "After the Gateway stopped"') < handler.index("sync_gateway_settings")
-
-
 def test_a_half_written_settings_save_is_not_restored():
     restore = next(line for line in run_sh_text().splitlines()
                    if line.startswith('rsync -a') and '"${PERSIST_JTS_DIR}/" "${ACTIVE_JTS_DIR}/"' in line)
@@ -154,111 +99,3 @@ def test_a_half_written_settings_save_is_not_copied_to_data(tmp_path):
     saved = persist / "gcfpedoofahkknlgmede"
     assert (saved / "ibg.xml").read_text() == "<settings/>"
     assert not (saved / "ibg.tmp.xml").exists()
-
-
-def run_log_report(tmp_path, username="realuser"):
-    jts = tmp_path / "Jts"
-    ibc = tmp_path / "ibc"
-    script = (
-        # run.sh runs with these options, under which a grep that matches
-        # nothing must not end the report.
-        "set -euo pipefail\n"
-        + f'ACTIVE_JTS_DIR="{jts}"; ACTIVE_IBC_DIR="{ibc}"; IBKR_USERNAME="{username}"\n'
-        + shell_function("print_gateway_settings_log_lines")
-        + 'print_gateway_settings_log_lines "Two minutes after login"'
-    )
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
-
-
-def test_log_report_prints_settings_lines_with_secrets_masked(tmp_path):
-    folder = tmp_path / "Jts" / "gcfpedoofahkknlgmedekopoh"
-    folder.mkdir(parents=True)
-    logs = tmp_path / "ibc" / "logs"
-    logs.mkdir(parents=True)
-    (logs / "README.txt").write_text("This folder holds the IBC logs.\n")
-    (logs / "ibc-3.23.0_GATEWAY-1019_Tuesday.txt").write_text(
-        "Loading settings for realuser\n"
-        "settings check IbPassword=secret123\n"
-        "Saving Tws settings\n"
-        "Could not read /root/Jts/gcfpedoofahkknlgmedekopoh/ibg.xml for U1234567\n"
-        "unrelated line\n"
-    )
-    (folder / "ibgateway.Tue.log").write_bytes(b"\x00\x01\x02binary")
-    (tmp_path / "Jts" / "launcher.log").write_text("starting\n")
-    out = run_log_report(tmp_path)
-    assert out.startswith("[Gateway logs] Two minutes after login: settings-related lines\n")
-    assert "  logs/ibc-3.23.0_GATEWAY-1019_Tuesday.txt:\n    Loading settings for ****\n" in out
-    assert "    Saving Tws settings\n" in out
-    assert "  logs/README.txt: no matching lines\n" in out
-    assert "/root/Jts/gcfped.../ibg.xml for ****" in out
-    assert "    Loading settings for ****\n" in out
-    assert "    settings check IbPassword=****\n" in out
-    assert "  gcfped.../ibgateway.Tue.log: not plain text (9 bytes)" in out
-    assert "  launcher.log: no matching lines" in out
-    for secret in ("secret123", "realuser", "U1234567", "gcfpedoofahkknlgmedekopoh", "unrelated line"):
-        assert secret not in out
-
-
-def test_log_report_runs_after_login_and_after_stop():
-    text = run_sh_text()
-    assert '(sleep 120; print_gateway_settings_log_lines "Two minutes after login") &' in text
-    assert text.index('BOT_PID=$!') < text.index('print_gateway_settings_log_lines "Two minutes after login"')
-    handler = shell_function("shutdown_handler")
-    assert 'kill -TERM "$LOG_REPORT_PID"' in handler
-    assert handler.index('print_gateway_settings_log_lines "After the Gateway stopped"') < handler.index("sync_gateway_settings")
-
-
-def run_identity_report(tmp_path, hostname="addon-host"):
-    jts = tmp_path / "Jts"
-    jts.mkdir(exist_ok=True)
-    script = (
-        "set -euo pipefail\n"
-        + f'HOSTNAME="{hostname}"\n'
-        + shell_function("fingerprint")
-        + shell_function("print_gateway_machine_identity")
-        + f'print_gateway_machine_identity "{jts}" "{tmp_path / "etc"}" "{tmp_path / "net"}"'
-    )
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
-
-
-def test_identity_report_prints_fingerprints_not_values(tmp_path):
-    (tmp_path / "etc").mkdir()
-    (tmp_path / "etc" / "machine-id").write_text("0123456789abcdef0123456789abcdef\n")
-    for name, address in (("lo", "00:00:00:00:00:00"), ("eth0", "02:42:ac:11:00:02")):
-        (tmp_path / "net" / name).mkdir(parents=True)
-        (tmp_path / "net" / name / "address").write_text(address + "\n")
-    out = run_identity_report(tmp_path)
-    assert out.startswith("[Gateway settings] Machine identity (short fingerprints; compare them between restarts):\n")
-    assert re.search(r"^  hostname: [0-9a-f]{8}$", out, re.M)
-    assert re.search(r"^  machine-id: [0-9a-f]{8}$", out, re.M)
-    assert re.search(r"^  network addresses: [0-9a-f]{8}$", out, re.M)
-    for value in ("addon-host", "0123456789abcdef", "02:42:ac:11:00:02"):
-        assert value not in out
-    # The same machine gives the same fingerprints.
-    assert run_identity_report(tmp_path) == out
-    assert run_identity_report(tmp_path, hostname="other-host") != out
-
-
-def test_identity_report_says_none_when_an_identity_is_missing(tmp_path):
-    out = run_identity_report(tmp_path, hostname="")
-    assert "  hostname: none\n" in out
-    assert "  machine-id: none\n" in out
-    assert "  network addresses: none\n" in out
-
-
-def test_identity_report_says_whether_ibg_xml_is_plain_xml(tmp_path):
-    jts = tmp_path / "Jts"
-    (jts / "gcfpedoofahkknlgmede").mkdir(parents=True)
-    (jts / "gcfpedoofahkknlgmede" / "ibg.xml").write_text('<?xml version="1.0"?><settings/>')
-    (jts / "zyxwvutsrqponmlkjihg").mkdir()
-    (jts / "zyxwvutsrqponmlkjihg" / "ibg.xml").write_bytes(b"\x8f\x02scrambled")
-    (jts / "ibgateway").mkdir()
-    out = run_identity_report(tmp_path)
-    assert "  folder gcfped...: ibg.xml is plain XML\n" in out
-    assert "  folder zyxwvu...: ibg.xml is not plain XML (encrypted or binary)\n" in out
-    assert "gcfpedoofahkknlgmede" not in out
-
-
-def test_identity_report_runs_before_the_gateway_starts():
-    text = run_sh_text()
-    assert text.index('print_gateway_machine_identity "${ACTIVE_JTS_DIR}"') < text.index("/opt/ibc/gatewaystart.sh")

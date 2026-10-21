@@ -202,107 +202,6 @@ report_saved_gateway_settings() {
 }
 report_saved_gateway_settings
 
-# Lists the Gateway's settings files (ibg*.xml) in each settings folder of $2,
-# with size and time, so the log shows which folder the Gateway uses and
-# whether its ibg.xml is there. Folders without settings files are listed too.
-# Folder names are shortened because the Gateway derives them from the login.
-list_gateway_settings_files() {
-    local label="$1" dir="$2" folder files found=false
-    echo "[Gateway settings] ${label}:"
-    for folder in "$dir"/*/; do
-        [ -d "$folder" ] || continue
-        files=$(find "$folder" -maxdepth 1 -name 'ibg*.xml' -printf '%f %s bytes %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | sort)
-        folder=$(basename "$folder")
-        # ibgateway holds the Gateway program, not settings.
-        [ "$folder" != "ibgateway" ] || continue
-        if [ -z "$files" ]; then
-            echo "  folder ${folder:0:6}...: no ibg*.xml files"
-            continue
-        fi
-        echo "  folder ${folder:0:6}...:"
-        echo "$files" | sed 's/^/    /'
-        found=true
-    done
-    if [ "$found" != "true" ]; then
-        echo "  no ibg*.xml files"
-    fi
-}
-list_gateway_settings_files "Before the Gateway starts" "${ACTIVE_JTS_DIR}"
-
-# Prints the first 8 characters of the SHA-256 of $1, or "none" when $1 is empty.
-fingerprint() {
-    if [ -z "$1" ]; then
-        echo "none"
-    else
-        printf '%s' "$1" | sha256sum | cut -c1-8
-    fi
-}
-
-# Prints short fingerprints of the container's machine identity and whether
-# each ibg.xml is plain XML, to test whether the Gateway's settings are tied to
-# a machine identity that changes when the add-on container is rebuilt. Only
-# fingerprints are printed, never the values.
-print_gateway_machine_identity() {
-    local jts_dir="$1" etc_dir="${2:-/etc}" net_dir="${3:-/sys/class/net}" folder file first macs
-    echo "[Gateway settings] Machine identity (short fingerprints; compare them between restarts):"
-    echo "  hostname: $(fingerprint "${HOSTNAME:-}")"
-    echo "  machine-id: $(fingerprint "$(cat "${etc_dir}/machine-id" 2>/dev/null || true)")"
-    macs=$( (cat "${net_dir}"/*/address 2>/dev/null || true) | (grep -v '^00:00:00:00:00:00$' || true) | sort)
-    echo "  network addresses: $(fingerprint "$macs")"
-    for folder in "$jts_dir"/*/; do
-        file="${folder}ibg.xml"
-        [ -f "$file" ] || continue
-        folder=$(basename "$folder")
-        first=$(head -c 1 "$file")
-        if [ "$first" = "<" ]; then
-            echo "  folder ${folder:0:6}...: ibg.xml is plain XML"
-        else
-            echo "  folder ${folder:0:6}...: ibg.xml is not plain XML (encrypted or binary)"
-        fi
-    done
-}
-print_gateway_machine_identity "${ACTIVE_JTS_DIR}"
-
-# Prints the settings-related lines from the IBC log and from any plain-text
-# Gateway log, to find why the Gateway rejects its saved ibg.xml. Credentials
-# and account IDs are masked, and the login-derived folder name is shortened to
-# six characters, as in list_gateway_settings_files. Gateway logs that
-# are not plain text are only listed.
-print_gateway_settings_log_lines() {
-    local label="$1" log_file name lines
-    echo "[Gateway logs] ${label}: settings-related lines"
-    for log_file in "${ACTIVE_IBC_DIR}"/logs/*.txt "${ACTIVE_JTS_DIR}"/*.log "${ACTIVE_JTS_DIR}"/*/*.log; do
-        [ -f "$log_file" ] || continue
-        name="${log_file#"${ACTIVE_JTS_DIR}"/}"
-        name="${name#"${ACTIVE_IBC_DIR}"/}"
-        name=$(echo "$name" | sed -E 's#^([a-z]{6})[a-z]{14,}/#\1.../#')
-        if [ ! -s "$log_file" ]; then
-            echo "  ${name}: empty"
-            continue
-        fi
-        if ! grep -Iq . "$log_file"; then
-            echo "  ${name}: not plain text ($(wc -c < "$log_file") bytes)"
-            continue
-        fi
-        # A log with no matching lines is normal, so grep's exit status must
-        # not stop the report under set -e and pipefail.
-        lines=$( (grep -iE 'ibg\.|settings|corrupt|xml' "$log_file" || true) | tail -n 40 | \
-            sed -E 's/(password|IbPassword)[=:][^ ]*/\1=****/Ig' | \
-            sed -E 's/(username|IbLoginId)[=:][^ ]*/\1=****/Ig' | \
-            sed -E 's/[DU][0-9]{5,}/****/g' | \
-            sed -E 's#/([a-z]{6})[a-z]{14,}/#/\1.../#g')
-        if [ -n "${IBKR_USERNAME:-}" ]; then
-            lines="${lines//"$IBKR_USERNAME"/****}"
-        fi
-        if [ -z "$lines" ]; then
-            echo "  ${name}: no matching lines"
-        else
-            echo "  ${name}:"
-            echo "$lines" | sed 's/^/    /'
-        fi
-    done
-}
-
 if [ ! -f "$IBC_TEMPLATE_FILE" ]; then
     echo "ERROR: IBC template not found at ${IBC_TEMPLATE_FILE}"
     exit 1
@@ -357,10 +256,6 @@ shutdown_handler() {
         kill -TERM "$PERSISTENCE_PID"
     fi
 
-    if [ -n "${LOG_REPORT_PID:-}" ] && kill -0 "$LOG_REPORT_PID" 2>/dev/null; then
-        kill -TERM "$LOG_REPORT_PID"
-    fi
-
     if [ -n "${BOT_PID:-}" ] && kill -0 "$BOT_PID" 2>/dev/null; then
         kill -TERM "$BOT_PID"
     fi
@@ -392,8 +287,6 @@ shutdown_handler() {
     # The Gateway may write its settings as it closes, after the last periodic
     # copy, so copy them once more now that it has stopped.
     if [ -n "${IBC_PID:-}" ]; then
-        list_gateway_settings_files "After the Gateway stopped" "${ACTIVE_JTS_DIR}"
-        print_gateway_settings_log_lines "After the Gateway stopped"
         echo "Saving Gateway settings to /data before stopping."
         sync_gateway_settings
     fi
@@ -494,7 +387,6 @@ fi
 echo "Gateway port is ready; running initial persistent settings sync."
 sync_gateway_settings
 echo "Initial Gateway settings sync complete."
-list_gateway_settings_files "After login" "${ACTIVE_JTS_DIR}"
 
 # Start the background sync loop AFTER gateway is ready
 start_persistence_loop &
@@ -503,11 +395,6 @@ PERSISTENCE_PID=$!
 echo "Gateway is ready! Starting the Python bot runtime..."
 python -m main &
 BOT_PID=$!
-
-# The settings prompt opens shortly after login, so its log lines are read a
-# couple of minutes later.
-(sleep 120; print_gateway_settings_log_lines "Two minutes after login") &
-LOG_REPORT_PID=$!
 
 set +e
 wait "$BOT_PID"
