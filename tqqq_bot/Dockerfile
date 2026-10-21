@@ -46,10 +46,6 @@ RUN wget -q https://github.com/IbcAlpha/IBC/releases/download/3.23.0/IBCLinux-3.
     && (chmod +x /opt/ibc/scripts/*.sh /opt/ibc/*.sh 2>/dev/null || true) \
     && rm IBCLinux-3.23.0.zip
 
-RUN sed -i 's/xterm.*-e //' /opt/ibc/gatewaystart.sh
-RUN ! grep -q "xterm" /opt/ibc/gatewaystart.sh
-RUN sed -i 's|^JAVA_PATH=.*|JAVA_PATH=/opt/ibgateway_jre/bin|' /opt/ibc/gatewaystart.sh
-
 # Verify preserved JRE execution
 RUN /opt/ibgateway_jre/bin/java -version
 
