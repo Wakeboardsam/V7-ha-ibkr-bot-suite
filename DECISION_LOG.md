@@ -478,3 +478,14 @@ Outcome:
 
 Decision:
 - The owner chose to read the Gateway's own logs. `run.sh` prints the settings-related lines from the IBC log and any plain-text Gateway log two minutes after login and after the Gateway stops, masking credentials, account IDs and the folder name. No settings file is changed.
+
+## 2026-10-21 — Hourly Gateway settings save removed; machine identity logged
+
+Outcome:
+- The 0.1.61 log showed the Gateway checks the same settings folder `run.sh` restores, with `ibg.xml` present there, and still reports "File does not exist" for it after a full add-on restart.
+- IBC logged "Saving Tws settings" at 21:00 on 2026-10-20, but `ibg.xml` kept its 2026-10-19 23:48 time. The scheduled File > Save Settings does not write `ibg.xml` for the Gateway; only the nightly restart does.
+- Working hypothesis, **needs verification**: the Gateway cannot read settings written under a different machine identity, which changes when the add-on container is rebuilt, and reports the file as missing.
+
+Decision:
+- `SaveTwsSettingsAt` is removed from the IBC template; this replaces the hourly-save choice in the 2026-10-19 entry. The copy after the Gateway stops and the 300-second copy stay.
+- Before the Gateway starts, `run.sh` prints 8-character SHA-256 fingerprints of the hostname, `/etc/machine-id` and network addresses, and whether each `ibg.xml` is plain XML. Values are not printed. No settings file and no machine identity is changed.
