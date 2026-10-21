@@ -204,16 +204,21 @@ report_saved_gateway_settings
 
 # Lists the Gateway's settings files (ibg*.xml) in each settings folder of $2,
 # with size and time, so the log shows which folder the Gateway uses and
-# whether its ibg.xml is there. Folder names are shortened because the Gateway
-# derives them from the login.
+# whether its ibg.xml is there. Folders without settings files are listed too.
+# Folder names are shortened because the Gateway derives them from the login.
 list_gateway_settings_files() {
     local label="$1" dir="$2" folder files found=false
     echo "[Gateway settings] ${label}:"
     for folder in "$dir"/*/; do
         [ -d "$folder" ] || continue
         files=$(find "$folder" -maxdepth 1 -name 'ibg*.xml' -printf '%f %s bytes %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | sort)
-        [ -n "$files" ] || continue
         folder=$(basename "$folder")
+        # ibgateway holds the Gateway program, not settings.
+        [ "$folder" != "ibgateway" ] || continue
+        if [ -z "$files" ]; then
+            echo "  folder ${folder:0:6}...: no ibg*.xml files"
+            continue
+        fi
         echo "  folder ${folder:0:6}...:"
         echo "$files" | sed 's/^/    /'
         found=true
@@ -225,8 +230,9 @@ list_gateway_settings_files() {
 list_gateway_settings_files "Before the Gateway starts" "${ACTIVE_JTS_DIR}"
 
 # Prints the settings-related lines from the IBC log and from any plain-text
-# Gateway log, to find why the Gateway rejects its saved ibg.xml. Credentials,
-# account IDs and the login-derived folder name are masked. Gateway logs that
+# Gateway log, to find why the Gateway rejects its saved ibg.xml. Credentials
+# and account IDs are masked, and the login-derived folder name is shortened to
+# six characters, as in list_gateway_settings_files. Gateway logs that
 # are not plain text are only listed.
 print_gateway_settings_log_lines() {
     local label="$1" log_file name lines
@@ -235,7 +241,7 @@ print_gateway_settings_log_lines() {
         [ -f "$log_file" ] || continue
         name="${log_file#"${ACTIVE_JTS_DIR}"/}"
         name="${name#"${ACTIVE_IBC_DIR}"/}"
-        name=$(echo "$name" | sed -E 's#^[a-z]{20,}/#<folder>/#')
+        name=$(echo "$name" | sed -E 's#^([a-z]{6})[a-z]{14,}/#\1.../#')
         if [ ! -s "$log_file" ]; then
             echo "  ${name}: empty"
             continue
@@ -244,11 +250,13 @@ print_gateway_settings_log_lines() {
             echo "  ${name}: not plain text ($(wc -c < "$log_file") bytes)"
             continue
         fi
-        lines=$(grep -iE 'ibg\.|settings|corrupt|xml' "$log_file" | tail -n 40 | \
+        # A log with no matching lines is normal, so grep's exit status must
+        # not stop the report under set -e and pipefail.
+        lines=$( (grep -iE 'ibg\.|settings|corrupt|xml' "$log_file" || true) | tail -n 40 | \
             sed -E 's/(password|IbPassword)[=:][^ ]*/\1=****/Ig' | \
             sed -E 's/(username|IbLoginId)[=:][^ ]*/\1=****/Ig' | \
             sed -E 's/[DU][0-9]{5,}/****/g' | \
-            sed -E 's#/[a-z]{20,}/#/<folder>/#g')
+            sed -E 's#/([a-z]{6})[a-z]{14,}/#/\1.../#g')
         if [ -n "${IBKR_USERNAME:-}" ]; then
             lines="${lines//"$IBKR_USERNAME"/****}"
         fi
