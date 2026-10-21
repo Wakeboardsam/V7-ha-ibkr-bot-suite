@@ -352,10 +352,9 @@ echo "Starting IB Gateway via IBC..."
 export TWS_MAJOR_VRSN=1019
 export IBC_PATH=/opt/ibc
 
-# Copy the generated config to the persistent /data dir as a diagnostic backup
-mkdir -p /data/ibgateway
-cp "${IBC_CONFIG_FILE}" /data/ibgateway/config.ini
-chmod 600 /data/ibgateway/config.ini
+# Earlier versions copied the rendered IBC config, password included, to /data,
+# where Home Assistant backups pick it up. Nothing reads it, so remove it.
+rm -f /data/ibgateway/config.ini
 
 /opt/ibc/gatewaystart.sh -inline < /dev/null &
 IBC_PID=$!

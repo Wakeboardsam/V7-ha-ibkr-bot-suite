@@ -499,3 +499,13 @@ Decision:
 - The owner chose to clean up rather than have the add-on click the prompt away; no Gateway prompt is answered automatically.
 - Removed: the `ibg*.xml` file listings, the `[Gateway logs]` report and the machine-identity block added in 0.1.58–0.1.62.
 - Kept: the settings restore (without `ibg.tmp.xml`), the 300-second copy, the copy after the Gateway stops, `timeout: 60`, and the one-line startup report. The prompt is documented as a known issue in `README.md`.
+
+## 2026-10-21 — No IBC config copy in /data; xdotool removed
+
+Outcome:
+- `run.sh` copied the rendered IBC config, IBKR password included, to `/data/ibgateway/config.ini` on every start as a "diagnostic backup". Nothing read it, and `/data` is included in Home Assistant backups.
+- `xdotool` was installed in the image but never used; it was left from early attempts to open the Gateway's Configure dialog with clicks and keystrokes. IBC opens that dialog itself after login to apply the API port, read-only flag, precaution bypasses and restart time.
+
+Decision:
+- The owner chose to stop writing the copy and to delete an existing one at startup. Older Home Assistant backups keep whatever they already contain.
+- `xdotool` is removed from both Dockerfiles. No Gateway window is driven by the add-on.
