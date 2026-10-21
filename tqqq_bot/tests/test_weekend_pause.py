@@ -172,7 +172,7 @@ def test_run_sh_uses_the_same_exit_code_as_the_bot():
 
 def test_run_sh_waits_out_the_pause_before_starting_the_gateway():
     text = run_sh_text()
-    assert text.index('PAUSE_SECONDS=$(weekend_pause_seconds_left)') < text.index("/opt/ibc/gatewaystart.sh")
+    assert text.index('PAUSE_SECONDS=$(weekend_pause_seconds_left)') < text.index("/opt/ibc/scripts/displaybannerandlaunch.sh")
     assert text.index("trap 'STOP_REQUESTED=true; shutdown_handler'") < text.index('PAUSE_SECONDS=$(weekend_pause_seconds_left)')
 
 

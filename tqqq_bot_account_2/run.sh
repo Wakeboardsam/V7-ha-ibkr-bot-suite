@@ -111,11 +111,6 @@ export IBKR_USERNAME
 export IBKR_PASSWORD
 export TRADING_MODE
 export JTS_SETTINGS_DIR
-
-# Key V6 / JTS environment variables
-export TWS_PATH="${ACTIVE_JTS_DIR}"
-export TWS_SETTINGS_PATH="${ACTIVE_JTS_DIR}"
-export IBC_INI="${IBC_CONFIG_FILE}"
 export TZ="${TIMEZONE}"
 
 # The page uses 24-hour HH:MM. IBC wants "hh:mm AM/PM" for the daily restart.
@@ -349,14 +344,22 @@ echo "[Gateway] Java runtime version:"
 "$JAVA_BIN" -version
 
 echo "Starting IB Gateway via IBC..."
-export TWS_MAJOR_VRSN=1019
-export IBC_PATH=/opt/ibc
 
 # Earlier versions copied the rendered IBC config, password included, to /data,
 # where Home Assistant backups pick it up. Nothing reads it, so remove it.
 rm -f /data/ibgateway/config.ini
 
-/opt/ibc/gatewaystart.sh -inline < /dev/null &
+# IBC's own launcher: it logs to ${LOG_PATH}/ibc-<version>_GATEWAY-1019_<Weekday>.txt
+# and runs ibcstart.sh, which restarts the Gateway when IBC asks for it. These
+# are the values IBC's gatewaystart.sh used to set. TRADING_MODE and
+# TWS_SETTINGS_PATH stay empty so IBC takes the trading mode from the config
+# file and keeps the settings in TWS_PATH. A 2FA timeout ends IBC; the add-on
+# then waits out the Gateway timeout and exits.
+APP=GATEWAY TWS_MAJOR_VRSN=1019 IBC_PATH=/opt/ibc IBC_INI="${IBC_CONFIG_FILE}" \
+    TWS_PATH="${ACTIVE_JTS_DIR}" TWS_SETTINGS_PATH="" LOG_PATH="${ACTIVE_IBC_DIR}/logs" \
+    JAVA_PATH=/opt/ibgateway_jre/bin TRADING_MODE="" TWOFA_TIMEOUT_ACTION=exit \
+    TWSUSERID="" TWSPASSWORD="" FIXUSERID="" FIXPASSWORD="" \
+    /opt/ibc/scripts/displaybannerandlaunch.sh < /dev/null &
 IBC_PID=$!
 
 tail_recent_ibc_logs_sanitized() {

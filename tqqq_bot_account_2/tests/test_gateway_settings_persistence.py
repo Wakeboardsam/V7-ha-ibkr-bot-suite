@@ -105,7 +105,7 @@ def test_the_ibc_config_with_the_password_is_not_copied_to_data():
     text = run_sh_text()
     assert 'cp "${IBC_CONFIG_FILE}"' not in text
     # Versions before 0.1.64 left a copy there; it is removed before the Gateway starts.
-    assert text.index("rm -f /data/ibgateway/config.ini") < text.index("/opt/ibc/gatewaystart.sh")
+    assert text.index("rm -f /data/ibgateway/config.ini") < text.index("/opt/ibc/scripts/displaybannerandlaunch.sh")
 
 
 def test_xdotool_is_not_installed():

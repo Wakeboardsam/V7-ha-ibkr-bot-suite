@@ -509,3 +509,12 @@ Outcome:
 Decision:
 - The owner chose to stop writing the copy and to delete an existing one at startup. Older Home Assistant backups keep whatever they already contain.
 - `xdotool` is removed from both Dockerfiles. No Gateway window is driven by the add-on.
+
+## 2026-10-21 — Gateway launched without gatewaystart.sh
+
+Outcome:
+- `run.sh` exported launch settings that IBC's `gatewaystart.sh` then overwrote with its own hard-coded values, and the Dockerfile patched `gatewaystart.sh` (`xterm`, `JAVA_PATH`) to make it work.
+- The owner keeps the one-hour Gateway wait: a missed 2FA push is retried about once an hour, through the add-on's exit and Home Assistant's restart, which suits a 09:00–18:00 approval window. Failing fast on an IBC crash was not pursued.
+
+Decision:
+- `run.sh` starts `/opt/ibc/scripts/displaybannerandlaunch.sh` directly with the values `gatewaystart.sh` used to set, including `TWOFA_TIMEOUT_ACTION=exit` and an empty `TRADING_MODE`. A side-by-side run with a stub `ibcstart.sh` gave identical arguments, environment and log file for the old and new launch. The Dockerfile no longer patches `gatewaystart.sh`. Login behavior and timing are unchanged.
