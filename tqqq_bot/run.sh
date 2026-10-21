@@ -229,6 +229,40 @@ list_gateway_settings_files() {
 }
 list_gateway_settings_files "Before the Gateway starts" "${ACTIVE_JTS_DIR}"
 
+# Prints the first 8 characters of the SHA-256 of $1, or "none" when $1 is empty.
+fingerprint() {
+    if [ -z "$1" ]; then
+        echo "none"
+    else
+        printf '%s' "$1" | sha256sum | cut -c1-8
+    fi
+}
+
+# Prints short fingerprints of the container's machine identity and whether
+# each ibg.xml is plain XML, to test whether the Gateway's settings are tied to
+# a machine identity that changes when the add-on container is rebuilt. Only
+# fingerprints are printed, never the values.
+print_gateway_machine_identity() {
+    local jts_dir="$1" etc_dir="${2:-/etc}" net_dir="${3:-/sys/class/net}" folder file first macs
+    echo "[Gateway settings] Machine identity (short fingerprints; compare them between restarts):"
+    echo "  hostname: $(fingerprint "${HOSTNAME:-}")"
+    echo "  machine-id: $(fingerprint "$(cat "${etc_dir}/machine-id" 2>/dev/null || true)")"
+    macs=$( (cat "${net_dir}"/*/address 2>/dev/null || true) | (grep -v '^00:00:00:00:00:00$' || true) | sort)
+    echo "  network addresses: $(fingerprint "$macs")"
+    for folder in "$jts_dir"/*/; do
+        file="${folder}ibg.xml"
+        [ -f "$file" ] || continue
+        folder=$(basename "$folder")
+        first=$(head -c 1 "$file")
+        if [ "$first" = "<" ]; then
+            echo "  folder ${folder:0:6}...: ibg.xml is plain XML"
+        else
+            echo "  folder ${folder:0:6}...: ibg.xml is not plain XML (encrypted or binary)"
+        fi
+    done
+}
+print_gateway_machine_identity "${ACTIVE_JTS_DIR}"
+
 # Prints the settings-related lines from the IBC log and from any plain-text
 # Gateway log, to find why the Gateway rejects its saved ibg.xml. Credentials
 # and account IDs are masked, and the login-derived folder name is shortened to

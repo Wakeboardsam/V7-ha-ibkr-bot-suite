@@ -1,6 +1,6 @@
 """The Gateway's own settings file (ibg.xml) survives add-on restarts.
 
-The Gateway saves its settings on a schedule IBC sets, run.sh copies them to
+The Gateway saves its settings at the nightly restart, run.sh copies them to
 /data every few minutes and once more after the Gateway stops, and Home
 Assistant waits long enough for that last copy.
 """
@@ -24,9 +24,11 @@ def shell_function(name: str) -> str:
     return match.group(0)
 
 
-def test_ibc_has_the_gateway_save_its_settings_every_hour():
+def test_ibc_does_not_schedule_gateway_settings_saves():
+    # IBC's hourly File > Save Settings never updated ibg.xml (0.1.61 log), so
+    # only the nightly restart writes it.
     template = (ADDON_DIR / "gateway" / "ibc_config.ini.template").read_text()
-    assert "SaveTwsSettingsAt=Every 1 hours\n" in template
+    assert "SaveTwsSettingsAt" not in template
 
 
 def test_settings_are_copied_once_more_after_the_gateway_stops():
@@ -204,3 +206,59 @@ def test_log_report_runs_after_login_and_after_stop():
     handler = shell_function("shutdown_handler")
     assert 'kill -TERM "$LOG_REPORT_PID"' in handler
     assert handler.index('print_gateway_settings_log_lines "After the Gateway stopped"') < handler.index("sync_gateway_settings")
+
+
+def run_identity_report(tmp_path, hostname="addon-host"):
+    jts = tmp_path / "Jts"
+    jts.mkdir(exist_ok=True)
+    script = (
+        "set -euo pipefail\n"
+        + f'HOSTNAME="{hostname}"\n'
+        + shell_function("fingerprint")
+        + shell_function("print_gateway_machine_identity")
+        + f'print_gateway_machine_identity "{jts}" "{tmp_path / "etc"}" "{tmp_path / "net"}"'
+    )
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+
+
+def test_identity_report_prints_fingerprints_not_values(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "machine-id").write_text("0123456789abcdef0123456789abcdef\n")
+    for name, address in (("lo", "00:00:00:00:00:00"), ("eth0", "02:42:ac:11:00:02")):
+        (tmp_path / "net" / name).mkdir(parents=True)
+        (tmp_path / "net" / name / "address").write_text(address + "\n")
+    out = run_identity_report(tmp_path)
+    assert out.startswith("[Gateway settings] Machine identity (short fingerprints; compare them between restarts):\n")
+    assert re.search(r"^  hostname: [0-9a-f]{8}$", out, re.M)
+    assert re.search(r"^  machine-id: [0-9a-f]{8}$", out, re.M)
+    assert re.search(r"^  network addresses: [0-9a-f]{8}$", out, re.M)
+    for value in ("addon-host", "0123456789abcdef", "02:42:ac:11:00:02"):
+        assert value not in out
+    # The same machine gives the same fingerprints.
+    assert run_identity_report(tmp_path) == out
+    assert run_identity_report(tmp_path, hostname="other-host") != out
+
+
+def test_identity_report_says_none_when_an_identity_is_missing(tmp_path):
+    out = run_identity_report(tmp_path, hostname="")
+    assert "  hostname: none\n" in out
+    assert "  machine-id: none\n" in out
+    assert "  network addresses: none\n" in out
+
+
+def test_identity_report_says_whether_ibg_xml_is_plain_xml(tmp_path):
+    jts = tmp_path / "Jts"
+    (jts / "gcfpedoofahkknlgmede").mkdir(parents=True)
+    (jts / "gcfpedoofahkknlgmede" / "ibg.xml").write_text('<?xml version="1.0"?><settings/>')
+    (jts / "zyxwvutsrqponmlkjihg").mkdir()
+    (jts / "zyxwvutsrqponmlkjihg" / "ibg.xml").write_bytes(b"\x8f\x02scrambled")
+    (jts / "ibgateway").mkdir()
+    out = run_identity_report(tmp_path)
+    assert "  folder gcfped...: ibg.xml is plain XML\n" in out
+    assert "  folder zyxwvu...: ibg.xml is not plain XML (encrypted or binary)\n" in out
+    assert "gcfpedoofahkknlgmede" not in out
+
+
+def test_identity_report_runs_before_the_gateway_starts():
+    text = run_sh_text()
+    assert text.index('print_gateway_machine_identity "${ACTIVE_JTS_DIR}"') < text.index("/opt/ibc/gatewaystart.sh")
