@@ -74,7 +74,8 @@ def test_startup_reports_whether_the_settings_file_came_back(tmp_path, with_sett
 
 def run_listing(tmp_path, jts):
     script = (
-        shell_function("list_gateway_settings_files")
+        "set -euo pipefail\n"
+        + shell_function("list_gateway_settings_files")
         + f'list_gateway_settings_files "Before the Gateway starts" "{jts}"'
     )
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
@@ -93,9 +94,21 @@ def test_listing_shows_each_settings_folder_with_its_files(tmp_path):
     assert out.startswith("[Gateway settings] Before the Gateway starts:\n")
     assert "  folder gcfped...:\n    ibg.Mon.xml 9 bytes " in out
     assert "  folder abcdef...:\n    ibg.xml 11 bytes " in out
+    assert "  no ibg*.xml files" not in out
     # Full folder names come from the login and stay out of the log.
     assert "gcfpedoofahkknlgmede" not in out
     assert "ibgateway" not in out
+
+
+def test_listing_shows_folders_without_settings_files(tmp_path):
+    jts = tmp_path / "Jts"
+    (jts / "gcfpedoofahkknlgmede").mkdir(parents=True)
+    (jts / "zyxwvutsrqponmlkjihg").mkdir()
+    (jts / "zyxwvutsrqponmlkjihg" / "ibg.xml").write_text("<settings/>")
+    out = run_listing(tmp_path, jts)
+    assert "  folder gcfped...: no ibg*.xml files\n" in out
+    assert "  folder zyxwvu...:\n    ibg.xml 11 bytes " in out
+    assert "gcfpedoofahkknlgmede" not in out
 
 
 def test_listing_says_when_there_are_no_settings_files(tmp_path):
@@ -145,7 +158,10 @@ def run_log_report(tmp_path, username="realuser"):
     jts = tmp_path / "Jts"
     ibc = tmp_path / "ibc"
     script = (
-        f'ACTIVE_JTS_DIR="{jts}"; ACTIVE_IBC_DIR="{ibc}"; IBKR_USERNAME="{username}"\n'
+        # run.sh runs with these options, under which a grep that matches
+        # nothing must not end the report.
+        "set -euo pipefail\n"
+        + f'ACTIVE_JTS_DIR="{jts}"; ACTIVE_IBC_DIR="{ibc}"; IBKR_USERNAME="{username}"\n'
         + shell_function("print_gateway_settings_log_lines")
         + 'print_gateway_settings_log_lines "Two minutes after login"'
     )
@@ -157,6 +173,7 @@ def test_log_report_prints_settings_lines_with_secrets_masked(tmp_path):
     folder.mkdir(parents=True)
     logs = tmp_path / "ibc" / "logs"
     logs.mkdir(parents=True)
+    (logs / "README.txt").write_text("This folder holds the IBC logs.\n")
     (logs / "ibc-3.23.0_GATEWAY-1019_Tuesday.txt").write_text(
         "Loading settings for realuser\n"
         "settings check IbPassword=secret123\n"
@@ -170,10 +187,11 @@ def test_log_report_prints_settings_lines_with_secrets_masked(tmp_path):
     assert out.startswith("[Gateway logs] Two minutes after login: settings-related lines\n")
     assert "  logs/ibc-3.23.0_GATEWAY-1019_Tuesday.txt:\n    Loading settings for ****\n" in out
     assert "    Saving Tws settings\n" in out
-    assert "/root/Jts/<folder>/ibg.xml for ****" in out
+    assert "  logs/README.txt: no matching lines\n" in out
+    assert "/root/Jts/gcfped.../ibg.xml for ****" in out
     assert "    Loading settings for ****\n" in out
     assert "    settings check IbPassword=****\n" in out
-    assert "  <folder>/ibgateway.Tue.log: not plain text (9 bytes)" in out
+    assert "  gcfped.../ibgateway.Tue.log: not plain text (9 bytes)" in out
     assert "  launcher.log: no matching lines" in out
     for secret in ("secret123", "realuser", "U1234567", "gcfpedoofahkknlgmedekopoh", "unrelated line"):
         assert secret not in out
